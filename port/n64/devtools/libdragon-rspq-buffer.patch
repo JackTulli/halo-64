@@ -1,0 +1,24 @@
+diff --git a/src/rspq/rspq.c b/src/rspq/rspq.c
+index fcf358c..ae932bd 100644
+--- a/src/rspq/rspq.c
++++ b/src/rspq/rspq.c
+@@ -744,6 +744,10 @@ static void rspq_close_context(rspq_ctx_t *ctx)
+     free_uncached(ctx->buffers[0]);
+ }
+ 
++/** @brief Words in each of the lowpri queue's two RDRAM buffers: how far the
++ *  CPU may run ahead of the RSP. A program may define its own (weak). */
++__attribute__((weak)) int rspq_lowpri_buffer_words = RSPQ_DRAM_LOWPRI_BUFFER_SIZE;
++
+ void rspq_init(void)
+ {
+     // Do nothing if rspq_init has already been called
+@@ -755,7 +759,7 @@ void rspq_init(void)
+     rspq_cur_sentinel = NULL;
+ 
+     // Allocate RSPQ contexts
+-    rspq_init_context(&lowpri, RSPQ_DRAM_LOWPRI_BUFFER_SIZE);
++    rspq_init_context(&lowpri, rspq_lowpri_buffer_words);
+     lowpri.sp_status_bufdone = SP_STATUS_SIG_BUFDONE_LOW;
+     lowpri.sp_wstatus_set_bufdone = SP_WSTATUS_SET_SIG_BUFDONE_LOW;
+     lowpri.sp_wstatus_clear_bufdone = SP_WSTATUS_CLEAR_SIG_BUFDONE_LOW;

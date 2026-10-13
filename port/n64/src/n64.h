@@ -1,0 +1,445 @@
+/*
+N64.H
+
+The bridge between the two halves of the N64 platform layer. Units compiled
+with the game's ABI and the XDK declarations (xdk_*.c, the game itself)
+cannot include libdragon's headers (both declare the same names), so the
+libdragon-facing units (n64_*.c) export what the game side needs through
+these plain-C declarations.
+*/
+
+#ifndef __HALO_N64_H
+#define __HALO_N64_H
+
+/* min and max of two floats, inline: newlib's fminf and fmaxf ask
+__fpclassifyf about both arguments, calls in per-particle and per-object
+loops (no NaNs come here) */
+static inline float n64_min_f(float a, float b) { return a < b ? a : b; }
+static inline float n64_max_f(float a, float b) { return a > b ? a : b; }
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ---------- system (n64_main.c) */
+
+/* debug output, one line per call (no newline needed) */
+void n64_log(const char *text);
+/* a fatal error: shows the message on screen and stops */
+void n64_fatal(const char *text) __attribute__((noreturn));
+/* prints the call stack to the debug output */
+void n64_backtrace(void);
+/* the CPU's count register: 46.875 MHz, wraps every 91 s */
+unsigned long n64_ticks(void);
+/* the same counter in 64 bits, never wrapping */
+unsigned long long n64_ticks64(void);
+#define N64_TICKS_PER_SECOND 46875000
+/* microseconds since boot, 64 bits */
+unsigned long long n64_microseconds(void);
+/* busy-waits */
+void n64_wait_microseconds(unsigned long microseconds);
+/* memory left on the heap, and the largest free block */
+unsigned long n64_heap_free(void);
+
+/* TRUE when the cartridge carries the file rom:/<name> (debug switches,
+port.json "flags"); looked up once per name */
+int n64_debug_flag(const char *name);
+/* a debug setting's value (port.json flag "name=value"): 0 when unset */
+int n64_debug_text(const char *name, char *buffer, int size);
+/* the profiler samples only inside a zone with the flag profile_zone */
+extern volatile int n64_profile_zone;
+
+/* ---------- cartridge files (n64_files.c): DragonFS, read-only */
+
+/* returns a handle (>= 0) or -1 */
+long n64_file_open(const char *path);
+long n64_file_size(long handle);
+long n64_file_read(long handle, void *buffer, long size);
+long n64_file_seek(long handle, long offset);
+void n64_file_close(long handle);
+
+/* ---------- animation frames streamed from the cartridge (n64_anim.c) */
+
+void n64_animation_open(const char *map_name);
+void *n64_animation_frame(long data_offset, long data_size, short frame_index, short frame_size);
+
+/* ---------- controllers (n64_input.c) */
+
+struct n64_pad
+{
+	unsigned char connected;
+	unsigned char pad[3];
+	signed char stick_x, stick_y;
+	unsigned short buttons; /* N64_BUTTON_* */
+};
+
+enum
+{
+	N64_BUTTON_A = 1 << 0,
+	N64_BUTTON_B = 1 << 1,
+	N64_BUTTON_Z = 1 << 2,
+	N64_BUTTON_START = 1 << 3,
+	N64_BUTTON_D_UP = 1 << 4,
+	N64_BUTTON_D_DOWN = 1 << 5,
+	N64_BUTTON_D_LEFT = 1 << 6,
+	N64_BUTTON_D_RIGHT = 1 << 7,
+	N64_BUTTON_L = 1 << 8,
+	N64_BUTTON_R = 1 << 9,
+	N64_BUTTON_C_UP = 1 << 10,
+	N64_BUTTON_C_DOWN = 1 << 11,
+	N64_BUTTON_C_LEFT = 1 << 12,
+	N64_BUTTON_C_RIGHT = 1 << 13,
+};
+
+void n64_input_poll(void);
+void n64_input_get(int port, struct n64_pad *pad);
+
+/* each controller port's controls, chosen on the menu's CONTROLS page and
+read by xdk_input.c (all zero: the standard scheme, crouch held, look not
+inverted) */
+enum
+{
+	N64_SCHEME_STANDARD,      /* the stick looks, the C buttons move */
+	N64_SCHEME_BUMPER_JUMPER, /* the standard one, R jumping and A throwing grenades */
+	N64_SCHEME_GOLDENEYE,     /* the stick turns and walks, C left and right strafe, C up and down look */
+	N64_SCHEME_NORTH,         /* the stick walks and strafes, the C buttons look */
+	N64_SCHEME_COUNT
+};
+
+struct n64_controls
+{
+	unsigned char scheme;        /* N64_SCHEME_* */
+	unsigned char toggle_crouch; /* crouch toggled by its button, not held */
+	unsigned char inverted;      /* pushing up looks down */
+	unsigned char swap_fire;     /* fire on the grenade's button, grenades on Z */
+	/* look speeds, the stick's and the C buttons': the menu's 1-10 less 5
+	(all zero: 5), 1.25 times faster a step */
+	signed char stick_speed, c_speed;
+	/* (xdk_input.c's) the toggled crouch, and the buttons last read */
+	unsigned char crouched;
+	unsigned char pad;
+	unsigned short last_buttons;
+};
+
+extern struct n64_controls n64_controls[4];
+
+/* a local player's look speeds across and up and down (xdk_input.c; Halo's
+turning rates times them, source/game/player_control.c): the sensitivity of
+whichever turns that way in the player's scheme, the stick or the C buttons */
+void n64_look_speed(int local_player_index, float *yaw, float *pitch);
+
+/* ---------- the renderer (n64_render.c)
+
+A frame is n64_render_frame_begin, one n64_render_view per player's view,
+then n64_render_frame_end, which shows it. Positions are the game's world
+units; the views' rectangles are pixels of the screen: the game's 320x240,
+the menu's 640x480 (n64_render_set_menu_display). */
+
+struct n64_view
+{
+	float position[3];
+	float forward[3];
+	float up[3];
+	float vertical_field_of_view;
+	float z_near, z_far;
+	short x0, y0, x1, y1;
+	short local_player_index;
+	/* the level's clusters seen from the eye's (Halo's potentially visible
+	set: a bit per cluster), or NULL for all of them */
+	short cluster_count;
+	const unsigned long *visible_clusters;
+};
+
+/* an object to draw in the current view: its model (the model tag's index),
+its node matrices as the game keeps them (real_matrix4x3: scale, forward,
+left, up, position; world units), the permutation of each region, and its
+bounding sphere */
+struct n64_object
+{
+	short model_tag_index;
+	short node_count;
+	const float *node_matrices;
+	const unsigned char *region_permutations;
+	short region_count;
+	short pad;
+	float center[3];
+	float radius;
+	/* a player's colour (where the model's textures take it), else white */
+	unsigned char tint[4];
+	/* the object (non-zero, the same in every view of a frame: its node
+	matrices are converted once a frame), or 0 */
+	unsigned long key;
+};
+
+void n64_render_initialize(void);
+/* loads rom:/levels/<map>.lvl and its textures (with low, the lighter
+<map>-low.lvl where there is one); FALSE if there is none */
+int n64_render_load_level(const char *map_name, int low);
+void n64_render_frame_begin(void);
+void n64_render_view(const struct n64_view *view);
+/* after n64_render_view: objects in that view */
+/* returns whether it is in the view (not culled) */
+int n64_render_object(const struct n64_object *object);
+/* the menu: a scene's models without a level (levels/<name>.mdl; NULL:
+none), the colour a frame is cleared to (0xRRGGBB) */
+void n64_render_load_scene(const char *name);
+void n64_render_unload_level(void);
+void n64_render_set_clear_color(unsigned long rgb);
+/* how far the views see (world units): fog from start, the colour (0xRRGGBB)
+reached at end, nothing drawn past it (the frame cleared to the colour);
+end 0: no fog, the views' own far planes */
+void n64_render_set_fog(unsigned long rgb, float start, float end);
+/* the views this frame: small views draw objects' far versions sooner */
+void n64_render_set_view_count(int count);
+/* then the first-person weapon: its own near plane, drawn over the world */
+void n64_render_first_person_begin(void);
+void n64_render_frame_end(void);
+/* draws the objects queued so far (n64_render_object queues them, sorted
+by texture): before 2D drawn over them */
+void n64_render_flush(void);
+/* chunky mode (the menu's settings): from the next frame on, the views'
+3D is drawn half as wide and its pixels doubled across (the HUD and text
+stay at full width) */
+void n64_render_set_chunky(int level); /* 0 off, 1 medium (4/5 width), 2 chunky (half) */
+/* the view models' quality (the menu's settings), for the next level
+loaded: 0 low, 1 medium, 2 high -- the first-person weapons and arms at
+1.25 or 2 times the triangles (levels/<map>-fp1.mdl, -fp2) */
+void n64_render_set_view_model_quality(int quality);
+/* the FPS counter in the corner (off in the menu) */
+void n64_render_show_counter(int on);
+/* the menu's display, 640x480 interlaced (two buffers and a z-buffer of
+that size), or back to the game's 320x240: the old display's memory freed
+first, the game's buffers where they were before the menu */
+void n64_render_set_menu_display(int on);
+int n64_render_screen_width(void);
+/* Settings: the game in 480i where the map leaves room (640x480, else
+512x480, else 320x240 and a word on the screen), tried once the map is in;
+the anamorphic picture (16:9 squeezed into 4:3: a wider view across, the
+HUD squeezed about each view's middle) */
+void n64_render_set_480i(int on);
+void n64_render_set_anamorphic(int on);
+/* the N64's pixels for one of the game's units (it lays the views and the
+HUD out on a 640x480 screen), across and down; the HUD's squeeze */
+float n64_render_layout_scale_x(void);
+float n64_render_layout_scale_y(void);
+float n64_render_hud_squeeze(void);
+int n64_render_screen_height(void);
+
+/* ---------- sound (n64_sound.c): the main menu's music, the game's
+sounds (port/n64/game/n64_sound_game.c) */
+
+void n64_sound_initialize(void);
+/* the mixer fed (every frame's end, and between ticks and views) and the
+music's next track started */
+void n64_sound_poll(void);
+/* the title music from its start (not again while it plays), and off */
+void n64_music_start(void);
+void n64_music_stop(void);
+/* the map's sounds: rom:/snd/<map>.ofs, the offsets in the sound bank of
+the files of the map's sound list (FALSE: none) */
+int n64_sound_load_map(const char *map_name);
+void n64_sound_unload_map(void);
+/* plays file `file` of the map's list on a voice (a free one, or the
+cheapest of no higher priority, 0-255): its volume 0-1, pan -1 (left) to 1
+(right), pitch (a rate: 1 as recorded), looping or once; returns the voice
+(>= 0) or -1 */
+long n64_voice_play(int file, float volume, float pan, float pitch, int priority, int loop);
+void n64_voice_set(long voice, float volume, float pan, float pitch);
+void n64_voice_stop(long voice);
+/* FALSE once it has ended, been stopped or been stolen */
+int n64_voice_playing(long voice);
+void n64_voice_stop_all(void);
+void n64_sound_statistics(unsigned long *started, unsigned long *stolen, unsigned long *refused);
+
+/* ---------- particles (n64_particles.c): what effects make, simply */
+
+/* an effect's particle emitter, as tools/n64/effects.py writes it */
+struct n64_fx_emitter
+{
+	unsigned char location;
+	unsigned char flags; /* camera mode (0-1), attached (2), additive (3) */
+	unsigned char cell, distribution;
+	unsigned char count_min, count_max, violence;
+	signed char gravity; /* world units/s^2, x8 */
+	unsigned short life_min, life_max, fade_in, fade_out; /* ms */
+	float velocity_min, velocity_max, cone_angle;
+	float radius_min, radius_max;
+	float distribution_min, distribution_max;
+	float offset[3], direction[3];
+	unsigned char tint_lower[4], tint_upper[4]; /* RGBA */
+	unsigned char drag; /* per second, /16 */
+	unsigned char end_scale; /* /32 */
+	unsigned char pad[2];
+};
+
+#define N64_FX_ADDITIVE 0x08
+
+enum
+{
+	N64_PARTICLE_FIRST_PERSON = 1, /* in its local player's camera space */
+	N64_PARTICLE_THIRD_PERSON_ONLY = 2, /* not in its local player's view */
+	N64_PARTICLE_ADDITIVE = 4, /* its colour's alpha left out */
+};
+
+struct n64_particle_spawn
+{
+	/* world units; first person: along the camera's right, up, forward */
+	float position[3];
+	float velocity[3]; /* per second, the same way */
+	float radius, end_scale;
+	float life, fade_in, fade_out; /* seconds */
+	unsigned long color; /* RGBA */
+	float gravity, drag;
+	unsigned char cell, flags;
+	signed char local_player; /* -1: none */
+	unsigned char pad;
+};
+
+/* a view's camera, for drawing (n64_render.c) */
+struct n64_particle_view
+{
+	float eye[3], right[3], up[3], forward[3];
+	float pixels_per_unit, center_x, center_y;
+	/* across: x scale of the pixels per unit (a pixel wider than tall:
+	512x480, the anamorphic picture) */
+	float x_scale;
+	float x0, y0, x1, y1;
+	float z_near, z_far; /* world units, this pass's */
+	float fog_start, fog_end; /* 0: no fog */
+	int local_player, first_person, chunky;
+	/* chunky's or medium's: the drawn width over the view's (1/2, 4/5) */
+	float chunky_scale;
+};
+
+/* the map's particles: rom:/fx/<map>.fx */
+void n64_particles_load(const char *map_name);
+/* an effect's event's emitters (by the effect's tag index), or NULL; valid
+until the next call */
+const struct n64_fx_emitter *n64_fx_event(int effect_tag_index, int event_index, int *count);
+void n64_particle_spawn(const struct n64_particle_spawn *spawn);
+/* explosions: the N64's own flash, fireball and smoke for the effects the
+converter marks (tools/n64/effects.py EXPLOSIONS), started by the effect
+code (source/effects/effects.c, HALO_N64) where the effect begins */
+enum
+{
+	N64_EXPLOSION_FRAG,
+	N64_EXPLOSION_PLASMA,
+	N64_EXPLOSION_ROCKET,
+	N64_EXPLOSION_SHELL,
+	N64_EXPLOSION_NEEDLER,
+	N64_EXPLOSION_KINDS
+};
+/* the kind of explosion an effect is (by its tag index), or -1 */
+int n64_explosion_kind(int effect_tag_index);
+void n64_explosion(const float position[3], int kind);
+void n64_particles_update(float dt);
+/* the menu's setting: none made when off */
+void n64_particles_set_enabled(int on);
+/* the views drawn (more views: fewer particles made) */
+void n64_particles_set_view_count(int views);
+void n64_particles_draw(const struct n64_particle_view *view);
+void n64_particles_statistics(unsigned long *spawned, unsigned long *drawn, unsigned long *reads, int *live);
+/* the view's 3D done (n64_render_game.c, after the first-person weapon):
+its particles drawn */
+void n64_render_view_particles(void);
+
+/* ---------- Halo's fonts (n64_font.c): rom:/fonts/<name>.* from
+tools/n64/ui.py (large, small, interstate) */
+
+struct n64_font;
+struct n64_font *n64_font_load(const char *name);
+void n64_font_free(struct n64_font *font);
+int n64_font_height(const struct n64_font *font);
+int n64_font_ascent(const struct n64_font *font);
+int n64_text_width(const struct n64_font *font, const char *text);
+/* text with its baseline at y; color 0xAARRGGBB */
+void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long color, const char *text);
+/* text squeezed across (x_scale, the anamorphic picture's 3/4), filtered */
+void n64_text_draw_scaled(const struct n64_font *font, float x, int y, unsigned long color, const char *text,
+	float x_scale);
+
+/* ---------- the menu (n64_menu.c): split screen multiplayer's setup */
+
+struct n64_menu_choice
+{
+	int game_type; /* n64_menu_game_variant */
+	int map; /* n64_menu_map_folder */
+	int score; /* to win: kills, flags, minutes or laps */
+	/* the players: each one's controller port, team (0 red, 1 blue) and
+	Halo colour index */
+	int player_count;
+	int ports[4], teams[4], colors[4];
+	/* Firefight (port/n64/game/n64_firefight.c) instead of multiplayer:
+	the map, the difficulty (0 easy to 3 legendary) */
+	int firefight;
+	int difficulty;
+	/* multiplayer's bots (port/n64/game/n64_bots.c): how many, their
+	skill (0 easy to 3 legendary) */
+	int bots;
+	int bot_skill;
+};
+
+/* runs the menu until a game is chosen (after a game, its results first:
+lines of text); the choice keeps what was chosen last time */
+int n64_menu_run(struct n64_menu_choice *choice, const char *const *results, int result_count);
+const char *n64_menu_map_folder(int map);
+const char *n64_menu_map_name(int map);
+int n64_menu_map_from_folder(const char *folder);
+const char *n64_menu_game_variant(int game_type);
+int n64_menu_game_teams(int game_type);
+
+/* ---------- the HUD (n64_hud.c): drawn by the game's own HUD code
+(port/n64/game/n64_hud_game.c passes its quads, text and blips on).
+Positions are pixels of the 320x240 frame, texture coordinates texels of
+the half-size HUD sprite. */
+
+struct n64_hud_quad
+{
+	short sprite;
+	short pad;
+	float x[4], y[4];
+	float s[4], t[4];
+	/* ARGB; the sprites are stored straight (not premultiplied): an opaque
+	colour blends over, a transparent one adds (Halo's HUD blends
+	premultiplied, colour + framebuffer * (1 - alpha)) */
+	unsigned long color;
+	/* a meter (Halo's meter shader, rasterizer_xbox_dynavobgeom.c): the
+	sprite's intensity is each texel's fill order f, its alpha the shape.
+	Texels with f under the flash colour's alpha are full, coloured from
+	minimum_color to maximum_color by f (plus the flash colour where f is at
+	least the minimum colour's alpha), the rest background_color; all scaled
+	by the tint's intensity, over the framebuffer times the tint's alpha
+	(full) or the background's (empty) */
+	int meter;
+	unsigned long minimum_color, maximum_color, flash_color, background_color, tint_color;
+};
+
+/* a new map: its sprites are rom:/hud/<map>/<n>.sprite */
+void n64_hud_set_map(const char *map_name);
+/* a view's HUD: 1 when the game should draw it now (it is recorded and
+shown until the view's next one), 0 when the last one is shown again (the
+game's HUD code runs for each view every other frame) */
+int n64_hud_begin(int view, int x0, int y0, int x1, int y1);
+void n64_hud_end(void);
+/* the views this frame (more views: each one's HUD code runs less often) */
+void n64_hud_set_view_count(int count);
+/* the views' HUD recordings dropped (the display changed size) */
+void n64_hud_forget_recordings(void);
+/* room on the heap for count blocks of size bytes at once, models dropped
+from the cache for it; 0 if it can't be made (n64_render.c; not while
+recording a block) */
+int n64_render_make_room(unsigned long size, int count);
+/* the HUD's inset from each view's edges in pixels, for a television's
+overscan (Settings: HUD INSET; port.json flag "debug_hud_inset=<pixels>") */
+void n64_hud_set_inset(int pixels);
+int n64_hud_inset(void);
+void n64_hud_quad(const struct n64_hud_quad *quad);
+void n64_hud_text(int x, int y, unsigned long color, const char *text);
+/* a motion sensor blip: centre in pixels, position and size in pixels */
+void n64_hud_blip(float x, float y, float width, float height, unsigned long color);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __HALO_N64_H */

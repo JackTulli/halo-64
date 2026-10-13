@@ -1,0 +1,876 @@
+/*
+N64_GAME.C
+
+The game-side half of the N64 platform layer, compiled like the game's own
+units (it sees the game's headers):
+
+- the menu's games (n64_game_menu, from main.c's main_menu_load: the
+  N64's own menu, port/n64/src/n64_menu.c) and, for testing, the start of
+  a game without it (n64_game_setup, called from main.c),
+- the memory map: the game state and the loaded map are ordinary
+  allocations (physical_memory_map.c is left out),
+- the cache files: maps are converted ahead of time (tools/n64/convert.py)
+  and read from the cartridge whole; the Xbox's copy-to-hard-disk cache
+  (cache_files_windows.c) is left out,
+- the game state's buffer and its (absent) persistent storage,
+- the hooks the Linux port added to the game (interpolation, screen width).
+*/
+
+#include "cseries.h"
+
+#include "ai/ai_debug.h"
+#include "cache/cache_files.h"
+#include "cache/physical_memory_map.h"
+#include "game/game.h"
+#include "main/main.h"
+#include "saved games/game_state.h"
+#include "game/players.h"
+#include "objects/objects.h"
+#include "memory/data.h"
+#include "units/units.h"
+#include "items/weapons.h"
+#include "game/game_engine.h"
+#include "text/unicode.h"
+#include "tag_files/tag_groups.h"
+
+#include "../src/n64.h"
+#include "errors.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void *memalign(size_t alignment, size_t size);
+
+extern short player_spawn_count;
+
+/* ---------- Firefight (n64_firefight.c) */
+
+void n64_firefight_begin(int difficulty, int player_count);
+void n64_bots_begin(int count, int skill, int teams);
+void n64_bots_stop(void);
+int n64_bot_number(long player_index);
+void n64_firefight_stop(void);
+int n64_firefight_active(void);
+void n64_firefight_tick(void);
+int n64_firefight_results(char lines[][64], int maximum);
+
+/* ---------- a game straight from the start, for testing */
+
+#define N64_TEST_GAME_VARIANT "slayer"
+#define N64_TEST_PLAYER_COUNT 2
+
+/* what the menu chose (or the test game) */
+static struct n64_menu_choice n64_choice = { .bot_skill = 1 };
+/* a Pro variant: everyone starts with a pistol and an assault rifle */
+static int n64_pro_weapons;
+
+/* the game's variant, players and map from the choice */
+static void n64_game_start(
+	void)
+{
+	static char map_name[96];
+	struct game_variant variant, temporary_variant;
+	char const *folder = n64_menu_map_folder(n64_choice.map);
+	char line[96];
+
+	/* Firefight: team slayer, every player on the red team, no score to
+	reach; the waves are n64_firefight.c's */
+	{
+		/* (a Pro variant: its plain one, everyone starting with a pistol
+		and an assault rifle -- n64_game_pro_weapons) */
+		char variant_name[32];
+		char const *name = n64_choice.firefight ? "team_slayer" : n64_menu_game_variant(n64_choice.game_type);
+		int length = (int)strlen(name);
+
+		n64_pro_weapons = length > 4 && !strcmp(name + length - 4, "_pro");
+		snprintf(variant_name, sizeof(variant_name), "%.*s", n64_pro_weapons ? length - 4 : length, name);
+		variant = *game_engine_get_variant_by_name(&temporary_variant, variant_name);
+	}
+	if (n64_choice.firefight)
+		variant.universal_variant.score_to_win = 9999;
+	else if (n64_choice.score > 0)
+		variant.universal_variant.score_to_win = n64_choice.score;
+	game_set_game_variant(&variant);
+	if (n64_choice.firefight)
+	{
+		n64_firefight_begin(n64_choice.difficulty, n64_choice.player_count);
+		n64_bots_stop();
+	}
+	else
+	{
+		n64_firefight_stop();
+		/* (up to 8, whatever the players: each biped ~2.7 ms of a tick) */
+		n64_bots_begin(PIN(n64_choice.bots, 0, 8), n64_choice.bot_skill,
+			n64_menu_game_teams(n64_choice.game_type));
+	}
+	player_spawn_count = (short)n64_choice.player_count;
+	snprintf(map_name, sizeof(map_name), "levels\\test\\%s\\%s", folder, folder);
+	main_set_map_name(map_name);
+	main_disallow_persistent_storage();
+	{
+		/* the game's controllers 0 to n-1 are the players' ports */
+		extern int n64_gamepad_ports[4];
+		int used = 0, i, port;
+
+		for (i = 0; i < n64_choice.player_count; i++)
+		{
+			n64_gamepad_ports[i] = n64_choice.ports[i];
+			used |= 1 << n64_choice.ports[i];
+		}
+		for (port = 0; port < 4 && i < 4; port++)
+		{
+			if (!(used & (1 << port)))
+				n64_gamepad_ports[i++] = port;
+		}
+	}
+	snprintf(line, sizeof(line), "n64: %s on %s, %d players, %d bots, score %d",
+		n64_choice.firefight ? "firefight" : n64_menu_game_variant(n64_choice.game_type),
+		map_name, n64_choice.player_count, n64_choice.firefight ? 0 : n64_choice.bots, n64_choice.score);
+	n64_log(line);
+}
+
+void n64_game_setup(
+	void)
+{
+	char name[32];
+	char difficulty[8];
+	int i;
+
+	/* ai_debug_initialize's defaults (the AI is left out) */
+	ai_debug.selected_actor_index = NONE;
+	ai_debug.selected_squad_index = NONE;
+
+	/* testing (port.json flag "debug_map=<map>", or "autotest"): straight
+	into a two-player game; else main.c starts at the menu */
+	name[0] = 0;
+	if (!n64_debug_text("debug_map", name, sizeof(name)) && !n64_debug_flag("autotest"))
+		return;
+	n64_choice.map = n64_menu_map_from_folder(name[0] ? name : "wizard");
+	if (n64_choice.map < 0)
+		n64_choice.map = n64_menu_map_from_folder("wizard");
+	n64_choice.game_type = 0;
+	n64_choice.score = 0;
+	/* (port.json flag "debug_firefight=<difficulty>": a Firefight game) */
+	n64_choice.firefight = n64_debug_text("debug_firefight", difficulty, sizeof(difficulty)) != 0;
+	n64_choice.difficulty = n64_choice.firefight ? atoi(difficulty) : 0;
+	/* (port.json flag "debug_players=<1-4>": another count) */
+	n64_choice.player_count = n64_debug_text("debug_players", name, sizeof(name)) ? PIN(atoi(name), 1, 4) :
+		N64_TEST_PLAYER_COUNT;
+	/* (port.json flags "debug_bots=<n>", "debug_bot_skill=<0-3>") */
+	n64_choice.bots = n64_debug_text("debug_bots", name, sizeof(name)) ? PIN(atoi(name), 0, 12) : 0;
+	n64_choice.bot_skill = n64_debug_text("debug_bot_skill", name, sizeof(name)) ? PIN(atoi(name), 0, 3) : 1;
+	/* (port.json flag "debug_game_type=<n>": the menu's game type) */
+	if (n64_debug_text("debug_game_type", name, sizeof(name)))
+		n64_choice.game_type = atoi(name);
+	for (i = 0; i < 4; i++)
+	{
+		static short const colors[4] = {2, 3, 6, 5};
+
+		n64_choice.ports[i] = i;
+		n64_choice.teams[i] = i & 1;
+		n64_choice.colors[i] = colors[i];
+	}
+	n64_game_start();
+}
+
+/* ---------- the menu's games (main.c's main_menu_load, HALO_N64) */
+
+#define N64_RESULT_LINES 9
+
+static char n64_result_text[N64_RESULT_LINES][64];
+static char const *n64_result_lines[N64_RESULT_LINES];
+static int n64_result_count;
+
+static void n64_ascii(
+	char *out,
+	int size,
+	wchar_t const *text)
+{
+	int i;
+
+	for (i = 0; i + 1 < size && text && text[i]; i++)
+		out[i] = text[i] < 128 ? (char)(text[i] >= 'a' && text[i] <= 'z' ? text[i] - 32 : text[i]) : '?';
+	out[i] = 0;
+}
+
+/* the game that just ended, for the menu: who won, then each player's
+score, kills and deaths */
+void n64_game_results(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+	char winner[48] = "";
+	int count = 1;
+
+	n64_result_count = 0;
+	if (n64_firefight_active())
+	{
+		n64_result_count = n64_firefight_results(n64_result_text, 6);
+		for (count = 0; count < n64_result_count; count++)
+			n64_result_lines[count] = n64_result_text[count];
+		return;
+	}
+	if (!game_engine)
+		return;
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL && count < N64_RESULT_LINES)
+	{
+		long player_index = iterator.datum_index;
+		int port = player->local_player_index >= 0 && player->local_player_index < 4 ?
+			n64_choice.ports[player->local_player_index] : 0;
+		int bot = n64_bot_number(player_index);
+		char who[16];
+		wchar_t score[32];
+		char score_text[32];
+
+		if (bot >= 0)
+			snprintf(who, sizeof(who), "BOT %d", bot + 1);
+		else
+			snprintf(who, sizeof(who), "PLAYER %d", port + 1);
+		csmemset(score, 0, sizeof(score));
+		if (game_engine->format_player_score)
+			game_engine->format_player_score(player_index, score);
+		n64_ascii(score_text, sizeof(score_text), score);
+		snprintf(n64_result_text[count], sizeof(n64_result_text[count]), "%s   %s   (%d KILLS, %d DEATHS)",
+			who, score_text, player->statistics.kills[0], player->statistics.deaths);
+		n64_result_lines[count] = n64_result_text[count];
+		count++;
+		if (game_engine_did_player_win(player_index) == TRUE && !winner[0])
+		{
+			if (n64_menu_game_teams(n64_choice.game_type))
+				snprintf(winner, sizeof(winner), "%s TEAM WINS", player->team_index ? "BLUE" : "RED");
+			else
+				snprintf(winner, sizeof(winner), "%s WINS", who);
+		}
+	}
+	snprintf(n64_result_text[0], sizeof(n64_result_text[0]), "%s", winner[0] ? winner : "TIE GAME");
+	n64_result_lines[0] = n64_result_text[0];
+	n64_result_count = count;
+}
+
+/* the menu, then the game it chose */
+void n64_game_menu(
+	void)
+{
+	int count = n64_result_count;
+
+	n64_result_count = 0;
+	n64_menu_run(&n64_choice, n64_result_lines, count);
+	n64_game_start();
+}
+
+/* game_engine_postspawn_player_update's (game_engine.c, HALO_N64): in a
+Pro variant a new unit gets a pistol (in hand) and an assault rifle instead
+of the map's starting weapons; FALSE otherwise */
+boolean n64_game_pro_weapons(
+	long unit_index)
+{
+	static char const *const names[2] = { "weapons\\pistol\\pistol", "weapons\\assault rifle\\assault rifle" };
+	boolean first = TRUE;
+	short i;
+
+	if (!n64_pro_weapons || unit_index == NONE)
+		return FALSE;
+	for (i = 0; i < 2; i++)
+	{
+		long definition_index = tag_loaded('weap', names[i]);
+		struct object_placement_data placement_data;
+		long weapon_index;
+
+		if (definition_index == NONE)
+			continue;
+		object_placement_data_new(&placement_data, definition_index, NONE);
+		weapon_index = object_new(&placement_data);
+		if (weapon_index != NONE)
+		{
+			unit_add_weapon_to_inventory(unit_index, weapon_index, first ? 2 : 0);
+			first = FALSE;
+		}
+	}
+	return TRUE;
+}
+
+/* main.c's create_local_players: the index-th player's controller port,
+Halo colour index and team */
+void n64_game_local_player(
+	long index,
+	short *port,
+	short *color,
+	short *team)
+{
+	index = PIN(index, 0, 3);
+	*port = (short)n64_choice.ports[index];
+	*color = (short)n64_choice.colors[index];
+	*team = (short)(n64_choice.firefight ? 0 :
+		n64_menu_game_teams(n64_choice.game_type) ? n64_choice.teams[index] : index);
+}
+
+/* ---------- memory map */
+
+static struct
+{
+	void *game_state;
+	void *tag_cache;
+	/* the game state's buffer, its GPU part (n64_game_state_trim) */
+	unsigned long game_state_size, game_state_gpu_size;
+} n64_memory;
+
+void physical_memory_allocate(
+	void)
+{
+	/* game_state.c allocates its own buffer (game_state_allocate_buffer) */
+	return;
+}
+
+void physical_memory_verify(
+	void)
+{
+	return;
+}
+
+void physical_memory_free(
+	void)
+{
+	return;
+}
+
+void *physical_memory_get_game_state_base_address(
+	void)
+{
+	return n64_memory.game_state;
+}
+
+void *physical_memory_get_tag_cache_base_address(
+	void)
+{
+	return n64_memory.tag_cache;
+}
+
+void *physical_memory_get_texture_cache_base_address(
+	void)
+{
+	return NULL;
+}
+
+void *physical_memory_get_sound_cache_base_address(
+	void)
+{
+	return NULL;
+}
+
+/* ---------- the game state's buffer */
+
+void *game_state_allocate_buffer(
+	unsigned long address,
+	unsigned long cpu_size,
+	unsigned long gpu_size)
+{
+	(void)address;
+	n64_memory.game_state = memalign(16, cpu_size + gpu_size);
+	if (!n64_memory.game_state)
+		n64_fatal("no memory for the game state");
+	memset(n64_memory.game_state, 0, cpu_size + gpu_size);
+	n64_memory.game_state_size = cpu_size + gpu_size;
+	n64_memory.game_state_gpu_size = gpu_size;
+	return n64_memory.game_state;
+}
+
+/* The buffer is HALO_PORT_GAME_STATE_CPU_SIZE, a ceiling; the game's
+allocations are all made before the first map locks it (game_state.c,
+HALO_N64), and the rest goes back to the heap here, once: the allocations
+are made from the buffer's start (the GPU's part, from its end, is none on
+the N64), and shrinking a block keeps it where it is. */
+#define N64_GAME_STATE_SLACK 256
+
+void n64_game_state_trim(
+	unsigned long used)
+{
+	static boolean trimmed = FALSE;
+	unsigned long size, before;
+	void *block;
+	char line[128];
+
+	if (trimmed || !n64_memory.game_state || n64_memory.game_state_gpu_size)
+		return;
+	trimmed = TRUE;
+	size = (used + N64_GAME_STATE_SLACK + 15) & ~15UL;
+	if (size >= n64_memory.game_state_size)
+		return;
+	before = n64_heap_free();
+	/* (libc's: the buffer is memalign's, and in the game's units realloc is
+	cseries.h's debug_realloc) */
+	block = (realloc)(n64_memory.game_state, size);
+	if (block != n64_memory.game_state)
+		n64_fatal("the game state moved when it was trimmed");
+	snprintf(line, sizeof(line), "n64: game state %lu KB of %lu KB used, %lu KB given back to the heap",
+		used / 1024, n64_memory.game_state_size / 1024, (n64_heap_free() - before) / 1024);
+	n64_log(line);
+	n64_memory.game_state_size = size;
+	return;
+}
+
+void game_state_free_buffer(
+	void)
+{
+	return;
+}
+
+void game_state_create_or_open_file(void) { return; }
+void game_state_close_file(void) { return; }
+boolean game_state_write_core(char const *name, void *buffer, long size) { (void)name; (void)buffer; (void)size; return FALSE; }
+boolean game_state_read_core_header(char const *name, void *header, long size) { (void)name; (void)header; (void)size; return FALSE; }
+boolean game_state_write_to_file(void) { return FALSE; }
+void game_state_read_core(char const *name, void *buffer, long size) { (void)name; (void)buffer; (void)size; return; }
+
+/* ---------- maps
+
+An N64 map (tools/n64/convert.py): a 64-byte header, the image, then the
+image offsets of its pointers. The image is copied into one allocation and
+every pointer moved to it. */
+
+struct n64_map_header
+{
+	char magic[4];
+	unsigned long version;
+	char name[32];
+	unsigned long image_size;
+	unsigned long relocation_count;
+	unsigned long tag_header_offset;
+	unsigned long structure_bsp_header_offset;
+	unsigned long reserved[2];
+};
+
+#define N64_MAP_VERSION 1
+
+static struct
+{
+	char name[32];
+	byte *image;
+	unsigned long image_size;
+	struct n64_map_header header;
+} n64_map;
+
+static void *n64_map_load(
+	char const *name)
+{
+	char path[64];
+	long file;
+	unsigned long remaining, offset;
+	unsigned long *relocations;
+	unsigned long base;
+
+	if (n64_map.image && !strcmp(n64_map.name, name))
+		return n64_map.image + n64_map.header.tag_header_offset;
+	if (n64_map.image)
+	{
+		/* (libc's: the image is memalign's, and in the game's units free is
+		cseries.h's debug_free) */
+		(free)(n64_map.image);
+		n64_map.image = NULL;
+	}
+
+	snprintf(path, sizeof(path), "rom:/maps/%s.map", name);
+	file = n64_file_open(path);
+	if (file < 0)
+	{
+		error(_error_silent, "n64: no map %s", path);
+		return NULL;
+	}
+	n64_file_read(file, &n64_map.header, sizeof(n64_map.header));
+	if (memcmp(n64_map.header.magic, "H64M", 4) || n64_map.header.version != N64_MAP_VERSION)
+		n64_fatal("the map was converted for another build (tools/n64/convert.py)");
+
+	n64_map.image = memalign(16, n64_map.header.image_size);
+	if (!n64_map.image)
+		n64_fatal("no memory for the map");
+	n64_map.image_size = n64_map.header.image_size;
+	n64_file_read(file, n64_map.image, n64_map.header.image_size);
+
+	/* the relocations follow the image, 8-byte aligned */
+	offset = (sizeof(n64_map.header) + n64_map.header.image_size + 7) & ~7UL;
+	n64_file_seek(file, offset);
+	base = (unsigned long)n64_map.image;
+	relocations = malloc(4096);
+	remaining = n64_map.header.relocation_count;
+	while (remaining)
+	{
+		unsigned long count = remaining < 1024 ? remaining : 1024;
+		unsigned long i;
+
+		n64_file_read(file, relocations, count * 4);
+		for (i = 0; i < count; i++)
+			*(unsigned long *)(n64_map.image + relocations[i]) += base;
+		remaining -= count;
+	}
+	free(relocations);
+	n64_file_close(file);
+
+	csstrncpy(n64_map.name, name, sizeof(n64_map.name) - 1);
+	n64_animation_open(name);
+	n64_memory.tag_cache = n64_map.image;
+	{
+		char line[128];
+
+		snprintf(line, sizeof(line), "n64: map %s loaded, %lu KB, %lu relocations, %lu KB of heap left",
+			name, n64_map.header.image_size / 1024, n64_map.header.relocation_count, n64_heap_free() / 1024);
+		n64_log(line);
+	}
+	return n64_map.image + n64_map.header.tag_header_offset;
+}
+
+/* main.c's main_menu_load: the map of the game that ended, once unloaded
+(game_unload), gives its memory to the menu */
+void n64_game_free_map(
+	void)
+{
+	if (n64_map.image)
+	{
+		/* (libc's free: see n64_map_load) */
+		(free)(n64_map.image);
+		n64_map.image = NULL;
+	}
+	n64_map.name[0] = 0;
+	n64_memory.tag_cache = NULL;
+	{
+		char line[64];
+
+		snprintf(line, sizeof(line), "n64: map freed, %lu KB of heap free", n64_heap_free() / 1024);
+		n64_log(line);
+	}
+}
+
+/* the loaded map's name ("wizard"), for the renderer's level geometry */
+char const *n64_loaded_map_name(
+	void)
+{
+	return n64_map.name;
+}
+
+/* cache_files.c (HALO_N64): the loaded map's tag header */
+void *n64_cache_file_tag_header(
+	char const *scenario_name)
+{
+	return n64_map_load(tag_name_strip_path(scenario_name));
+}
+
+/* ---------- the cache files' platform half (cache_files_windows.c) */
+
+void cache_files_initialize(void) { return; }
+void cache_files_dispose(void) { return; }
+void cache_files_precache_set_priority(boolean blocking) { (void)blocking; return; }
+boolean cache_files_precache_in_progress(void) { return FALSE; }
+boolean cache_files_precache_is_copying_map(const char *map_name) { (void)map_name; return FALSE; }
+boolean cache_files_precache_map_loaded(const char *map_name) { (void)map_name; return TRUE; }
+boolean cache_files_precache_map_begin(const char *map_name, boolean copy_map) { (void)map_name; (void)copy_map; return TRUE; }
+void cache_files_precache_map_end(void) { return; }
+void cache_files_precache_map_queue_end(void) { return; }
+short cache_files_precache_map_status(real *progress) { if (progress) *progress = 1.f; return 1; }
+void cache_file_promote_read(short request) { (void)request; return; }
+void cache_file_block_until_not_busy(void) { return; }
+void cache_file_close(void) { return; }
+
+boolean cache_file_open(
+	char const *map_name,
+	struct cache_file_header *header)
+{
+	(void)map_name;
+	(void)header;
+	return TRUE;
+}
+
+short cache_file_read(
+	long tag_index,
+	long offset,
+	long size,
+	void *buffer,
+	boolean *completion_flag_reference,
+	boolean blocking)
+{
+	(void)tag_index;
+	(void)offset;
+	(void)size;
+	(void)buffer;
+	(void)blocking;
+	if (completion_flag_reference)
+		*completion_flag_reference = TRUE;
+	return NONE;
+}
+
+void tags_header_register_vertex_and_index_buffers(struct cache_file_tag_header *header) { (void)header; return; }
+void tags_header_deregister_vertex_and_index_buffers(struct cache_file_tag_header *header) { (void)header; return; }
+void structure_bsp_header_register_vertex_buffers(struct cache_file_structure_bsp_header *header) { (void)header; return; }
+void structure_bsp_header_deregister_vertex_buffers(struct cache_file_structure_bsp_header *header) { (void)header; return; }
+
+/* ---------- the Linux port's hooks into the game */
+
+int halo_interpolation_enabled(void) { return 0; }
+long halo_screen_width(void) { return 640; }
+int halo_linux_mouse_look(short gamepad_index, float *yaw, float *pitch) { (void)gamepad_index; (void)yaw; (void)pitch; return 0; }
+void network_lobby_update(void) { return; }
+void render_interpolation_tick(void) { return; }
+void render_interpolation_frame_begin(void) { return; }
+void render_interpolation_frame_end(void) { return; }
+void render_interpolation_dispose_from_old_map(void) { return; }
+float render_interpolation_fraction(void) { return 1.f; }
+struct real_matrix4x3 *render_interpolation_object_node_matrices(long object_index) { (void)object_index; return NULL; }
+struct observer_result const *render_interpolation_camera(short local_player_index, struct observer_result const *observer) { (void)local_player_index; return observer; }
+void render_interpolation_first_person(short local_player_index, struct real_matrix4x3 *node_matrices,
+	short node_count, struct render_camera const *camera) { (void)local_player_index; (void)node_matrices; (void)node_count; (void)camera; return; }
+float render_interpolation_game_time_sec(long ticks) { return (float)ticks / 30.f; }
+float halo_pixel_aspect(void) { return 1.f; }
+float halo_screen_texture_scale_x(void) { return 1.f; }
+int halo_performance_mode(void) { return 1; }
+long halo_screen_commit(void) { return 640; }
+void halo_screen_ui_offset(unsigned char centered) { (void)centered; return; }
+void p2p_lobby_report(const void *data, long size) { (void)data; (void)size; return; }
+long p2p_peer_round_trip(unsigned long address) { (void)address; return -1; }
+void p2p_accept_remote_connections(int accept) { (void)accept; return; }
+
+/* ---------- the stack walk (cseries/stack_walk_windows.c walks x86 frames) */
+
+void stack_walk(short levels_to_ignore) { (void)levels_to_ignore; n64_backtrace(); }
+void stack_walk_initialize(void) { return; }
+void stack_walk_dispose(void) { return; }
+void stack_walk_disregard_symbol_names(boolean disregard) { (void)disregard; return; }
+
+/* ---------- the tick's cost (game_time.c calls n64_game_tick, HALO_N64)
+
+Every game tick is timed; every 150 ticks (5 s of game time) the log gets
+the average and the worst, and how far game time keeps up with real time. */
+
+void game_tick(void);
+
+/* game.c's phases of a tick (HALO_N64), in CPU ticks, summed over the log
+window */
+unsigned long n64_tick_phases[8];
+/* objects.c's objects_update, by object type (HALO_N64) */
+unsigned long n64_object_type_time[16], n64_object_type_count[16];
+/* objects.c's object_update, by stage */
+unsigned long n64_object_stage_time[8], n64_equipment_stage_time[8];
+/* the object type whose stages are logged apart (port.json flag
+"debug_stage_type=<type>": 0 biped, 1 vehicle, 2 weapon, 3 equipment,
+6 scenery, 7 machine) */
+int n64_stage_type = 7;
+/* (collisions.c, "debug_ray_callers": each caller of collision_test_vector
+and how many rays it cast, those while the HUD drew in the top 16 bits) */
+unsigned long n64_ray_callers[16][2];
+/* (object_types.c, bipeds.c: the logged type's update by part -- object,
+unit, biped... -- and bipeds' moving) */
+unsigned long n64_part_time[8];
+static char const *const n64_object_stage_names[5] =
+{
+	"type update", "damage/export", "node matrices", "functions/colours", "lights",
+};
+static char const *const n64_object_type_names[12] =
+{
+	"biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery", "machine", "control",
+	"light fixture", "placeholder", "sound scenery",
+};
+static char const *const n64_tick_phase_names[8] =
+{
+	"quit/allegiance", "units", "players before", "effects", "first person", "engine", "objects", "players after/hud",
+};
+
+/* one line per player: where, whether alive, kills, deaths, shots */
+static void n64_log_players(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL)
+	{
+		char line[160];
+
+		if (player->unit_index != NONE)
+		{
+			struct unit_datum *unit = unit_get(player->unit_index);
+			long weapon_index = unit->unit.current_weapon_index >= 0 ?
+				unit->unit.weapon_object_indices[unit->unit.current_weapon_index] : NONE;
+			char const *weapon_name = "none";
+			int rounds = -1;
+
+			if (weapon_index != NONE)
+			{
+				struct weapon_datum *weapon = weapon_get(weapon_index);
+
+				weapon_name = tag_name_strip_path(tag_get_name(object_get(weapon_index)->definition_index));
+				rounds = weapon->weapon.magazines[0].rounds_loaded;
+			}
+			snprintf(line, sizeof(line), "player %d: alive at %.1f %.1f %.1f, %s (%d rounds), kills %d, deaths %d, colour %.2f %.2f %.2f / base %.2f %.2f %.2f",
+				(int)iterator.absolute_index,
+				unit->object.position.x, unit->object.position.y, unit->object.position.z,
+				weapon_name, rounds, player->statistics.kills[0], player->statistics.deaths,
+				unit->object.outgoing_change_colors[0].red, unit->object.outgoing_change_colors[0].green,
+				unit->object.outgoing_change_colors[0].blue, unit->object.base_change_colors[0].red,
+				unit->object.base_change_colors[0].green, unit->object.base_change_colors[0].blue);
+		}
+		else
+		{
+			snprintf(line, sizeof(line), "player %d: dead (respawn in %ld), kills %d, deaths %d",
+				(int)iterator.absolute_index, player->respawn_timer,
+				player->statistics.kills[0], player->statistics.deaths);
+		}
+		n64_log(line);
+	}
+}
+
+static struct
+{
+	unsigned long count;
+	unsigned long long total;
+	unsigned long worst;
+	unsigned long long window_start;
+} n64_tick_profile;
+
+/* testing (port.json flag "debug_game_ticks=<n>"): each game ends after n
+ticks (its scores, then the menu) */
+static long n64_game_end_tick = -1;
+
+void n64_game_tick(
+	void)
+{
+	unsigned long start = n64_ticks();
+	unsigned long elapsed;
+
+	if (!n64_tick_profile.window_start)
+	{
+		char setting[8];
+
+		n64_tick_profile.window_start = n64_ticks64();
+		if (n64_debug_text("debug_stage_type", setting, sizeof(setting)))
+			n64_stage_type = atoi(setting);
+		if (n64_debug_text("debug_game_ticks", setting, sizeof(setting)))
+			n64_game_end_tick = atol(setting);
+	}
+	if (n64_game_end_tick > 0 && game_time_get() == n64_game_end_tick)
+		game_engine_end_game();
+	n64_profile_zone = n64_debug_flag("profile_tick");
+	n64_firefight_tick();
+	game_tick();
+	n64_profile_zone = 0;
+	/* (the audio fed between ticks too: a slow frame runs several) */
+	n64_sound_poll();
+	elapsed = n64_ticks() - start;
+	{
+		extern unsigned long n64_last_tick_us;
+
+		n64_last_tick_us = (unsigned long)((unsigned long long)elapsed * 1000000 / N64_TICKS_PER_SECOND);
+	}
+	n64_tick_profile.total += elapsed;
+	if (elapsed > n64_tick_profile.worst)
+		n64_tick_profile.worst = elapsed;
+	if (++n64_tick_profile.count == 150)
+	{
+		char line[160];
+		unsigned long long now = n64_ticks64();
+		unsigned long average_us = (unsigned long)(n64_tick_profile.total * 1000000 / N64_TICKS_PER_SECOND / 150);
+		unsigned long worst_us = (unsigned long)((unsigned long long)n64_tick_profile.worst * 1000000 / N64_TICKS_PER_SECOND);
+		unsigned long window_ms = (unsigned long)((now - n64_tick_profile.window_start) * 1000 / N64_TICKS_PER_SECOND);
+
+		snprintf(line, sizeof(line), "tick: %lu.%02lu ms average, %lu.%02lu ms worst; 150 ticks (5 s of game) took %lu ms",
+			average_us / 1000, (average_us % 1000) / 10, worst_us / 1000, (worst_us % 1000) / 10, window_ms);
+		n64_log(line);
+		{
+			char phases[320];
+			int length = 0;
+			int i;
+
+			for (i = 0; i < 8; i++)
+			{
+				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%lu ", n64_tick_phase_names[i],
+					(unsigned long)((unsigned long long)n64_tick_phases[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+					(unsigned long)((unsigned long long)n64_tick_phases[i] * 10000 / N64_TICKS_PER_SECOND / 150 % 10));
+				n64_tick_phases[i] = 0;
+			}
+			n64_log(phases);
+			if (n64_debug_flag("debug_ray_callers"))
+			{
+				for (i = 0; i < 16 && n64_ray_callers[i][0]; i++)
+				{
+					snprintf(phases, sizeof(phases), "rays from %08lx: %lu (%lu in the HUD)", n64_ray_callers[i][0],
+						n64_ray_callers[i][1] & 0xFFFF, n64_ray_callers[i][1] >> 16);
+					n64_log(phases);
+					n64_ray_callers[i][1] = 0;
+				}
+			}
+			length = 0;
+			for (i = 0; i < 12; i++)
+			{
+				if (!n64_object_type_count[i])
+					continue;
+				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ms x%lu ", n64_object_type_names[i],
+					(unsigned long)((unsigned long long)n64_object_type_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+					(unsigned long)((unsigned long long)n64_object_type_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100),
+					n64_object_type_count[i] / 150);
+			}
+			for (i = 0; i < 16; i++)
+				n64_object_type_time[i] = n64_object_type_count[i] = 0;
+			n64_log(phases);
+			length = 0;
+			for (i = 0; i < 5; i++)
+			{
+				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ", n64_object_stage_names[i],
+					(unsigned long)((unsigned long long)n64_object_stage_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+					(unsigned long)((unsigned long long)n64_object_stage_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
+				n64_object_stage_time[i] = 0;
+			}
+			n64_log(phases);
+			{
+				extern unsigned long n64_unmoved_reasons[4];
+
+				length = snprintf(phases, sizeof(phases), "type %d (not still %lu, overlays %lu, moved %lu, skipped %lu): ",
+					n64_stage_type, n64_unmoved_reasons[0], n64_unmoved_reasons[1], n64_unmoved_reasons[2],
+					n64_unmoved_reasons[3]);
+				n64_unmoved_reasons[0] = n64_unmoved_reasons[1] = n64_unmoved_reasons[2] = n64_unmoved_reasons[3] = 0;
+			}
+			for (i = 0; i < 5; i++)
+			{
+				length += snprintf(phases + length, sizeof(phases) - length, "part%d %lu.%02lu ", i,
+					(unsigned long)((unsigned long long)n64_part_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+					(unsigned long)((unsigned long long)n64_part_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
+				n64_part_time[i] = 0;
+			}
+			for (i = 0; i < 5; i++)
+			{
+				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ", n64_object_stage_names[i],
+					(unsigned long)((unsigned long long)n64_equipment_stage_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+					(unsigned long)((unsigned long long)n64_equipment_stage_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
+				n64_equipment_stage_time[i] = 0;
+			}
+			snprintf(phases + length, sizeof(phases) - length, "\n");
+			n64_log(phases);
+		}
+		n64_log_players();
+		memset(&n64_tick_profile, 0, sizeof(n64_tick_profile));
+		n64_tick_profile.window_start = now;
+	}
+}
+
+/* ---------- player colours (saved games/player_profile.c is left out) */
+
+static long const n64_profile_color_table[18] =
+{
+	0x00FFFFFF, 0x00000000, 0x00FE0000, 0x000201E3, 0x00707E71, 0x00FFFF01,
+	0x0000FF01, 0x00FF56B9, 0x00AB10F4, 0x0001FFFF, 0x006493ED, 0x00FF7F00,
+	0x001ECC91, 0x00006401, 0x00603814, 0x00C69C6C, 0x009D0B0E, 0x00F5999E,
+};
+
+real_rgb_color player_profile_get_rgb_color(
+	long color_index)
+{
+	real_rgb_color rgb_color;
+	long color;
+
+	color_index = PIN(color_index, 0, NUMBEROF(n64_profile_color_table) - 1);
+	color = n64_profile_color_table[color_index];
+	rgb_color.red = ((color >> 16) & 0xFF) / 255.f;
+	rgb_color.green = ((color >> 8) & 0xFF) / 255.f;
+	rgb_color.blue = (color & 0xFF) / 255.f;
+	return rgb_color;
+}
+
+word player_profile_number_of_available_primary_colors(void) { return NUMBEROF(n64_profile_color_table); }

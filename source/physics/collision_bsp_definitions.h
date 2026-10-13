@@ -1,0 +1,106 @@
+/*
+COLLISION_BSP_DEFINITIONS.H
+
+header included in hcex build.
+*/
+
+#ifndef __COLLISION_BSP_DEFINITIONS_H
+#define __COLLISION_BSP_DEFINITIONS_H
+#pragma once
+
+
+/* ---------- headers */
+
+#include "bsp2d.h"
+#include "bsp3d.h"
+
+#include "math/real_math.h"
+
+/* ---------- constants */
+
+enum
+{
+	MAXIMUM_BSP2D_REFERENCES_PER_COLLISION_BSP = 131072,
+	MAXIMUM_SURFACES_PER_COLLISION_BSP = 131072,
+	MAXIMUM_EDGES_PER_COLLISION_BSP = 262144,
+	MAXIMUM_VERTICES_PER_COLLISION_BSP = 131072,
+	MAXIMUM_VERTICES_PER_COLLISION_SURFACE = 8,
+	MAXIMUM_EDGES_PER_COLLISION_SURFACE = 8,
+};
+
+/* ---------- macros */
+
+/* ---------- structures */
+
+struct collision_surface
+{
+	long plane_designator;
+	long first_edge_index;
+	byte flags;
+	byte breakable_surface_index;
+	short material_index;
+};
+
+struct collision_edge
+{
+	long vertex_indices[2];
+	long edge_indices[2];
+	long surface_indices[2];
+};
+
+struct collision_vertex
+{
+	real_point3d point;
+	long first_edge_index;
+};
+
+typedef char collision_surface_size_assert[
+	sizeof(struct collision_surface) == 0x0C ? 1 : -1];
+typedef char collision_surface_first_edge_index_offset_assert[
+	offsetof(struct collision_surface, first_edge_index) == 0x04 ? 1 : -1];
+typedef char collision_surface_material_index_offset_assert[
+	offsetof(struct collision_surface, material_index) == 0x0A ? 1 : -1];
+typedef char collision_edge_size_assert[
+	sizeof(struct collision_edge) == 0x18 ? 1 : -1];
+typedef char collision_edge_edge_indices_offset_assert[
+	offsetof(struct collision_edge, edge_indices) == 0x08 ? 1 : -1];
+typedef char collision_edge_surface_indices_offset_assert[
+	offsetof(struct collision_edge, surface_indices) == 0x10 ? 1 : -1];
+typedef char collision_vertex_size_assert[
+	sizeof(struct collision_vertex) == 0x10 ? 1 : -1];
+typedef char collision_vertex_first_edge_index_offset_assert[
+	offsetof(struct collision_vertex, first_edge_index) == 0x0C ? 1 : -1];
+
+struct collision_bsp
+{
+	struct bsp3d bsp3d;
+	struct tag_block leaves;
+	struct tag_block bsp2d_references;
+	struct bsp2d bsp2d;
+	struct tag_block surfaces;			// collision_surface
+	struct tag_block edges;				// collision_edge
+	struct tag_block vertices;			// collision_vertex
+};
+
+struct collision_node
+{
+	char name[32];
+	short region_index;
+	short parent_node_index;
+	short next_sibling_node_index;
+	short first_child_node_index;
+	long unused[2];
+	word pad;
+	short runtime_damage_part;
+	struct tag_block bsps;
+};
+
+/* ---------- prototypes/COLLISION_BSP_DEFINITIONS.C */
+
+/* ---------- globals */
+
+extern struct tag_field global_collision_bsp_fields[9];
+
+/* ---------- public code */
+
+#endif // __COLLISION_BSP_DEFINITIONS_H

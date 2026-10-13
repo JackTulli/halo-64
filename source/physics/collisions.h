@@ -1,0 +1,200 @@
+/*
+COLLISIONS.H
+
+header included in hcex build.
+*/
+
+#ifndef __COLLISIONS_H
+#define __COLLISIONS_H
+#pragma once
+
+/* ---------- headers */
+
+#include "objects.h"
+
+/* ---------- constants */
+
+enum
+{
+	_collision_result_media = 0,
+	_collision_result_mesh,
+	_collision_result_structure,
+	_collision_result_object,
+	NUMBER_OF_COLLISION_RESULT_TYPES,
+};
+
+enum
+{
+	_collision_test_front_facing_surfaces_bit = 0,
+	_collision_test_back_facing_surfaces_bit,
+	_collision_test_ignore_two_sided_surfaces_bit,
+	_collision_test_ignore_invisible_surfaces_bit,
+	_collision_test_ignore_breakable_surfaces_bit,
+	_collision_test_structure_bit,
+	_collision_test_media_bit,
+	_collision_test_objects_bit,
+
+	_collision_test_objects_first_type_bit,
+	_collision_test_objects_bipeds_bit = _collision_test_objects_first_type_bit,
+	_collision_test_objects_vehicles_bit,
+	_collision_test_objects_weapons_bit,
+	_collision_test_objects_equipment_bit,
+	_collision_test_objects_garbage_bit,
+	_collision_test_objects_projectiles_bit,
+	_collision_test_objects_scenery_bit,
+	_collision_test_objects_machines_bit,
+	_collision_test_objects_controls_bit,
+	_collision_test_objects_light_fixtures_bit,
+	_collision_test_objects_placeholders_bit,
+	_collision_test_objects_last_type_bit,
+
+	_collision_test_try_to_keep_location_valid_bit,
+	_collision_test_skip_passthrough_bipeds_bit,
+	_collision_test_use_vehicle_physics_bit,
+
+	NUMBER_OF_COLLISION_TEST_FLAGS,
+
+	_collision_test_objects_sight_blocking_flags = 
+		FLAG(_collision_test_objects_vehicles_bit) |
+		FLAG(_collision_test_objects_scenery_bit) |
+		FLAG(_collision_test_objects_machines_bit),
+
+	_collision_test_objects_all_types_flags =
+		FLAG(_collision_test_objects_last_type_bit+1)-FLAG(_collision_test_objects_first_type_bit),
+	
+	_collision_test_environment_flags = 
+		FLAG(_collision_test_structure_bit) |
+		FLAG(_collision_test_media_bit) |
+		FLAG(_collision_test_objects_bit),
+	
+	_collision_test_for_projectiles_flags = 0x1000E9,
+	_collision_test_for_projectiles_fat_flags = 0x89,
+	_collision_test_for_line_of_sight_flags = 0xC2AD,
+	_collision_test_for_bipeds_living_flags = 0x20C3A0,
+	_collision_test_for_bipeds_passthrough_living_flags = 0xC2A0,
+	_collision_test_for_bipeds_dead_flags = 0xC0A0,
+	_collision_test_for_vehicles_flags = 0xC0A0,
+};
+
+/* ---------- macros */
+
+/* ---------- structures */
+
+struct collision_result
+{
+	short type;
+	struct location start_location;
+	struct location location;
+	real t;
+	real_point3d point;
+	real_plane3d plane;
+	short material_type;
+	word material_type_pad;
+	long object_index;
+	short region_index;
+	short node_index;
+	short bsp_index;
+	long surface_index;
+	long plane_designator;
+	byte flags;
+	byte breakable_surface_index;
+	short material_index;
+};
+
+typedef char collision_result_size_assert[
+	sizeof(struct collision_result) == 0x50 ? 1 : -1];
+typedef char collision_result_location_offset_assert[
+	offsetof(struct collision_result, location) == 0x0C ? 1 : -1];
+typedef char collision_result_point_offset_assert[
+	offsetof(struct collision_result, point) == 0x18 ? 1 : -1];
+typedef char collision_result_plane_offset_assert[
+	offsetof(struct collision_result, plane) == 0x24 ? 1 : -1];
+typedef char collision_result_material_type_offset_assert[
+	offsetof(struct collision_result, material_type) == 0x34 ? 1 : -1];
+
+/* ---------- prototypes/COLLISIONS.C */
+
+long collision_model_get_material_type(
+	struct collision_model const *model,
+	short material_index);
+boolean collision_test_point(
+	unsigned long flags,
+	real_point3d const *point,
+	long ignore_object_index);
+boolean collision_test_pill(
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	real radius,
+	long ignore_object_index,
+	struct collision_result *collision);
+boolean collision_test_pill_new(
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	real radius,
+	long ignore_object_index,
+	struct collision_result *collision);
+boolean collision_test_vector(
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	long ignore_object_index,
+	struct collision_result *collision);
+boolean collision_fix_pill(
+	unsigned long flags,
+	real_point3d const *old_position,
+	real distance,
+	real height,
+	real width,
+	long ignore_object_index,
+	real_point3d *new_position);
+short collision_move_pill(
+	unsigned long flags,
+	real_point3d const *position,
+	real_vector3d const *velocity,
+	real height,
+	real radius,
+	long ignore_object_index,
+	real_point3d *clipped_position,
+	real_vector3d *clipped_velocity,
+	short maximum_collision_count,
+	struct collision_plane *collisions);
+short collision_move_sphere(
+	unsigned long flags,
+	real_point3d const *position,
+	real_vector3d const *velocity,
+	real radius,
+	long ignore_object_index,
+	real_point3d *clipped_position,
+	real_vector3d *clipped_velocity,
+	short maximum_collision_count,
+	struct collision_plane *collisions);
+/* ---------- globals */
+
+/* ---------- public code */
+
+#ifdef COLLISIONS_EXTERNAL_COLLISION_TEST_LINE
+boolean collision_test_line(
+	unsigned long flags,
+	real_point3d const *point0,
+	real_point3d const *point1,
+	long ignore_object_index,
+	struct collision_result *collision);
+#else
+__inline boolean collision_test_line(
+	unsigned long flags,
+	real_point3d const *point0,
+	real_point3d const *point1,
+	long ignore_object_index,
+	struct collision_result *collision)
+{
+	real_vector3d vector;
+
+	vector_from_points3d(point0, point1, &vector);
+	return collision_test_vector(flags, point0, &vector, ignore_object_index, collision);
+}
+#endif
+
+
+#endif // __COLLISIONS_H

@@ -1,0 +1,50 @@
+/*
+64BIT_MATH.H
+
+header included in hcex build.
+*/
+
+#ifndef __64BIT_MATH_H
+#define __64BIT_MATH_H
+#pragma once
+
+/* ---------- constants */
+
+/* ---------- macros */
+
+/* ---------- structures */
+
+struct qword_value
+{
+	union
+	{
+		unsigned __int64 qword;
+		word words[4];
+	};
+};
+
+/* ---------- prototypes */
+
+/* ---------- globals */
+
+/* ---------- public code */
+
+void add64(
+	struct qword_value const *a,
+	struct qword_value const *b,
+	struct qword_value *result);
+void subtract64(
+	struct qword_value const *a,
+	struct qword_value const *b,
+	struct qword_value *result);
+void multiply64(
+	struct qword_value const *a,
+	struct qword_value const *b,
+	struct qword_value *result);
+void divide64(
+	struct qword_value const *numerator,
+	struct qword_value const *denominator,
+	struct qword_value *quotient,
+	struct qword_value *remainder);
+
+#endif // __64BIT_MATH_H

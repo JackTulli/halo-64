@@ -1,0 +1,85 @@
+{
+  "comment": "Nintendo 64 build inputs (tools/n64_build.py). See port/n64/README.md.",
+  "optimisation": "-O2",
+  "defines": [
+    "HALO_RELEASE",
+    "profile_dump=halo_profile_dump"
+  ],
+  "drop_defines": [],
+  "exclude_dirs": [
+    "source/ai/",
+    "source/bink/",
+    "source/bungie_net/",
+    "source/cutscene/",
+    "source/editor/",
+    "source/hs/",
+    "source/networking/",
+    "source/rasterizer/",
+    "source/render/",
+    "source/saved films/",
+    "source/saved games/",
+    "source/sound/",
+    "source/tool/"
+  ],
+  "exclude_sources": [
+    "source/bitmaps/bitmap_extract.c",
+    "source/bitmaps/bitmaps_quantitize.c",
+    "source/bitmaps/targa_file.c",
+    "source/bitmaps/tiff_file.c",
+    "source/cache/cache_files_decompress_windows.c",
+    "source/cache/cache_files_windows.c",
+    "source/cache/physical_memory_map.c",
+    "source/cache/xbox_sound_cache.c",
+    "source/cache/xbox_texture_cache.c",
+    "source/cseries/stack_walk_windows.c",
+    "source/interface/attract_mode.c",
+    "source/interface/marketing_and_strategic_business_development.c",
+    "source/interface/progress_bar.c",
+    "source/interface/ui_widget.c",
+    "source/interface/ui_widget_event_handler_functions.c",
+    "source/interface/ui_widget_game_data_input_functions.c",
+    "source/interface/ui_widget_group.c",
+    "source/interface/ui_widget_text_search_and_replace_functions.c",
+    "source/interface/virtual_keyboard.c",
+    "source/structures/structure_detail_objects.c",
+    "source/structures/structure_render.c"
+  ],
+  "linux_platform_sources": [
+    "halo_linker_common.c",
+    "msvc_wide.c"
+  ],
+  "libraries": [],
+  "source_flags": {
+    "source/shell/shell_xbox.c": "-Dmain=halo_shell_main"
+  },
+  "extra_game_sources": [
+    "source/saved games/game_state.c",
+    "source/render/render_cameras.c",
+    "source/rasterizer/rasterizer_geometry.c",
+    "source/rasterizer/rasterizer_swizzle.c",
+    "source/ai/path.c",
+    "source/ai/path_structure_bsp.c",
+    "source/ai/path_smoothing.c",
+    "source/ai/path_obstacle_avoidance.c",
+    "source/ai/path_obstacles.c"
+  ],
+  "maps": [
+    "wizard",
+    "beavercreek",
+    "bloodgulch",
+    "boardingaction",
+    "carousel",
+    "chillout",
+    "damnation",
+    "hangemhigh",
+    "longest",
+    "prisoner",
+    "putput",
+    "ratrace",
+    "sidewinder"
+  ],
+  "flags": [],
+  "ldflags": [],
+  "lto": true,
+  "small_data": 8
+}
