@@ -52,6 +52,7 @@ from PIL import Image
 
 from .bitmaps import bitmap_images, decode
 from .level import is_light_volume
+from .stages import evaluate as evaluate_stages
 from .decimate import decimate
 from .level import (LevelBuilder, MATERIAL_ALPHA_TEST, MATERIAL_BLEND, MATERIAL_CHANGE_COLOR, MATERIAL_GLOW,
                     MATERIAL_TRANSPARENT, MATERIAL_TWO_SIDED, MATERIAL_UNTEXTURED, pack_normal, unpack_normal)
@@ -109,6 +110,20 @@ def transform_point(m, p):
     return (u[0] * z + l[0] * y + f[0] * x + t[0],
             u[1] * z + l[1] * y + f[1] * x + t[1],
             u[2] * z + l[2] * y + f[2] * x + t[2])
+
+
+# the powerups' energy (stages_texture): brightened by about 1 / the blend's
+# alpha (GLOW_ALPHA, n64_render.c: 112 of 255), transparent below the floor
+POWERUP_ENERGY_GAIN = 2.25
+POWERUP_ENERGY_FLOOR = 20
+
+
+def is_powerup_energy(shader_name):
+    """the overshield's and active camouflage's energy shaders
+    (powerups\\over shield\\shaders\\over shield, powerups\\active
+    camoflage\\shaders\\active camoflage): not the ammunition's glows"""
+    name = shader_name.lower()
+    return name.startswith("powerups\\") and "ammo" not in name
 
 
 def part_size(vertices, triangles):
@@ -319,12 +334,50 @@ class ModelConverter:
             texture = self.glass_tint_texture(tag)
             if texture >= 0:
                 return texture, flags | MATERIAL_BLEND, None
+        # the powerups' glass panels, near clear in Halo (a faint blue tint,
+        # faint reflections), left out: cut-outs of their grey reflection
+        # cube, they were grey patches over the energy inside
+        if tag.group_name == "sgla" and tag.name.lower().endswith("\\powerup glass"):
+            return None, 0, None
+        # the powerups' energy (the overshield's red, active camouflage's
+        # blue: grey noise maps coloured by the shader's stages, added to the
+        # frame in Halo): its stages evaluated into a coloured texture, drawn
+        # translucent -- its first map alone was a grey cut-out
+        if tag.group_name == "sotr" and is_powerup_energy(tag.name):
+            texture = self.stages_texture(tag)
+            if texture >= 0:
+                return texture, flags | MATERIAL_BLEND, None
         texture = self.glow_texture(tag)
         # a glow of one emitted colour (a teleporter's energy) is drawn
         # translucent: solid, Sidewinder's teleporters were opaque green slabs
         if texture in self.solid_glows:
             flags |= MATERIAL_BLEND
         return texture, flags, None
+
+    def stages_texture(self, shader_tag):
+        """a transparent generic shader's stages evaluated (tools/n64/stages.py)
+        as an RGBA16 texture for a translucent glow (MATERIAL_BLEND): Halo
+        adds the colour to the frame, the N64 blends it at GLOW_ALPHA, so the
+        colour is brightened by about as much, and the texels that add next
+        to nothing are transparent (blended, they would darken); or -1"""
+        key = ("stages", shader_tag.index)
+        if key in self.masked:
+            return self.masked[key]
+        index = -1
+        img = evaluate_stages(self.map, self.defs, shader_tag, 32)
+        if img is not None:
+            rgb = img.convert("RGB").point(lambda v: min(255, int(v * POWERUP_ENERGY_GAIN)))
+            seen = [px for px in rgb.getdata() if max(px) >= POWERUP_ENERGY_FLOOR]
+            if seen:
+                # (the transparent texels take the mean colour: filtered, they
+                # would otherwise darken the edges)
+                mean = tuple(sum(px[k] for px in seen) // len(seen) for k in range(3))
+                out = Image.new("RGBA", rgb.size)
+                out.putdata([px + (255,) if max(px) >= POWERUP_ENERGY_FLOOR else mean + (0,)
+                             for px in rgb.getdata()])
+                index = self.textures.write_texture(out, shader_tag.name, fmt="RGBA16")
+        self.masked[key] = index
+        return index
 
     def glass_tint_texture(self, shader_tag):
         """a glass shader's tint seen face on (its perpendicular tint, else

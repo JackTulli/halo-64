@@ -1034,8 +1034,10 @@ static void record_model_modes(void)
 		{
 			/* the texture's colour at GLOW_ALPHA (the shade's alpha is the
 			fog), blended (the RDP cannot add: its blender wraps), tested
-			against the depth but not written */
-			rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, TEX0), (0, 0, 0, PRIM)));
+			against the depth but not written; a texel without alpha not
+			drawn (the powerups' energy is a pattern, the rest of its
+			texture adds nothing in Halo) */
+			rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, TEX0), (TEX0, 0, PRIM, 0)));
 			rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
 			rdpq_mode_zbuf(depth && debug_fog_test != 4, false);
 		}

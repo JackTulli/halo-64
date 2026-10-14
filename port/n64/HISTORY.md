@@ -5,6 +5,26 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+14 October, afternoon: the powerups in their colours (the user: they were
+all grey). The overshield and active camouflage are a metal frame
+("powerup edge"), a few glass panels and an energy orb, a transparent
+generic shader of grey noise maps (the jackal shield's) whose colour comes
+from its seven combiner stages -- red for one, blue-green for the other,
+added to the frame -- while the converter drew its first map alone as a
+grey cut-out, and the glass as a cut-out of its grey reflection cube.
+(Bungie's names are crossed: the overshield equipment uses the "active
+camoflage" model, red, and active camouflage the "over shield" model, blue-green.)
+tools/n64/stages.py evaluates a transparent generic shader's stages texel
+by texel (maps where they lie, the objects' functions 0 -- neither
+equipment exports any -- muxes on scratch alpha 0, output scale and bias,
+-1..1 clamps); models.py stages_texture makes the energy's 32x32 RGBA16 of
+it, brightened 2.25 times (the blend's 112 of 255 for Halo's addition),
+texels under 20 transparent, drawn MATERIAL_BLEND; the "powerup glass"
+panels (near clear in Halo) are left out. MODEL_MODE_BLEND now takes the
+texture's alpha times GLOW_ALPHA (the other blended textures are opaque:
+unchanged). Previews of the evaluated orbs were checked as images, not in
+ares.
+
 14 October, midday: a pause menu and named bots (the user's ask: the
 scoreboard with up to 12 players, 4 on the controllers and 8 bots; one
 button back to the main menu; bots named at random from Mario, Zelda,
