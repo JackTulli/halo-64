@@ -51,6 +51,7 @@ from pathlib import Path
 from PIL import Image
 
 from .bitmaps import bitmap_images, decode
+from .level import is_light_volume
 from .decimate import decimate
 from .level import (LevelBuilder, MATERIAL_ALPHA_TEST, MATERIAL_BLEND, MATERIAL_CHANGE_COLOR, MATERIAL_GLOW,
                     MATERIAL_TRANSPARENT, MATERIAL_TWO_SIDED, MATERIAL_UNTEXTURED, pack_normal, unpack_normal)
@@ -289,6 +290,12 @@ class ModelConverter:
         # the rest are cut-out glows of their first map
         if tag.group_name == "smet":
             return None, 0, None
+        # light volumes, left out: the spotlights' cones on Rat Race,
+        # Derelict and Damnation (car_spotlight, dam_spotlight:
+        # b40_volumelight_nolight), faint glows in Halo, drawn here as solid
+        # cones by the glow below -- triangles for nothing
+        if is_light_volume(tag.name):
+            return None, 0, None
         flags = MATERIAL_TRANSPARENT | MATERIAL_GLOW
         # the transparent shaders' own flags: "two sided" is bit 2, "numeric"
         # bit 7
@@ -303,12 +310,41 @@ class ModelConverter:
                     flags |= MATERIAL_TWO_SIDED
                 if value & 0x80 and group != "sgla":
                     return None, 0, None
+        # the needler's glass (its needles in first person, the needler
+        # ammo's crystals): the glass's first map is its reflection cube, a
+        # grey one -- the needles were grey; its colour is its tint, drawn
+        # as a translucent glow of it (the other glass, clear or faintly
+        # tinted, stays as it was)
+        if tag.group_name == "sgla" and "needler" in tag.name.lower():
+            texture = self.glass_tint_texture(tag)
+            if texture >= 0:
+                return texture, flags | MATERIAL_BLEND, None
         texture = self.glow_texture(tag)
         # a glow of one emitted colour (a teleporter's energy) is drawn
         # translucent: solid, Sidewinder's teleporters were opaque green slabs
         if texture in self.solid_glows:
             flags |= MATERIAL_BLEND
         return texture, flags, None
+
+    def glass_tint_texture(self, shader_tag):
+        """a glass shader's tint seen face on (its perpendicular tint, else
+        its background tint) as a solid glow, or -1 if it has none"""
+        key = ("glass", shader_tag.index)
+        if key in self.masked:
+            return self.masked[key]
+        index = -1
+        fields = self.f("ShaderTransparentGlass")
+        for field in ("perpendicular tint color", "background tint color"):
+            if field not in fields:
+                continue
+            tint = struct.unpack("<3f", self.map.read(shader_tag.address + fields[field], 12))
+            if max(tint) > 0.05:
+                colour = tuple(int(max(0.0, min(1.0, c)) * 255) for c in tint) + (255,)
+                index = self.textures.write_texture(Image.new("RGBA", (4, 4), colour), shader_tag.name, fmt="RGBA16")
+                self.solid_glows.add(index)
+                break
+        self.masked[key] = index
+        return index
 
     def glow_texture(self, shader_tag):
         """a transparent shader's first map as a cut-out glow (RGBA16): its

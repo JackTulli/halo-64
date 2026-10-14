@@ -409,6 +409,14 @@ def cutout_palette(img):
     return out, bytes([255] * 15 + [0])
 
 
+def is_light_volume(shader_name):
+    """a light cone or volume's shader by its name (the maps' spotlights'
+    b40_volumelight_nolight, Derelict's and Damnation's conelights): the
+    N64 leaves them out, level and models alike"""
+    name = shader_name.lower()
+    return any(k in name for k in ("volumelight", "conelight", "light cone", "lightcone", "light volume"))
+
+
 class LevelBuilder:
     def __init__(self, xmap, defs, map_name, out_dir, split_depth=None):
         self.map = xmap
@@ -743,10 +751,13 @@ class LevelBuilder:
     def dropped_shader(self, tag):
         """a transparent level shader the N64 cannot draw: Halo's additive
         ones (light strips' glow, light cones and volumes, most of them
-        black -- invisible added, a black slab blended) and glass (its
-        first map the dark reflection cube): only alpha-blended generic and
-        chicago shaders and water are drawn"""
+        black -- invisible added, a black slab blended), light volumes
+        whatever their blending (is_light_volume) and glass (its first map
+        the dark reflection cube): only alpha-blended generic and chicago
+        shaders and water are drawn"""
         group = tag.group_name
+        if is_light_volume(tag.name):
+            return True
         if group in ("sotr", "schi", "scex"):
             blend = struct.unpack("<H", self.map.read(tag.address + 44, 2))[0]
             return blend != 0
