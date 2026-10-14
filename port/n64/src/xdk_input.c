@@ -60,6 +60,9 @@ static DWORD reported_gamepads;
 static unsigned long last_poll_tick;
 
 int n64_test_input = 0;
+/* the pause menu is up (port/n64/game/n64_game.c): every gamepad reads as
+untouched, so that no player turns, fires or jumps meanwhile */
+int n64_input_blocked = 0;
 /* the N64 controller port each of the game's gamepads reads: the menu's
 players are the game's gamepads 0 to n-1 (port/n64/game/n64_game.c) */
 int n64_gamepad_ports[4] = {0, 1, 2, 3};
@@ -290,7 +293,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 		return ERROR_DEVICE_NOT_CONNECTED;
 	if (n64_test_input)
 	{
-		if (port < 2)
+		if (port < 2 && !n64_input_blocked)
 			test_gamepad(port, &state->Gamepad);
 	}
 	else
@@ -301,7 +304,8 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 		n64_input_get(n64_gamepad_ports[port], &pad);
 		if (!pad.connected)
 			return ERROR_DEVICE_NOT_CONNECTED;
-		pad_to_gamepad(n64_gamepad_ports[port], &pad, &state->Gamepad);
+		if (!n64_input_blocked)
+			pad_to_gamepad(n64_gamepad_ports[port], &pad, &state->Gamepad);
 	}
 	if (memcmp(&state->Gamepad, &controllers[port].previous, sizeof(state->Gamepad)))
 	{
@@ -318,12 +322,12 @@ DWORD WINAPI XInputSetState(HANDLE device, PXINPUT_FEEDBACK feedback)
 
 	if (feedback)
 	{
-		/* (the scripted players have no motors) */
+		/* (the scripted players have no motors; none while paused) */
 		if (port >= 0 && !n64_test_input)
 		{
 			n64_input_rumble(n64_gamepad_ports[port],
-				feedback->Rumble.wLeftMotorSpeed * (1.f / 65535.f),
-				feedback->Rumble.wRightMotorSpeed * (1.f / 65535.f));
+				n64_input_blocked ? 0.f : feedback->Rumble.wLeftMotorSpeed * (1.f / 65535.f),
+				n64_input_blocked ? 0.f : feedback->Rumble.wRightMotorSpeed * (1.f / 65535.f));
 		}
 		feedback->Header.dwStatus = ERROR_SUCCESS;
 	}

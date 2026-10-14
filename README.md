@@ -44,7 +44,11 @@ working notebook.
   score to win chosen in the menu.
 - **Bots**: up to 8 AI players at four skill levels (easy to legendary).
   They fight, pick up better weapons, find their way with Halo's own
-  pathfinding and play on teams.
+  pathfinding and play on teams. Each game they take names at random from
+  a list of about 300 Mario, Zelda, GoldenEye and Rare N64 characters.
+- **A pause menu** (START): the game stops and a scoreboard shows every
+  player and bot (up to 12) with score, kills and deaths, and a button
+  back to the main menu.
 - **Firefight**: Grunts, Jackals and Elites attack in waves on the
   multiplayer maps; 1 to 4 players, shared lives, four difficulties.
 - **Halo's HUD** (shields, health, ammunition, motion sensor, messages,
@@ -162,6 +166,11 @@ the score and the bots (left and right for how many, A for their skill),
 and START. **FIREFIGHT** is the same with a difficulty instead of a game
 type. After the scores, A goes back to the menu.
 
+During a game, any player's **START** pauses it: the scoreboard (every
+player and bot, the best first, the leading team's first in a team game)
+with one button, **MAIN MENU** (A), back to the title. START or B goes on
+with the game.
+
 ### Controls
 
 The standard scheme (each player can choose another on the CONTROLS page):
@@ -179,6 +188,7 @@ The standard scheme (each player can choose another on the CONTROLS page):
 | D-pad down | crouch |
 | D-pad left | zoom |
 | D-pad right | switch grenades |
+| START | pause: the scoreboard, and MAIN MENU |
 
 The other schemes:
 

@@ -641,6 +641,12 @@ void render_frame_present(
 	(void)screenshot_index;
 	(void)bitmap;
 	render_frame_begin();
+	{
+		/* START: the pause menu, over the frame (n64_game.c) */
+		extern void n64_game_pause_frame(void);
+
+		n64_game_pause_frame();
+	}
 	n64_render_frame_end();
 	frame_begun = FALSE;
 	if (vertical_blank_callback)

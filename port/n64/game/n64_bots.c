@@ -115,6 +115,67 @@ static short const grenade_chance[4] = { 2, 4, 6, 8 }; /* in 1000 a tick */
 purple, cyan, cobalt, brown, teal, sage, salmon, tan, maroon, white) */
 static short const bot_colors[MAXIMUM_BOTS] = { 7, 11, 8, 9, 10, 14, 12, 13, 17, 15, 16, 0 };
 
+/* their names, a different one each, drawn at random each game (the
+user's ask: Mario's, Zelda's, GoldenEye's and Rare's other N64 characters'):
+up to 11 letters, the most a player's name holds */
+static char const *const bot_names[] =
+{
+	/* Super Mario (Super Mario 64, Paper Mario, Mario Kart, Mario Party ...) */
+	"Mario", "Luigi", "Peach", "Daisy", "Toad", "Toadette", "Toadsworth", "Yoshi", "Birdo",
+	"Bowser", "Bowser Jr.", "Wario", "Waluigi", "Donkey Kong", "Rosalina", "Pauline", "Koopa",
+	"Goomba", "Boo", "King Boo", "Shy Guy", "Lakitu", "Spiny", "Hammer Bro", "Kamek",
+	"Magikoopa", "Bob-omb", "Chain Chomp", "Thwomp", "Whomp", "Wiggler", "Blooper",
+	"Dry Bones", "Petey", "Ludwig", "Lemmy", "Larry", "Wendy", "Iggy", "Morton", "Roy Koopa",
+	"Kooper", "Goombario", "Bombette", "Parakarry", "Watt", "Sushie", "Lakilester", "Mips",
+	"Ukiki", "Klepto", "Eyerok", "Cappy", "Bullet Bill", "Fawful", "Geno", "Mallow", "Smithy",
+	"Tatanga",
+	/* The Legend of Zelda (Ocarina of Time, Majora's Mask ...) */
+	"Link", "Zelda", "Ganondorf", "Ganon", "Navi", "Epona", "Impa", "Saria", "Darunia", "Ruto",
+	"Nabooru", "Rauru", "Sheik", "Malon", "Talon", "Ingo", "Mido", "Kaepora", "Skull Kid",
+	"Tingle", "Tatl", "Tael", "Majora", "Kafei", "Anju", "Dampe", "Biggoron", "Beedle",
+	"Koume", "Kotake", "Twinrova", "Volvagia", "Gohma", "Dodongo", "Morpha", "Bongo Bongo",
+	"Agahnim", "Vaati", "Midna", "Zant", "Tetra", "Medli", "Makar", "Komali", "Ghirahim",
+	"Groose", "Revali", "Urbosa", "Daruk", "Mipha", "Kass", "Darmani", "Mikau", "Odolwa",
+	"Goht", "Gyorg", "Twinmold", "Romani", "Cremia", "Happy Mask", "Gorman", "Grog",
+	"King Zora",
+	/* GoldenEye 007 (and the Bond villains its multiplayer had) */
+	"Bond", "James Bond", "Natalya", "Trevelyan", "Alec", "Xenia", "Onatopp", "Ourumov",
+	"Boris", "Grishenko", "Mishkin", "Valentin", "Zukovsky", "Jack Wade", "Dr. Doak", "Jaws",
+	"Oddjob", "Mayday", "Samedi", "Scaramanga", "Nick Nack", "Dr. No", "Goldfinger", "Blofeld",
+	"Tee Hee", "Moneypenny", "Q", "Stromberg", "Drax", "Zorin", "Kananga",
+	/* Perfect Dark */
+	"Joanna Dark", "Joanna", "Velvet Dark", "Elvis", "Carrington", "Cassandra", "Trent",
+	"Mr. Blonde", "Jonathan", "Dr. Caroll", "Skedar", "Maian", "Grimshaw", "Foster",
+	/* Banjo-Kazooie, Banjo-Tooie */
+	"Banjo", "Kazooie", "Mumbo Jumbo", "Mumbo", "Gruntilda", "Bottles", "Tooty", "Klungo",
+	"Jamjars", "Jinjo", "Brentilda", "Mingella", "Blobbelda", "Humba Wumba", "Mr. Vile",
+	"Boggy", "Wozza", "Gobi", "Clanker", "Blubber", "Chimpy", "Conga", "Nipper", "Tiptup",
+	"Mr. Patch", "Loggo", "Terry", "Jingaling", "Gnawty", "Tanktup", "Mr. Fit", "Dingpot",
+	"Grublin", "Jolly Roger", "Canary Mary", "Lord Woo", "Salty Joe", "Weldar",
+	/* Donkey Kong 64, Donkey Kong Country */
+	"Diddy Kong", "Diddy", "Lanky Kong", "Tiny Kong", "Chunky Kong", "Cranky Kong",
+	"Funky Kong", "Candy Kong", "Wrinkly", "Dixie Kong", "Kiddy Kong", "K. Rool",
+	"King K Rool", "Squawks", "Snide", "Troff", "Scoff", "Klaptrap", "Kasplat", "Kritter",
+	"Krusha", "Kosha", "Army Dillo", "Dogadon", "Mad Jack", "Puftoss", "Kremling", "Klump",
+	"Necky", "Rambi", "Enguarde", "Squitter", "Expresso", "Krow", "Kudgel", "K. Lumsy",
+	"Rattly",
+	/* Conker's Bad Fur Day */
+	"Conker", "Berri", "Panther", "Rodent", "Franky", "Birdy", "Gregg", "Batula", "Don Weaso",
+	"Kriplespac", "Haybot", "Tediz", "Buga", "Marvin", "Fire Imp",
+	/* Jet Force Gemini */
+	"Juno", "Vela", "Lupus", "Mizar", "Floyd", "King Jeff",
+	/* Diddy Kong Racing */
+	"Timber", "Pipsy", "Bumper", "Krunch", "Drumstick", "T.T.", "Wizpig", "Taj", "Bubbler",
+	"Smokey", "Tricky", "Bluey",
+	/* Killer Instinct */
+	"Jago", "Fulgore", "Orchid", "Spinal", "Sabrewulf", "Glacius", "Cinder", "Riptor",
+	"T.J. Combo", "Thunder", "Kim Wu", "Tusk", "Maya", "Gargos", "Eyedol",
+	/* more of Rare's */
+	"Sabreman", "Battletoad", "Rash", "Zitz", "Pimple", "Dark Queen", "Kameo", "Cooper",
+	"Rattle", "Roll", "Jetman", "Mr. Pants",
+};
+#define NUMBER_OF_BOT_NAMES ((short)(sizeof(bot_names) / sizeof(bot_names[0])))
+
 /* ---------- state */
 
 struct bot
@@ -147,6 +208,7 @@ struct bot
 	struct path_result path;
 	real_point3d path_goal;
 	short direct_wait; /* > 0: no straight walk tested (plan_path) */
+	short name_index; /* its name, of bot_names */
 };
 
 static struct
@@ -452,11 +514,24 @@ void n64_bots_create_players(
 		struct network_player network_player;
 		struct bot *bot = &bots.bots[bots.created];
 		char name[12];
-		short c, team = team_count[0] <= team_count[1] ? 0 : 1;
+		short c, name_index = 0, team = team_count[0] <= team_count[1] ? 0 : 1;
 		long player_index;
 
 		csmemset(&network_player, 0, sizeof(network_player));
-		snprintf(name, sizeof(name), "Bot %d", i + 1);
+		/* (a name none of the bots made so far has) */
+		for (;;)
+		{
+			short pick = (short)(bot_random() % (unsigned long)NUMBER_OF_BOT_NAMES), j;
+
+			for (j = 0; j < bots.created && bots.bots[j].name_index != pick; j++)
+				;
+			if (j == bots.created)
+			{
+				name_index = pick;
+				break;
+			}
+		}
+		snprintf(name, sizeof(name), "%s", bot_names[name_index]);
 		for (c = 0; name[c] && c < 11; c++)
 			network_player.name[c] = (wchar_t)name[c];
 		/* (in a team game the team's colour, as the menu gives the players) */
@@ -471,6 +546,7 @@ void n64_bots_create_players(
 			break;
 		team_count[team]++;
 		csmemset(bot, 0, sizeof(*bot));
+		bot->name_index = name_index;
 		bot->player_index = player_index;
 		bot->unit_index = NONE;
 		bot->target_unit = NONE;
@@ -757,8 +833,10 @@ static void think(
 	if (bot->unit_index != player->unit_index)
 	{
 		long player_index = bot->player_index;
+		short name_index = bot->name_index;
 
 		csmemset(bot, 0, sizeof(*bot));
+		bot->name_index = name_index;
 		bot->player_index = player_index;
 		bot->unit_index = player->unit_index;
 		bot->target_unit = NONE;

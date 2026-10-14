@@ -3388,6 +3388,16 @@ boolean game_engine_running(
 	return running;
 }
 
+#ifdef HALO_N64
+/* the N64's pause menu (port/n64/game/n64_game.c): 0 while the game is
+played, 1 to 3 once it has ended (no pause then) */
+long n64_game_engine_postgame_state(
+	void)
+{
+	return game_engine_globals.postgame_state;
+}
+#endif
+
 boolean game_engine_force_single_screen(
 	void)
 {

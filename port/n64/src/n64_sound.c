@@ -59,6 +59,8 @@ static struct
 	int bank;
 	unsigned long *offsets;
 	int file_count;
+	/* the game paused (n64_sound_pause): its voices silent */
+	int paused;
 	struct
 	{
 		wav64_t *wav;
@@ -306,6 +308,8 @@ static void voice_volume(int slot, float volume, float pan)
 		left *= 1.0f - 0.7f * (pan > 1.0f ? 1.0f : pan);
 	else if (pan < 0.0f)
 		right *= 1.0f + 0.7f * (pan < -1.0f ? -1.0f : pan);
+	if (sound.paused)
+		left = right = 0.0f;
 	mixer_ch_set_vol(FIRST_VOICE + slot, left, right);
 }
 
@@ -445,6 +449,22 @@ void n64_voice_stop_all(void)
 		return;
 	for (int i = 0; i < VOICE_COUNT; i++)
 		mixer_ch_stop(FIRST_VOICE + i);
+}
+
+/* The pause menu's: the voices go on playing (a looping sound where it
+was when the game goes on; a shot's sound runs out), unheard; a volume set
+meanwhile is kept for after */
+void n64_sound_pause(int paused)
+{
+	paused = paused != 0;
+	if (!sound.ready || paused == sound.paused)
+		return;
+	sound.paused = paused;
+	for (int i = 0; i < VOICE_COUNT; i++)
+	{
+		if (sound.voices[i].wav)
+			voice_volume(i, sound.voices[i].volume, sound.voices[i].pan);
+	}
 }
 
 void n64_sound_statistics(unsigned long *started, unsigned long *stolen, unsigned long *refused)

@@ -40,6 +40,7 @@ smaller) */
 #define BLIP_SIZE 16
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 /* uploads of a sprite's rectangle kept as recordings (below) */
 #define UPLOAD_BLOCKS 48
 /* the heap a view's recording is begun with (n64_render_make_room): its
@@ -870,4 +871,184 @@ void n64_hud_blip(float x, float y, float width, float height, unsigned long col
 	}
 	rdpq_texture_rectangle_scaled(TILE0, x - width * 0.5f, y - height * 0.5f,
 		x - width * 0.5f + BLIP_SIZE * scale_x, y - height * 0.5f + BLIP_SIZE * scale_y, 0, 0, BLIP_SIZE, BLIP_SIZE);
+}
+
+/* ---------- the pause menu (n64.h): its scoreboard over the frame, in the
+menu's colours, laid out to its rows' text (Halo's small font, every row's
+name measured), squeezed with the anamorphic picture as the HUD is */
+
+#define PAUSE_BACKDROP 0x70000000u
+#define PAUSE_PANEL 0xC0001028u
+#define PAUSE_FRAME 0xFF8CC0FFu
+#define PAUSE_CHOSEN 0xA0306CB8u
+#define PAUSE_HUMAN 0x40306CB8u
+#define PAUSE_TEXT 0xFF8CC0FFu
+#define PAUSE_BRIGHT 0xFFFFFFFFu
+#define PAUSE_DIM 0xC05880B0u
+
+static const unsigned long pause_team_colors[2] = { 0xFFD03838u, 0xFF3C6CE0u };
+
+static float pause_middle, pause_squeeze;
+
+static float pause_x(float x)
+{
+	return pause_middle + (x - pause_middle) * pause_squeeze;
+}
+
+static void pause_fill(float x0, float y0, float x1, float y1, unsigned long argb)
+{
+	rdpq_sync_pipe();
+	rdpq_set_mode_standard();
+	rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+	rdpq_set_prim_color(RGBA32((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, argb >> 24));
+	rdpq_fill_rectangle(x0, y0, x1, y1);
+}
+
+static void pause_box(float x0, int y0, float x1, int y1, unsigned long argb)
+{
+	pause_fill(pause_x(x0), y0, pause_x(x1), y1, argb);
+}
+
+/* a frame's four sides (not overlapping: they are blended) */
+static void pause_frame(float x0, int y0, float x1, int y1, int line, unsigned long argb)
+{
+	pause_box(x0, y0, x1, y0 + line, argb);
+	pause_box(x0, y1 - line, x1, y1, argb);
+	pause_box(x0, y0 + line, x0 + line, y1 - line, argb);
+	pause_box(x1 - line, y0 + line, x1, y1 - line, argb);
+}
+
+enum { PAUSE_LEFT, PAUSE_RIGHT, PAUSE_CENTRE };
+
+/* text from x, ending at x or about x; y its baseline */
+static void pause_text(float x, int y, int align, unsigned long color, const char *text)
+{
+	float width = (float)n64_text_width(hud_font, text);
+
+	if (align == PAUSE_RIGHT)
+		x -= width;
+	else if (align == PAUSE_CENTRE)
+		x -= width * 0.5f;
+	n64_text_draw_scaled(hud_font, pause_x(x), y, color, text, pause_squeeze);
+}
+
+void n64_hud_pause(const struct n64_pause_screen *screen)
+{
+	int width = n64_render_screen_width(), height = n64_render_screen_height();
+	/* (480 lines: two pixels where 240 have one; the font stays itself) */
+	int unit = height >= 480 ? 2 : 1;
+	int pad = 6 * unit, gap = 8 * unit;
+	int rows = screen->row_count, cap, pitch, total;
+	int name_width, score_width, kills_width, deaths_width, marker, button_width, inner;
+	int box_height, top, y, i;
+	float x0, x1, name_x, score_x, kills_x, deaths_x;
+	char number[12];
+
+	if (!hud_font_loaded)
+	{
+		hud_font = n64_font_load("small");
+		hud_font_loaded = 1;
+	}
+	if (rows > N64_SCORE_ROWS)
+		rows = N64_SCORE_ROWS;
+	hud.mode = _mode_none;
+	hud.tmem_pixels = NULL;
+	pause_middle = width * 0.5f;
+	pause_squeeze = n64_render_hud_squeeze();
+	rdpq_sync_pipe();
+	rdpq_set_scissor(0, 0, width, height);
+	/* the game behind, darkened (the whole picture, wide or not) */
+	pause_fill(0, 0, width, height, PAUSE_BACKDROP);
+
+	/* the columns as wide as their widest text: the names (11 letters at
+	most), the numbers under their headings */
+	cap = n64_font_cap_height(hud_font);
+	name_width = n64_text_width(hud_font, "NAME");
+	score_width = n64_text_width(hud_font, "SCORE");
+	kills_width = n64_text_width(hud_font, "KILLS");
+	deaths_width = n64_text_width(hud_font, "DEATHS");
+	for (i = 0; i < rows; i++)
+	{
+		const struct n64_score_row *row = &screen->rows[i];
+
+		name_width = MAX(name_width, n64_text_width(hud_font, row->name));
+		score_width = MAX(score_width, n64_text_width(hud_font, row->score));
+		snprintf(number, sizeof(number), "%d", row->kills);
+		kills_width = MAX(kills_width, n64_text_width(hud_font, number));
+		snprintf(number, sizeof(number), "%d", row->deaths);
+		deaths_width = MAX(deaths_width, n64_text_width(hud_font, number));
+	}
+	marker = cap + 3 * unit;
+	button_width = n64_text_width(hud_font, "MAIN MENU") + 2 * pad;
+	inner = marker + name_width + 3 * gap + score_width + kills_width + deaths_width;
+	inner = MAX(inner, button_width + gap + n64_text_width(hud_font, "START  RESUME"));
+	inner = MAX(inner, n64_text_width(hud_font, screen->note ? screen->note : ""));
+	x0 = (width - inner) * 0.5f - pad;
+	x1 = (width + inner) * 0.5f + pad;
+
+	/* from the top: the title (and its note), the columns' headings over a
+	rule, a row each (every row's text in capitals: rows a cap height and a
+	little apart), the button; closer rows if they don't fit */
+	pitch = cap + 2 * unit;
+	for (;;)
+	{
+		box_height = pitch + 4 * unit;
+		total = pad + pitch * (screen->note ? 2 : 1) + 2 * unit + pitch + unit + 3 * unit + rows * pitch +
+			4 * unit + box_height + pad;
+		if (total <= height - 4 * unit || pitch <= cap + 1)
+			break;
+		pitch--;
+	}
+	top = (height - total) / 2;
+	pause_box(x0, top, x1, top + total, PAUSE_PANEL);
+	pause_frame(x0, top, x1, top + total, unit, PAUSE_FRAME);
+	y = top + pad;
+	pause_text(pause_middle, y + cap, PAUSE_CENTRE, PAUSE_BRIGHT, screen->title);
+	y += pitch;
+	if (screen->note)
+	{
+		pause_text(pause_middle, y + cap, PAUSE_CENTRE, PAUSE_TEXT, screen->note);
+		y += pitch;
+	}
+	y += 2 * unit;
+
+	name_x = x0 + pad + marker;
+	score_x = name_x + name_width + gap + score_width;
+	kills_x = score_x + gap + kills_width;
+	deaths_x = kills_x + gap + deaths_width;
+	pause_text(name_x, y + cap, PAUSE_LEFT, PAUSE_DIM, "NAME");
+	pause_text(score_x, y + cap, PAUSE_RIGHT, PAUSE_DIM, "SCORE");
+	pause_text(kills_x, y + cap, PAUSE_RIGHT, PAUSE_DIM, "KILLS");
+	pause_text(deaths_x, y + cap, PAUSE_RIGHT, PAUSE_DIM, "DEATHS");
+	y += pitch;
+	pause_box(x0 + pad, y, x1 - pad, y + unit, 0x808CC0FFu);
+	y += unit + 3 * unit;
+
+	for (i = 0; i < rows; i++)
+	{
+		const struct n64_score_row *row = &screen->rows[i];
+		unsigned long color = row->human ? PAUSE_BRIGHT : PAUSE_TEXT;
+
+		/* (the players on the controllers on a band of their own) */
+		if (row->human)
+			pause_box(x0 + pad - 2 * unit, y - unit, x1 - pad + 2 * unit, y + pitch - unit, PAUSE_HUMAN);
+		if (row->team >= 0)
+			pause_box(x0 + pad, y, x0 + pad + cap, y + cap, pause_team_colors[row->team & 1]);
+		pause_text(name_x, y + cap, PAUSE_LEFT, color, row->name);
+		pause_text(score_x, y + cap, PAUSE_RIGHT, color, row->score);
+		snprintf(number, sizeof(number), "%d", row->kills);
+		pause_text(kills_x, y + cap, PAUSE_RIGHT, color, number);
+		snprintf(number, sizeof(number), "%d", row->deaths);
+		pause_text(deaths_x, y + cap, PAUSE_RIGHT, color, number);
+		y += pitch;
+	}
+	y += 4 * unit;
+
+	/* the one button, chosen (A); START goes back to the game */
+	pause_box(x0 + pad, y, x0 + pad + button_width, y + box_height, PAUSE_CHOSEN);
+	pause_frame(x0 + pad, y, x0 + pad + button_width, y + box_height, unit, PAUSE_FRAME);
+	pause_text(x0 + pad + button_width * 0.5f, y + (box_height + cap) / 2, PAUSE_CENTRE, PAUSE_BRIGHT, "MAIN MENU");
+	pause_text(x1 - pad, y + (box_height + cap) / 2, PAUSE_RIGHT, PAUSE_DIM, "START  RESUME");
+	hud.tmem_pixels = NULL;
 }

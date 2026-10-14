@@ -102,6 +102,18 @@ int n64_font_ascent(const struct n64_font *font)
 	return font ? font->ascent : 8;
 }
 
+/* how far a capital rises above the baseline (H's), less than the ascent,
+which leaves room for accents */
+int n64_font_cap_height(const struct n64_font *font)
+{
+	const struct glyph *h;
+
+	if (!font)
+		return 8;
+	h = &font->glyphs['H' - FIRST_CHARACTER];
+	return h->present && h->origin_y > 0 ? h->origin_y : font->ascent;
+}
+
 int n64_text_width(const struct n64_font *font, const char *text)
 {
 	int width = 0;

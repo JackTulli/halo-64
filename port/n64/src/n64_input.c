@@ -23,9 +23,37 @@ page (n64_controls.no_rumble).
 
 struct n64_controls n64_controls[4];
 
+/* START, A and B pressed since n64_input_take_pressed last asked, each port
+(the pause menu's: a frame at 10 fps is longer than a quick press) */
+static unsigned short pressed_latch[4];
+
 void n64_input_poll(void)
 {
 	joypad_poll();
+	for (int port = 0; port < 4; port++)
+	{
+		joypad_buttons_t pressed;
+
+		if (!joypad_is_connected(port))
+			continue;
+		pressed = joypad_get_buttons_pressed(port);
+		if (pressed.start) pressed_latch[port] |= N64_BUTTON_START;
+		if (pressed.a) pressed_latch[port] |= N64_BUTTON_A;
+		if (pressed.b) pressed_latch[port] |= N64_BUTTON_B;
+	}
+}
+
+unsigned short n64_input_take_pressed(int port)
+{
+	unsigned short pressed = pressed_latch[port & 3];
+
+	pressed_latch[port & 3] = 0;
+	return pressed;
+}
+
+void n64_input_clear_pressed(void)
+{
+	memset(pressed_latch, 0, sizeof(pressed_latch));
 }
 
 void n64_input_get(int port, struct n64_pad *pad)

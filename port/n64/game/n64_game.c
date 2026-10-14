@@ -54,6 +54,8 @@ void n64_firefight_stop(void);
 int n64_firefight_active(void);
 void n64_firefight_tick(void);
 int n64_firefight_results(char lines[][64], int maximum);
+int n64_firefight_status(char *text, int size);
+long n64_game_engine_postgame_state(void);
 
 /* ---------- a game straight from the start, for testing */
 
@@ -202,11 +204,15 @@ void n64_game_cycle_frame(
 
 /* ---------- the menu's games (main.c's main_menu_load, HALO_N64) */
 
-#define N64_RESULT_LINES 9
+/* the winner, then up to 12 players (4 on the controllers, 8 bots) */
+#define N64_RESULT_LINES 13
 
 static char n64_result_text[N64_RESULT_LINES][64];
 static char const *n64_result_lines[N64_RESULT_LINES];
 static int n64_result_count;
+
+/* the pause menu's MAIN MENU chosen: no results, the menu's title */
+static boolean n64_quit_to_title;
 
 static void n64_ascii(
 	char *out,
@@ -220,17 +226,107 @@ static void n64_ascii(
 	out[i] = 0;
 }
 
-/* the game that just ended, for the menu: who won, then each player's
-score, kills and deaths */
-void n64_game_results(
-	void)
+/* ---------- the scoreboard (the pause menu's, the results') */
+
+/* a row ahead of another: in a team game the leading team's first (red
+when tied), then by score, kills and fewest deaths */
+static boolean n64_score_ahead(
+	struct n64_score_row const *row,
+	long score,
+	struct n64_score_row const *other,
+	long other_score,
+	short first_team)
+{
+	if (row->team >= 0 && other->team >= 0 && row->team != other->team)
+		return row->team == first_team;
+	if (score != other_score)
+		return score > other_score;
+	if (row->kills != other->kills)
+		return row->kills > other->kills;
+	return row->deaths < other->deaths;
+}
+
+/* every player and bot of the game as the scoreboard's rows, sorted (and
+their players, if asked) */
+static int n64_score_rows(
+	struct n64_score_row *rows,
+	long *player_indices,
+	int maximum)
 {
 	struct data_iterator iterator;
 	struct player_datum *player;
+	long scores[N64_SCORE_ROWS];
+	boolean teams;
+	short first_team;
+	int count = 0;
+
+	if (!game_engine)
+		return 0;
+	teams = game_engine_has_teams();
+	first_team = teams && game_engine->get_player_score &&
+		game_engine_get_team_score(1) > game_engine_get_team_score(0) ? 1 : 0;
+	if (maximum > N64_SCORE_ROWS)
+		maximum = N64_SCORE_ROWS;
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL && count < maximum)
+	{
+		long player_index = iterator.datum_index;
+		struct n64_score_row row;
+		wchar_t score_text[32];
+		long score;
+		int at;
+
+		csmemset(&row, 0, sizeof(row));
+		/* the players on the controllers by their port, as the menu
+		names them; the bots by their names (n64_bots.c) */
+		row.human = player->local_player_index >= 0 && player->local_player_index < 4;
+		if (row.human)
+			snprintf(row.name, sizeof(row.name), "PLAYER %d", n64_choice.ports[player->local_player_index] + 1);
+		else
+			n64_ascii(row.name, sizeof(row.name), player->name);
+		csmemset(score_text, 0, sizeof(score_text));
+		if (game_engine->format_player_score)
+			game_engine->format_player_score(player_index, score_text);
+		n64_ascii(row.score, sizeof(row.score), score_text);
+		row.kills = player->statistics.kills[0];
+		row.deaths = player->statistics.deaths;
+		row.team = teams ? (signed char)(player->team_index & 1) : -1;
+		score = game_engine->get_player_score ?
+			game_engine->get_player_score(player_index, _get_score_individual) : row.kills;
+		for (at = count; at > 0 && n64_score_ahead(&row, score, &rows[at - 1], scores[at - 1], first_team); at--)
+		{
+			rows[at] = rows[at - 1];
+			scores[at] = scores[at - 1];
+			if (player_indices)
+				player_indices[at] = player_indices[at - 1];
+		}
+		rows[at] = row;
+		scores[at] = score;
+		if (player_indices)
+			player_indices[at] = player_index;
+		count++;
+	}
+	return count;
+}
+
+/* the game that just ended, for the menu: who won, then each player's
+score, kills and deaths, the best first */
+void n64_game_results(
+	void)
+{
+	struct n64_score_row rows[N64_SCORE_ROWS];
+	long player_indices[N64_SCORE_ROWS];
 	char winner[48] = "";
-	int count = 1;
+	int count = 1, row_count, i;
 
 	n64_result_count = 0;
+	if (n64_quit_to_title)
+	{
+		/* (left from the pause menu: straight to the menu's title) */
+		n64_quit_to_title = FALSE;
+		n64_choice.to_title = TRUE;
+		return;
+	}
 	if (n64_firefight_active())
 	{
 		n64_result_count = n64_firefight_results(n64_result_text, 6);
@@ -240,40 +336,111 @@ void n64_game_results(
 	}
 	if (!game_engine)
 		return;
-	data_iterator_new(&iterator, player_data);
-	while ((player = data_iterator_next(&iterator)) != NULL && count < N64_RESULT_LINES)
+	row_count = n64_score_rows(rows, player_indices, N64_RESULT_LINES - 1);
+	for (i = 0; i < row_count; i++)
 	{
-		long player_index = iterator.datum_index;
-		int port = player->local_player_index >= 0 && player->local_player_index < 4 ?
-			n64_choice.ports[player->local_player_index] : 0;
-		int bot = n64_bot_number(player_index);
-		char who[16];
-		wchar_t score[32];
-		char score_text[32];
-
-		if (bot >= 0)
-			snprintf(who, sizeof(who), "BOT %d", bot + 1);
-		else
-			snprintf(who, sizeof(who), "PLAYER %d", port + 1);
-		csmemset(score, 0, sizeof(score));
-		if (game_engine->format_player_score)
-			game_engine->format_player_score(player_index, score);
-		n64_ascii(score_text, sizeof(score_text), score);
 		snprintf(n64_result_text[count], sizeof(n64_result_text[count]), "%s   %s   (%d KILLS, %d DEATHS)",
-			who, score_text, player->statistics.kills[0], player->statistics.deaths);
+			rows[i].name, rows[i].score, rows[i].kills, rows[i].deaths);
 		n64_result_lines[count] = n64_result_text[count];
 		count++;
-		if (game_engine_did_player_win(player_index) == TRUE && !winner[0])
+		if (game_engine_did_player_win(player_indices[i]) == TRUE && !winner[0])
 		{
 			if (n64_menu_game_teams(n64_choice.game_type))
-				snprintf(winner, sizeof(winner), "%s TEAM WINS", player->team_index ? "BLUE" : "RED");
+				snprintf(winner, sizeof(winner), "%s TEAM WINS", rows[i].team ? "BLUE" : "RED");
 			else
-				snprintf(winner, sizeof(winner), "%s WINS", who);
+				snprintf(winner, sizeof(winner), "%s WINS", rows[i].name);
 		}
 	}
 	snprintf(n64_result_text[0], sizeof(n64_result_text[0]), "%s", winner[0] ? winner : "TIE GAME");
 	n64_result_lines[0] = n64_result_text[0];
 	n64_result_count = count;
+}
+
+/* ---------- the pause menu: START during a game stops its clock and shows
+the scoreboard over it (n64_hud_pause), every player and bot; START (or B)
+goes back to the game, A takes MAIN MENU, its one button. Meanwhile the
+game's gamepads read as untouched, its sounds are silent and the Rumble
+Paks still; the frames go on being drawn (main_loop draws a paused game) */
+
+static boolean n64_paused;
+
+static void n64_pause_end(
+	void)
+{
+	n64_paused = FALSE;
+	game_time_set_paused(FALSE);
+	n64_sound_pause(0);
+}
+
+/* render_frame_present's (n64_render_game.c), each frame before it is shown */
+void n64_game_pause_frame(
+	void)
+{
+	struct n64_score_row rows[N64_SCORE_ROWS];
+	struct n64_pause_screen screen;
+	char note[64];
+	unsigned short pressed = 0;
+	int port;
+
+	n64_input_poll();
+	for (port = 0; port < 4; port++)
+		pressed |= n64_input_take_pressed(port);
+	if (!n64_paused)
+	{
+		/* (a game being played: not its end, the results coming) */
+		if (!(pressed & N64_BUTTON_START) || n64_input_blocked || !game_in_progress() ||
+			!game_engine_running() || n64_game_engine_postgame_state() != 0 || game_time_get() < 3)
+		{
+			return;
+		}
+		n64_paused = TRUE;
+		game_time_set_paused(TRUE);
+		n64_input_blocked = 1;
+		n64_sound_pause(1);
+		pressed = 0;
+	}
+	else if (pressed & (N64_BUTTON_START | N64_BUTTON_B))
+	{
+		n64_pause_end();
+		n64_input_blocked = 0;
+		return;
+	}
+	else if (pressed & N64_BUTTON_A)
+	{
+		/* (the gamepads stay untouched until the menu: the press is not
+		also a jump) */
+		n64_pause_end();
+		n64_quit_to_title = TRUE;
+		main_goto_main_menu();
+		return;
+	}
+	for (port = 0; port < 4; port++)
+		n64_input_rumble(port, 0.f, 0.f);
+
+	screen.title = "PAUSED";
+	screen.note = NULL;
+	if (n64_firefight_status(note, sizeof(note)))
+		screen.note = note;
+	else if (game_engine && game_engine_has_teams() && game_engine->get_player_score)
+	{
+		long red = game_engine_get_team_score(0), blue = game_engine_get_team_score(1);
+		long engine = game_engine_get_variant()->game_engine_index;
+
+		/* (kills and flags as numbers; times and laps only who leads) */
+		if (engine == game_engine_slayer || engine == game_engine_ctf)
+			snprintf(note, sizeof(note), "RED %ld   BLUE %ld", red, blue);
+		else
+			snprintf(note, sizeof(note), "%s", red == blue ? "TEAMS TIED" : red > blue ? "RED TEAM LEADS" : "BLUE TEAM LEADS");
+		screen.note = note;
+	}
+	else
+	{
+		snprintf(note, sizeof(note), "%s", n64_menu_map_name(n64_choice.map));
+		screen.note = note;
+	}
+	screen.rows = rows;
+	screen.row_count = n64_score_rows(rows, NULL, N64_SCORE_ROWS);
+	n64_hud_pause(&screen);
 }
 
 /* the menu, then the game it chose */
@@ -285,6 +452,12 @@ void n64_game_menu(
 	n64_result_count = 0;
 	n64_menu_run(&n64_choice, n64_result_lines, count);
 	n64_game_start();
+	/* (nothing of the last game's pause carried into this one) */
+	n64_paused = FALSE;
+	n64_quit_to_title = FALSE;
+	n64_input_blocked = 0;
+	n64_input_clear_pressed();
+	n64_sound_pause(0);
 }
 
 /* game_engine_postspawn_player_update's (game_engine.c, HALO_N64): in a

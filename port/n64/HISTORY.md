@@ -5,6 +5,50 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+14 October, midday: a pause menu and named bots (the user's ask: the
+scoreboard with up to 12 players, 4 on the controllers and 8 bots; one
+button back to the main menu; bots named at random from Mario, Zelda,
+GoldenEye and Rare N64 characters).
+
+Pause. Halo's own pause UI is not in the N64 build, so START reached the
+game and did nothing. n64_game.c's n64_game_pause_frame, run by
+render_frame_present before each frame is shown: any port's START (the
+presses gathered at every n64_input_poll, n64_input_take_pressed, so a
+quick press between two slow frames is not lost) stops the game's clock
+with game_time_set_paused -- main_loop goes on drawing a paused game, and
+Halo's own code already holds the rumble, the motion sensor and player
+control while paused. Meanwhile the game's gamepads read as untouched
+(xdk_input.c n64_input_blocked), the game's voices are muted
+(n64_sound_pause: they play on unheard, their volumes kept) and the Rumble
+Paks are off. No pause at a game's end (n64_game_engine_postgame_state,
+game_engine.c) or in its first ticks. START or B goes back to the game;
+A, MAIN MENU, unpauses and calls main_goto_main_menu with
+n64_quit_to_title set: n64_game_results gives no results and the menu
+opens on its title (n64_menu_choice.to_title; FIREFIGHT chosen if that
+was the game), the players still joined. The gamepads stay untouched until
+the next game starts, so the A is not also a jump.
+
+Scoreboard. n64_score_rows: every player (the controllers' as PLAYER n,
+the bots by name) with Halo's own formatted score
+(game_engine->format_player_score), kills and deaths, sorted by the
+leading team (team games), then score (get_player_score), kills, fewest
+deaths. n64_hud_pause (n64_hud.c) draws it over the frame: the picture
+darkened, a panel in the menu's colours with the title, a note (team
+scores in Slayer and CTF, who leads in the timed games, Firefight's wave
+line, else the map), the columns sized to their widest text, a team square
+per row, the controllers' players on a band, then MAIN MENU and "START
+RESUME". Halo's small font: its capitals are 10 pixels (the 14-pixel
+ascent leaves room for accents, n64_font_cap_height), so rows 12 apart fit
+12 rows in 240 lines; the widest bot name (HUMBA WUMBA, 110 pixels) makes
+a 299-pixel panel. Squeezed like the HUD with the anamorphic setting. The
+results after a game use the same rows (sorted now, the bots by name, up
+to 12: a taller panel past 8).
+
+Bot names. n64_bots.c bot_names: 302 names of 11 letters at most (a
+player's name holds 11), each bot a different one drawn with the bots'
+random number (seeded at each game's start); kept across a bot's lives
+(bot.name_index). Halo shows them in its kill messages too.
+
 14 October, overnight (the user asked for a night of optimisations and
 fixes, every map tested each time; runs in ares on a hidden display, the
 scripts in WSL's /root/n64/overnight): numbers are ares's, one player

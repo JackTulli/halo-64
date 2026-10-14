@@ -126,6 +126,14 @@ void n64_particles_release(void);
 
 void n64_input_poll(void);
 void n64_input_get(int port, struct n64_pad *pad);
+/* the buttons pressed on a port since this was last asked (N64_BUTTON_*:
+START, A and B, gathered at every n64_input_poll, so that a press between
+two frames is not missed), and all of them forgotten */
+unsigned short n64_input_take_pressed(int port);
+void n64_input_clear_pressed(void);
+/* the game's gamepads read as untouched (xdk_input.c): while the pause
+menu is up */
+extern int n64_input_blocked;
 /* the Rumble Pak (n64_input.c): a frame's motor speeds (0-1, Halo's heavy
 and light motors), from XInputSetState; whether a port has one; the
 menu's buzz (frames) and its frame (every motor off but that) */
@@ -293,6 +301,9 @@ void n64_voice_stop(long voice);
 /* FALSE once it has ended, been stopped or been stolen */
 int n64_voice_playing(long voice);
 void n64_voice_stop_all(void);
+/* the game's voices silent while the game is paused (they play on
+unheard), and heard again */
+void n64_sound_pause(int paused);
 void n64_sound_statistics(unsigned long *started, unsigned long *stolen, unsigned long *refused);
 
 /* ---------- particles (n64_particles.c): what effects make, simply */
@@ -395,6 +406,7 @@ struct n64_font *n64_font_load(const char *name);
 void n64_font_free(struct n64_font *font);
 int n64_font_height(const struct n64_font *font);
 int n64_font_ascent(const struct n64_font *font);
+int n64_font_cap_height(const struct n64_font *font);
 int n64_text_width(const struct n64_font *font, const char *text);
 /* text with its baseline at y; color 0xAARRGGBB */
 void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long color, const char *text);
@@ -421,6 +433,9 @@ struct n64_menu_choice
 	skill (0 easy to 3 legendary) */
 	int bots;
 	int bot_skill;
+	/* the next menu opens on its title (the pause menu's MAIN MENU), not
+	the game's setup; cleared there */
+	int to_title;
 };
 
 /* runs the menu until a game is chosen (after a game, its results first:
@@ -485,6 +500,30 @@ void n64_hud_quad(const struct n64_hud_quad *quad);
 void n64_hud_text(int x, int y, unsigned long color, const char *text);
 /* a motion sensor blip: centre in pixels, position and size in pixels */
 void n64_hud_blip(float x, float y, float width, float height, unsigned long color);
+
+/* the pause menu (START in a game, port/n64/game/n64_game.c): the
+scoreboard over the frame's views, every player and bot a row, sorted --
+and its one button, MAIN MENU */
+struct n64_score_row
+{
+	char name[16];
+	char score[12];
+	short kills, deaths;
+	signed char team; /* 0 red, 1 blue; -1 without teams */
+	unsigned char human;
+};
+
+#define N64_SCORE_ROWS 16
+
+struct n64_pause_screen
+{
+	const char *title;
+	const char *note; /* under the title: the teams' scores, Firefight's wave */
+	const struct n64_score_row *rows;
+	int row_count;
+};
+
+void n64_hud_pause(const struct n64_pause_screen *screen);
 
 #ifdef __cplusplus
 }

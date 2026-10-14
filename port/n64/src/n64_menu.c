@@ -1152,19 +1152,24 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 
 static void draw_results(const char *const *lines, int count)
 {
-	panel(112, 92, 528, 400, 0xC0001028);
-	frame_line(112, 92, 528, 400, FRAME_COLOR);
-	text_centered(menu.large, SCREEN_W / 2, 136, TEXT_BRIGHT, "GAME OVER");
-	panel(152, 150, 488, 150 + LINE, 0x808CC0FF);
-	/* (the winner, then each player and bot: up to eight) */
-	for (int i = 0; i < count && i < 9; i++)
+	/* (more than eight players and bots: a taller panel, from higher up) */
+	int top = count > 9 ? 52 : 92, bottom = count > 9 ? 440 : 400;
+
+	panel(112, top, 528, bottom, 0xC0001028);
+	frame_line(112, top, 528, bottom, FRAME_COLOR);
+	text_centered(menu.large, SCREEN_W / 2, top + 44, TEXT_BRIGHT, "GAME OVER");
+	panel(152, top + 58, 488, top + 58 + LINE, 0x808CC0FF);
+	/* (the winner, then each player and bot: up to twelve) */
+	for (int i = 0; i < count && i < 13; i++)
 	{
 		if (i == 0)
-			text_centered(menu.large, SCREEN_W / 2, 186, TEXT_BRIGHT, lines[i]);
+			text_centered(menu.large, SCREEN_W / 2, top + 94, TEXT_BRIGHT, lines[i]);
+		else if (count > 9)
+			text_centered(menu.small, SCREEN_W / 2, top + 108 + i * 20, TEXT_COLOR, lines[i]);
 		else
 			text_centered(menu.small, SCREEN_W / 2, 200 + i * (count > 6 ? 20 : 26), TEXT_COLOR, lines[i]);
 	}
-	text_centered(menu.small, SCREEN_W / 2, 388, TEXT_DIM, "PRESS A");
+	text_centered(menu.small, SCREEN_W / 2, bottom - 12, TEXT_DIM, "PRESS A");
 }
 
 /* the loading screen: on the menu's screen, and once more on the game's
@@ -1186,8 +1191,13 @@ static void draw_loading(const struct n64_menu_choice *c)
 int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int result_count)
 {
 	static int score_index = -1;
-	int screen = result_count > 0 ? SCREEN_RESULTS : (c->player_count ? SCREEN_SETUP : SCREEN_TITLE);
+	int screen = result_count > 0 ? SCREEN_RESULTS : (c->player_count && !c->to_title ? SCREEN_SETUP : SCREEN_TITLE);
 	int row = ROW_GAME_TYPE, item = TITLE_MULTIPLAYER, setting = SETTING_CHUNKY;
+
+	/* (left from the pause menu: the title, the players still joined) */
+	if (c->to_title && c->firefight)
+		item = TITLE_FIREFIGHT;
+	c->to_title = 0;
 
 	/* the menu at 640x480 interlaced (the game's display given back at the
 	start of a game) */
