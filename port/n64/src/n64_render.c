@@ -488,13 +488,36 @@ interlaced (n64_render_set_menu_display) */
 
 /* the game's: three 320x240 buffers (and the z-buffer, which libdragon
 puts at the top of the heap the first time a frame asks for it) */
-#define GAME_DISPLAY_BYTES (3 * 320 * 240 * 2)
+#define GAME_DISPLAY_BYTES (4 * 320 * 240 * 2 + 1024) /* three buffers and the z-buffer */
 
+/* the game's 320x240 z-buffer, its own, made with the buffers (below) */
+static surface_t game_zbuf;
+
+/* The game's display, and its z-buffer made right after its three buffers,
+in the same place (the menu keeps that place for them: GAME_DISPLAY_BYTES).
+libdragon's display_get_zbuf took it from the heap's top or, failing that,
+the heap -- and failing both gave a z-buffer at address 0 without a word:
+the loading frame after the menu, drawn while the menu's things (its logo,
+its scene) were still in memory, cleared and drew its depth over the first
+150 KB of RAM, the game's code (every map then crashed in the first
+function it ran from there, bipeds_dispose_from_old_map) */
 static void game_display_init(void)
 {
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
+	if (game_zbuf.buffer)
+		surface_free(&game_zbuf);
+	game_zbuf = surface_alloc(FMT_RGBA16, 320, 240);
 	screen_width = 320;
 	screen_height = 240;
+}
+
+/* the display closed, the game's z-buffer with it */
+static void game_display_close(void)
+{
+	display_close();
+	if (game_zbuf.buffer)
+		surface_free(&game_zbuf);
+	game_zbuf = (surface_t){0};
 }
 
 /* while the menu runs, the place the game's buffers had, kept for them (so
@@ -524,7 +547,7 @@ void n64_render_set_menu_display(int on)
 	(the last frame given to the display) */
 	rspq_wait();
 	/* (frees the buffers and the z-buffer; black until the next frame) */
-	display_close();
+	game_display_close();
 	if (menu_zbuf.buffer)
 		surface_free(&menu_zbuf);
 	menu_zbuf = (surface_t){0};
@@ -681,7 +704,7 @@ static void try_high_detail(void)
 
 	tried_high_detail = 1;
 	rspq_wait();
-	display_close();
+	game_display_close();
 	drop_all_models();
 	/* (the models' memory freed: their releases were deferred) */
 	rspq_wait();
@@ -1565,7 +1588,12 @@ void n64_render_frame_begin(void)
 	renderer.surface = display_get();
 	render_wait_us = TICKS_TO_US(TICKS_READ() - before_display);
 	render_start_ticks = TICKS_READ();
-	frame_zbuf = menu_zbuf.buffer ? &menu_zbuf : display_get_zbuf();
+	frame_zbuf = menu_zbuf.buffer ? &menu_zbuf :
+		display_mode == DISPLAY_GAME && game_zbuf.buffer ? &game_zbuf : display_get_zbuf();
+	/* (a z-buffer without memory is one at address 0, over the code: stop
+	and say so instead) */
+	if (!frame_zbuf || !frame_zbuf->buffer)
+		n64_fatal("no memory for the z-buffer");
 	rdpq_attach(renderer.surface, frame_zbuf);
 	t3d_frame_start();
 	/* past the draw distance: the fog's colour */
