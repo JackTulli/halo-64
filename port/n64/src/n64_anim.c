@@ -45,6 +45,23 @@ static struct
 	int last_hit;
 } anim;
 
+/* the cache's chunks, in one block made at boot (n64_main.c): made at the
+first map's load, 48 blocks of 4 KB sat above its image, kept for good, and
+split the heap a later, bigger map needs in one piece (Sidewinder's
+2.8 MB: "no memory for the map") */
+void n64_animation_reserve(void)
+{
+	uint8_t *block;
+
+	if (anim.chunks[0].data)
+		return;
+	block = memalign(16, CHUNK_COUNT * CHUNK_SIZE);
+	if (!block)
+		return;
+	for (int i = 0; i < CHUNK_COUNT; i++)
+		anim.chunks[i].data = block + i * CHUNK_SIZE;
+}
+
 void n64_animation_open(const char *map_name)
 {
 	char path[64], line[32];

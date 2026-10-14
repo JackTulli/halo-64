@@ -40,6 +40,30 @@ unsigned long long n64_microseconds(void);
 void n64_wait_microseconds(unsigned long microseconds);
 /* memory left on the heap, and the largest free block */
 unsigned long n64_heap_free(void);
+/* x / 255 for x up to 255 x 255, exactly, in four simple operations (GCC
+makes a division by 255 a 64-bit multiply and shifts: the multiply and its
+result's wait are most of a dozen cycles) */
+static inline unsigned n64_div255(unsigned x)
+{
+	return (x + 1 + (x >> 8)) >> 8;
+}
+unsigned long n64_heap_describe(char *text, unsigned long size);
+int n64_heap_has(unsigned long size);
+void n64_heap_dump(const char *tag, const void *start);
+/* the maps' home (n64_game.c) and the display buffers lent from it
+(n64_main.c, n64_render.c) */
+void n64_map_home_reserve(void);
+void *n64_map_home_free_part(unsigned long *size);
+void n64_display_set_home(void *start, unsigned long size);
+void n64_display_lend(void *start, unsigned long size);
+int n64_render_home_in_use(void);
+int n64_render_view_models_hidden(void);
+/* a reserve for libdragon's uncached blocks (n64_main.c) */
+#define N64_UNCACHED_RESERVE (64 * 1024)
+int n64_uncached_reserve_take(void);
+void n64_uncached_reserve_settle(void);
+int n64_uncached_reserve_missing(void);
+int n64_uncached_reserve_spent(void);
 
 /* TRUE when the cartridge carries the file rom:/<name> (debug switches,
 port.json "flags"); looked up once per name */
@@ -91,8 +115,24 @@ enum
 	N64_BUTTON_C_RIGHT = 1 << 13,
 };
 
+/* what is kept from the first map on, made at boot, at the heap's bottom
+(n64_main.c): the animation cache, the HUD's meters, blip and font, the
+explosions' fireball */
+void n64_animation_reserve(void);
+void n64_hud_reserve(void);
+void n64_particles_reserve(void);
+void n64_hud_release(void);
+void n64_particles_release(void);
+
 void n64_input_poll(void);
 void n64_input_get(int port, struct n64_pad *pad);
+/* the Rumble Pak (n64_input.c): a frame's motor speeds (0-1, Halo's heavy
+and light motors), from XInputSetState; whether a port has one; the
+menu's buzz (frames) and its frame (every motor off but that) */
+void n64_input_rumble(int port, float left, float right);
+int n64_input_rumble_present(int port);
+void n64_input_rumble_pulse(int port, int frames);
+void n64_input_rumble_menu_frame(void);
 
 /* each controller port's controls, chosen on the menu's CONTROLS page and
 read by xdk_input.c (all zero: the standard scheme, crouch held, look not
@@ -115,9 +155,11 @@ struct n64_controls
 	/* look speeds, the stick's and the C buttons': the menu's 1-10 less 5
 	(all zero: 5), 1.25 times faster a step */
 	signed char stick_speed, c_speed;
-	/* (xdk_input.c's) the toggled crouch, and the buttons last read */
+	/* (xdk_input.c's) the toggled crouch */
 	unsigned char crouched;
-	unsigned char pad;
+	/* the Rumble Pak turned off on the CONTROLS page (n64_input.c) */
+	unsigned char no_rumble;
+	/* (xdk_input.c's) the buttons last read */
 	unsigned short last_buttons;
 };
 
@@ -212,11 +254,12 @@ that size), or back to the game's 320x240: the old display's memory freed
 first, the game's buffers where they were before the menu */
 void n64_render_set_menu_display(int on);
 int n64_render_screen_width(void);
-/* Settings: the game in 480i where the map leaves room (640x480, else
-512x480, else 320x240 and a word on the screen), tried once the map is in;
-the anamorphic picture (16:9 squeezed into 4:3: a wider view across, the
+/* Settings: the game in high detail -- 480i where the map leaves room
+(640x480, else 512x480), else 640x240 at 240p (Perfect Dark's high
+resolution), else 320x240 and a word on the screen -- tried once the map is
+in; the anamorphic picture (16:9 squeezed into 4:3: a wider view across, the
 HUD squeezed about each view's middle) */
-void n64_render_set_480i(int on);
+void n64_render_set_high_detail(int on);
 void n64_render_set_anamorphic(int on);
 /* the N64's pixels for one of the game's units (it lays the views and the
 HUD out on a 640x480 screen), across and down; the HUD's squeeze */
@@ -229,6 +272,7 @@ int n64_render_screen_height(void);
 sounds (port/n64/game/n64_sound_game.c) */
 
 void n64_sound_initialize(void);
+void n64_sound_reserve(void);
 /* the mixer fed (every frame's end, and between ticks and views) and the
 music's next track started */
 void n64_sound_poll(void);
@@ -383,6 +427,7 @@ struct n64_menu_choice
 lines of text); the choice keeps what was chosen last time */
 int n64_menu_run(struct n64_menu_choice *choice, const char *const *results, int result_count);
 const char *n64_menu_map_folder(int map);
+int n64_menu_map_count(void);
 const char *n64_menu_map_name(int map);
 int n64_menu_map_from_folder(const char *folder);
 const char *n64_menu_game_variant(int game_type);
@@ -429,6 +474,9 @@ void n64_hud_forget_recordings(void);
 from the cache for it; 0 if it can't be made (n64_render.c; not while
 recording a block) */
 int n64_render_make_room(unsigned long size, int count);
+/* TERRAIN DETAIL (SETTINGS): 0 full, 1 no overlays, 2 nearest mipmaps, 3
+none (n64_render.c) */
+void n64_render_set_terrain_detail(int mode);
 /* the HUD's inset from each view's edges in pixels, for a television's
 overscan (Settings: HUD INSET; port.json flag "debug_hud_inset=<pixels>") */
 void n64_hud_set_inset(int pixels);

@@ -380,8 +380,14 @@ void n64_first_person_model_draw(
 {
 	static unsigned char const no_permutations[MAXIMUM_REGIONS_PER_OBJECT] = { 0 };
 	struct n64_object n64;
+	/* (measuring, "debug_fp_nodraw": the first-person weapon posed but not
+	drawn -- its animation's cost apart from its drawing's) */
+	static int no_draw = -1;
 
-	if (model_index == NONE)
+	if (no_draw < 0)
+		no_draw = n64_debug_flag("debug_fp_nodraw");
+	/* (Settings: VIEW MODEL "off in split", with three or four views) */
+	if (model_index == NONE || no_draw || n64_render_view_models_hidden())
 		return;
 	if (!first_person_begun)
 	{
@@ -433,6 +439,11 @@ void render_frame(
 	(void)screenshot_page_index;
 	(void)screenshot_index;
 	(void)screenshot_bitmap;
+	{
+		extern void n64_game_cycle_frame(void);
+
+		n64_game_cycle_frame();
+	}
 	render.frame_index++;
 	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
 	{

@@ -93,6 +93,44 @@ void n64_sound_initialize(void)
 	sound.ready = 1;
 }
 
+/* What the sound keeps for good, made at boot (n64_main.c): the mixer
+gives a channel its ring (a 4.6 KB VADPCM buffer it streams through) the
+first time it plays and keeps it, and the bank's file stays open. Made with
+a game's first sounds and the title's first music they stayed wherever the
+heap had room then -- in the middle of the memory the menu and the next
+level wanted (a "debug_heap_dump" cycle found them). A sound of the bank is
+started and stopped on each voice's channel, and the title's music on its
+own, so that the rings are made now, at the heap's bottom */
+void n64_sound_reserve(void)
+{
+	wav64_t *wav;
+
+	n64_sound_initialize();
+	if (sound.bank < 0)
+		sound.bank = open("rom:/snd/sounds.bank", O_RDONLY);
+	if (sound.bank >= 0)
+	{
+		lseek(sound.bank, 0, SEEK_SET);
+		wav = wav64_loadfd(sound.bank, "sfx", &(wav64_loadparms_t){ .streaming_mode = WAV64_STREAMING_FULL });
+		if (wav)
+		{
+			for (int i = 0; i < VOICE_COUNT; i++)
+			{
+				wav64_play(wav, FIRST_VOICE + i);
+				mixer_ch_stop(FIRST_VOICE + i);
+			}
+			wav64_close(wav);
+		}
+	}
+	wav = wav64_load("rom:/music/title_in.wav64", &(wav64_loadparms_t){ .streaming_mode = WAV64_STREAMING_FULL });
+	if (wav)
+	{
+		wav64_play(wav, MUSIC_CHANNEL);
+		mixer_ch_stop(MUSIC_CHANNEL);
+		wav64_close(wav);
+	}
+}
+
 static void music_play(const char *path)
 {
 	if (sound.track)
@@ -118,6 +156,9 @@ void n64_music_start(void)
 	n64_sound_initialize();
 	if (sound.music_on)
 		return;
+	/* (the loops' order: the sound is made at boot, at much the same tick
+	each time) */
+	sound.random ^= TICKS_READ();
 	sound.music_on = 1;
 	sound.looping = 0;
 	sound.last_version = -1;

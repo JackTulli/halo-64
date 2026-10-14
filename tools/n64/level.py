@@ -105,6 +105,10 @@ WATER_DEFAULT_COLOUR = (0.12, 0.16, 0.45)
 # brightening saturated bright rock, whose colour then went grey)
 NATURAL_MATERIAL_TYPES = {0, 1, 2, 3, 4, 29, 31}
 OVERLAY_MEAN = 0.88
+# the overlay's darkest level (of 15): never black -- consoles showed black
+# smudges on these passes away from the eye; whatever goes wrong there, a
+# texel darkens by a third at most
+OVERLAY_FLOOR_LEVEL = 5
 
 # natural terrain: an environment shader with detail maps whose base map
 # spans at least TERRAIN_REPEAT_UNITS world units a repeat -- a colour map
@@ -725,7 +729,7 @@ class LevelBuilder:
         top = max(values) or 1
         mean = sum(values) / len(values) / top
         cut = min(1.0, (1.0 - OVERLAY_MEAN) / (1.0 - mean)) if mean < 1.0 else 1.0
-        grey = grey.point(lambda v: int(round(round(15 * (1.0 - cut * (1.0 - v / top))) * 17)))
+        grey = grey.point(lambda v: max(OVERLAY_FLOOR_LEVEL, int(round(15 * (1.0 - cut * (1.0 - v / top))))) * 17)
         levels = list(grey.getdata())
         index = len(self.textures)
         work_dir = self.out_dir / "tex" / f".{self.map_name}"

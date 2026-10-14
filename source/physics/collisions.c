@@ -336,8 +336,13 @@ boolean collision_test_vector(
 		extern volatile int n64_profile_zone;
 		extern unsigned long n64_ray_callers[16][2];
 		int n64_debug_flag(char const *name);
+		/* (looked up once: asked for on every ray it cost more than the
+		rest of this test) */
+		static int ray_callers = -1;
 
-		if (n64_debug_flag("debug_ray_callers"))
+		if (ray_callers < 0)
+			ray_callers = n64_debug_flag("debug_ray_callers") != 0;
+		if (ray_callers)
 		{
 			unsigned long caller = (unsigned long)__builtin_return_address(0);
 			int i;

@@ -22,14 +22,15 @@ units" everything here is drawn in), already lit.
 #include "n64.h"
 
 /* the screen: the game's 320x240, or the menu's 640x480 interlaced
-(n64_render_set_menu_display), or the game's in 480i (Settings: DISPLAY
-480I, where the map leaves room: 640x480 or 512x480, n64_render_set_480i) */
+(n64_render_set_menu_display), or the game's in high detail (Settings: 3D
+RESOLUTION HIGH DETAIL: 480i where the map leaves room, else 640x240 at
+240p, n64_render_set_high_detail) */
 static int screen_width = 320, screen_height = 240;
-enum { DISPLAY_GAME, DISPLAY_MENU, DISPLAY_GAME_480I };
+enum { DISPLAY_GAME, DISPLAY_MENU, DISPLAY_GAME_HIGH };
 static int display_mode = DISPLAY_GAME;
-/* 480i as asked, tried for this game yet, the frames left to say it
+/* high detail as asked, tried for this game yet, the frames left to say it
 didn't fit; the anamorphic picture (Settings: WIDESCREEN) */
-static int want_480i, tried_480i, notice_480i_frames;
+static int want_high_detail, tried_high_detail, notice_high_detail_frames;
 static int anamorphic;
 #define SCREEN_WIDTH screen_width
 #define SCREEN_HEIGHT screen_height
@@ -349,10 +350,22 @@ static void load_models(const char *map_name);
 static void flush_draws(void);
 
 static int view_model_quality;
+/* Settings: VIEW MODEL "OFF IN SPLIT": the low models, not drawn with three
+or four views. Drawing them was the dearest part of a four-player frame
+(Blood Gulch in ares: 16.8 fps drawn, 24.6 posed but not drawn) -- posed
+all the same: the game takes a local player's shots from its first-person
+weapon's markers */
+static int view_models_hidden_in_split;
 
 void n64_render_set_view_model_quality(int quality)
 {
-	view_model_quality = quality < 0 ? 0 : quality > 2 ? 2 : quality;
+	view_models_hidden_in_split = quality == 3;
+	view_model_quality = quality < 0 || quality == 3 ? 0 : quality > 2 ? 2 : quality;
+}
+
+int n64_render_view_models_hidden(void)
+{
+	return view_models_hidden_in_split && renderer.view_total > 2;
 }
 
 /* the game's views (objects.c: with three or four, every biped's pose
@@ -488,6 +501,18 @@ static void game_display_init(void)
 that a game's heap is laid out as it was) */
 static void *game_display_place;
 
+/* the menu's z-buffer, its own (libdragon's display_get_zbuf would take it
+from the heap's top): with its buffers in the maps' home, which has no map
+while the menu runs (n64_display_lend) */
+static surface_t menu_zbuf;
+/* display buffers in the maps' home now: no map may go there */
+static int home_in_use;
+
+int n64_render_home_in_use(void)
+{
+	return home_in_use;
+}
+
 void n64_render_set_menu_display(int on)
 {
 	heap_stats_t heap;
@@ -500,13 +525,42 @@ void n64_render_set_menu_display(int on)
 	rspq_wait();
 	/* (frees the buffers and the z-buffer; black until the next frame) */
 	display_close();
+	if (menu_zbuf.buffer)
+		surface_free(&menu_zbuf);
+	menu_zbuf = (surface_t){0};
+	home_in_use = 0;
 	if (on)
 	{
+		unsigned long home_size;
+		void *home = n64_map_home_free_part(&home_size);
+
 		game_display_place = malloc(GAME_DISPLAY_BYTES);
 		/* each frame shown as both fields (INTERLACE_FULL: a whole 640x480
-		picture), two buffers: 2 x 600 KB, and the z-buffer's 600 KB */
+		picture), two buffers: 2 x 600 KB, and the z-buffer's 600 KB -- in
+		the maps' home, which has no map now, else from the heap. (From the
+		heap they and what the menu made after them left blocks in the
+		middle of the memory the next map wanted: Sidewinder's, Blood
+		Gulch's.) */
+		if (home && home_size >= 3 * (640 * 480 * 2 + 64))
+		{
+			n64_display_lend(home, home_size);
+			home_in_use = 1;
+		}
 		display_init((resolution_t){.width = 640, .height = 480, .interlaced = INTERLACE_FULL}, DEPTH_16_BPP, 2,
 			GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
+		if (home_in_use)
+		{
+			menu_zbuf = surface_alloc(FMT_RGBA16, 640, 480);
+			n64_display_lend(NULL, 0);
+		}
+		{
+			/* (testing, "debug_heap_dump": what the game left behind, past
+			the maps' home) */
+			unsigned long home_size;
+			char *home = n64_map_home_free_part(&home_size);
+
+			n64_heap_dump("at the menu", home ? home + home_size : NULL);
+		}
 		screen_width = 640;
 		screen_height = 480;
 		display_mode = DISPLAY_MENU;
@@ -519,8 +573,9 @@ void n64_render_set_menu_display(int on)
 		game_display_place = NULL;
 		game_display_init();
 		display_mode = DISPLAY_GAME;
-		/* (480i, if asked, once the map is in: n64_render_frame_begin) */
-		tried_480i = 0;
+		/* (high detail, if asked, once the map is in:
+		n64_render_frame_begin) */
+		tried_high_detail = 0;
 	}
 	sys_get_heap_stats(&heap);
 	debugf("n64: display %dx%d%s, heap %d KB free\n", screen_width, screen_height, on ? " interlaced" : "",
@@ -540,11 +595,11 @@ int n64_render_screen_width(void)
 	return screen_width;
 }
 
-/* ---------- 480i in the game, and the anamorphic picture */
+/* ---------- high detail in the game, and the anamorphic picture */
 
-void n64_render_set_480i(int on)
+void n64_render_set_high_detail(int on)
 {
-	want_480i = on != 0;
+	want_high_detail = on != 0;
 }
 
 void n64_render_set_anamorphic(int on)
@@ -582,62 +637,95 @@ static float display_pixel_aspect(void)
 }
 
 static void drop_all_models(void);
+static void record_model_modes(void);
 
-/* room for the display (two buffers and the z-buffer, 16 bits a pixel) and
-the models the game draws (the cache is emptied first: it refills) */
+/* room for count blocks of the display (its buffers and z-buffer, 16 bits
+a pixel) and the models the game draws (the cache is emptied first: it
+refills) */
 #define ROOM_FOR_MODELS (448 * 1024)
 
-static int display_fits(int width, int height)
+static int display_fits(int width, int height, int count)
 {
 	unsigned long size = (unsigned long)width * height * 2 + 256;
-	void *blocks[4] = {NULL, NULL, NULL, NULL};
+	void *blocks[5] = {NULL, NULL, NULL, NULL, NULL};
 	int fits = 1;
 
-	for (int i = 0; i < 3 && fits; i++)
+	count = count < 4 ? count : 4;
+	for (int i = 0; i < count && fits; i++)
 		fits = (blocks[i] = malloc(size)) != NULL;
 	if (fits)
-		fits = (blocks[3] = malloc(ROOM_FOR_MODELS)) != NULL;
-	for (int i = 0; i < 4; i++)
+		fits = (blocks[4] = malloc(ROOM_FOR_MODELS)) != NULL;
+	for (int i = 0; i < 5; i++)
 		free(blocks[i]);
 	return fits;
 }
 
-/* the game's display in 480i: 640x480 where the map leaves room (two
-buffers of 600 KB and the z-buffer's 600 KB, where 320x240 took 600 KB in
-all), else 512x480 (480 KB each, stretched to the same 4:3), else 320x240
-as it was and a word on the screen. Blood Gulch and Sidewinder leave room
-for neither. Each frame is shown as both fields (INTERLACE_FULL, as the
-menu) */
-static void try_480i(void)
+/* The game's display in high detail, the first of these the map leaves
+room for: 480i -- 640x480 (two buffers of 600 KB and the z-buffer's 600
+KB, where 320x240 took 600 KB in all), else 512x480 (480 KB each,
+stretched to the same 4:3), each frame shown as both fields (INTERLACE_FULL,
+as the menu) -- else, as Perfect Dark's high resolution, 640x240 at 240p:
+twice the pixels across, the same lines (300 KB each, three buffers or
+two), else 520x240, else 480x240; else 320x240 as it was and a word on the
+screen. */
+static void try_high_detail(void)
 {
-	static const short sizes[2][2] = {{640, 480}, {512, 480}};
+	static const struct
+	{
+		short width, height, interlaced, buffers;
+	} modes[] = {
+		{640, 480, 1, 2}, {512, 480, 1, 2}, {640, 240, 0, 3}, {640, 240, 0, 2},
+		{520, 240, 0, 3}, {520, 240, 0, 2}, {480, 240, 0, 3}, {480, 240, 0, 2},
+	};
 	heap_stats_t heap;
 
-	tried_480i = 1;
+	tried_high_detail = 1;
 	rspq_wait();
 	display_close();
 	drop_all_models();
 	/* (the models' memory freed: their releases were deferred) */
 	rspq_wait();
-	for (int i = 0; i < 2; i++)
+	for (int i = 0; i < (int)(sizeof(modes) / sizeof(modes[0])); i++)
 	{
-		if (display_fits(sizes[i][0], sizes[i][1]))
+		/* the buffers in the maps' home past the map's image, as many as
+		fit there (a smaller map leaves room), the rest and the z-buffer
+		from the heap */
+		unsigned long surface = (unsigned long)modes[i].width * modes[i].height * 2 + 64, home_size;
+		void *home = n64_map_home_free_part(&home_size);
+		int in_home = home ? (int)(home_size / surface) : 0;
+
+		if (in_home > modes[i].buffers)
+			in_home = modes[i].buffers;
+		if (display_fits(modes[i].width, modes[i].height, modes[i].buffers + 1 - in_home))
 		{
-			display_init((resolution_t){.width = sizes[i][0], .height = sizes[i][1], .interlaced = INTERLACE_FULL},
-				DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
-			screen_width = sizes[i][0];
-			screen_height = sizes[i][1];
-			display_mode = DISPLAY_GAME_480I;
+			if (in_home)
+			{
+				n64_display_lend(home, home_size);
+				home_in_use = 1;
+			}
+			display_init((resolution_t){.width = modes[i].width, .height = modes[i].height,
+				.interlaced = modes[i].interlaced ? INTERLACE_FULL : INTERLACE_OFF},
+				DEPTH_16_BPP, modes[i].buffers, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
+			n64_display_lend(NULL, 0);
+			screen_width = modes[i].width;
+			screen_height = modes[i].height;
+			display_mode = DISPLAY_GAME_HIGH;
 			n64_hud_forget_recordings();
 			sys_get_heap_stats(&heap);
-			debugf("n64: game display %dx%d interlaced, heap %d KB free\n", screen_width, screen_height,
-				heap.free / 1024);
+			debugf("n64: high detail %dx%d%s, %d buffers (%d in the maps' home), heap %d KB free\n", screen_width,
+				screen_height, modes[i].interlaced ? " interlaced" : "", modes[i].buffers, in_home, heap.free / 1024);
 			return;
 		}
 	}
 	game_display_init();
-	notice_480i_frames = 150;
-	debugf("n64: no room for 480i on this map\n");
+	notice_high_detail_frames = 150;
+	{
+		/* (what the heap had: its free pieces) */
+		char pieces[200];
+
+		n64_heap_describe(pieces, sizeof(pieces));
+		debugf("n64: no room for high detail on this map (heap %lu KB free: %s)\n", n64_heap_free() / 1024, pieces);
+	}
 }
 
 int n64_render_screen_height(void)
@@ -656,6 +744,11 @@ void n64_render_initialize(void)
 	renderer.clear_color = RGBA32(96, 112, 140, 0xFF);
 	game_display_init();
 	rdpq_init();
+	/* (port.json flag "debug_rdpq": libdragon's RDP validator, every command
+	the RDP runs checked on the CPU -- slow -- and the first that would hang
+	a console stopped on, disassembled) */
+	if (n64_debug_flag("debug_rdpq"))
+		rdpq_debug_start();
 	t3d_init((T3DInitParams){});
 	for (int i = 0; i < MAXIMUM_VIEWS; i++)
 	{
@@ -690,6 +783,11 @@ void n64_render_initialize(void)
 	for (int i = 0; i < FRAMES_IN_FLIGHT; i++)
 		renderer.matrices[i] = malloc_uncached(sizeof(T3DMat4FP) * MATRICES_PER_FRAME);
 	rdpq_text_register_font(FONT_BUILTIN_DEBUG_MONO, rdpq_font_load_builtin(FONT_BUILTIN_DEBUG_MONO));
+	/* the models' render modes, recorded now (the debug flags read): made
+	with the first model a game loaded they stayed for good wherever the
+	heap had room then, in the middle of what the next map and the menu
+	wanted */
+	record_model_modes();
 	{
 		FILE *flag;
 
@@ -786,7 +884,8 @@ static void drop_model(int index)
 	loaded->blocks = NULL;
 }
 
-/* every model in the cache dropped (the RSP done with them: try_480i) */
+/* every model in the cache dropped (the RSP done with them:
+try_high_detail) */
 static void drop_all_models(void)
 {
 	if (!models.header || !models.loaded)
@@ -1416,22 +1515,62 @@ int n64_render_load_level(const char *map_name, int low)
 /* the tinted palettes made this frame (use_setup) */
 static int palette_count;
 
+/* the frame's z-buffer (the one attached with its colour buffer) */
+static const surface_t *frame_zbuf;
+
+/* The depth reset where the RDP is drawing: a fill of the z-buffer, held
+to the scissor (the whole screen at the frame's start, a view for its
+first-person weapon). tiny3d's t3d_screen_clear_depth (rdpq_clear_z)
+cleared the whole buffer with the RSP after an RDP fence -- the RSP waited
+for the RDP to finish all it had been given first, and again in each view's
+first person: four stalls and four full-screen clears a frame with four
+views. The fill comes after what was drawn before it in the RDP's own
+order, and needs no fence */
+static void clear_depth(void)
+{
+	uint32_t old_config;
+
+	if (!frame_zbuf)
+	{
+		t3d_screen_clear_depth();
+		return;
+	}
+	old_config = rdpq_config_disable(RDPQ_CFG_AUTOSCISSOR);
+	rdpq_attach(frame_zbuf, NULL);
+	rdpq_mode_push();
+	rdpq_set_mode_fill(color_from_packed16(0xFFFC));
+	rdpq_fill_rectangle(0, 0, frame_zbuf->width, frame_zbuf->height);
+	rdpq_mode_pop();
+	rdpq_detach();
+	rdpq_config_set(old_config);
+}
+
 void n64_render_frame_begin(void)
 {
 	unsigned long before_display = TICKS_READ();
 
 	renderer.chunky = renderer.want_chunky;
 	renderer.unstretched = 0;
-	if (want_480i && display_mode == DISPLAY_GAME && !tried_480i && level.data)
-		try_480i();
+	/* the uncached blocks' reserve, if a block took it: room made for it
+	(the model cache drops what it must) and taken again */
+	if (n64_uncached_reserve_missing() && display_mode != DISPLAY_MENU)
+	{
+		n64_render_make_room(N64_UNCACHED_RESERVE, 1);
+		if (n64_uncached_reserve_take())
+			debugf("n64: the uncached blocks' reserve was spent (%d so far), taken again\n",
+				n64_uncached_reserve_spent());
+	}
+	if (want_high_detail && display_mode == DISPLAY_GAME && !tried_high_detail && level.data)
+		try_high_detail();
 	renderer.surface = display_get();
 	render_wait_us = TICKS_TO_US(TICKS_READ() - before_display);
 	render_start_ticks = TICKS_READ();
-	rdpq_attach(renderer.surface, display_get_zbuf());
+	frame_zbuf = menu_zbuf.buffer ? &menu_zbuf : display_get_zbuf();
+	rdpq_attach(renderer.surface, frame_zbuf);
 	t3d_frame_start();
 	/* past the draw distance: the fog's colour */
 	t3d_screen_clear_color(renderer.fog ? renderer.fog_color : renderer.clear_color);
-	t3d_screen_clear_depth();
+	clear_depth();
 	renderer.view_count = 0;
 	renderer.frame_index++;
 	renderer.matrix_count = 0;
@@ -1461,6 +1600,64 @@ static void set_material(int index)
 brightened by the overlay's mean, tools/n64/level.py): the framebuffer
 darkened by the texel, its mipmaps interpolated; on the same triangles,
 compared as decals; with the fog it fades to nothing with distance */
+/* TERRAIN DETAIL (the SETTINGS page): how the natural terrain's detail is
+drawn -- 0 full, 1 without the overlays (rock and earth's second pass), 2
+all of the detail maps' mipmaps (as before), 3 none, 4 no mipmaps. Black
+smudges on detailed terrain away from the eye were seen on real consoles
+only: without the overlays the cliffs had none, the ground still had them,
+and with no detail at all there were none -- the detail maps, sampled far
+away. Full now leaves out their smallest levels (detail_upload); the others
+are there to tell, on a console, whether that was it */
+enum { TERRAIN_FULL, TERRAIN_NO_OVERLAY, TERRAIN_ALL_MIPS, TERRAIN_OFF, TERRAIN_NO_MIPS };
+static int terrain_detail;
+
+void n64_render_set_terrain_detail(int mode)
+{
+	terrain_detail = mode >= 0 && mode <= TERRAIN_NO_MIPS ? mode : 0;
+}
+
+/* The detail maps are I4, 64x64, with mipmaps down to 4x4 (mksprite's BOX);
+rdpq_sprite_upload uploads them all and has the RDP sample down to 8x8. Its
+8x8 level has rows of 4 bytes, half a TMEM word (16 texels fill one): such a
+level is loaded as I8 by LOAD_TILE into rows padded to the word, and that is
+the one odd case on the path the smudges took -- far away, where the small
+levels are sampled, never up close. The levels are uploaded here down to
+smallest texels a side only, the RDP told of those alone; returns how many
+(rdpq_mode_mipmap's count, the base level with them) */
+#define DETAIL_SMALLEST 16
+
+static int detail_upload(sprite_t *sprite, int smallest)
+{
+	rdpq_texparms_t parms = {.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE};
+	surface_t pixels = sprite_get_pixels(sprite);
+	int levels = 1;
+
+	rdpq_tex_multi_begin();
+	rdpq_tex_upload(TILE0, &pixels, &parms);
+	for (int i = 1; i < 8; i++)
+	{
+		pixels = sprite_get_lod_pixels(sprite, i);
+		if (!pixels.buffer || pixels.width < smallest || pixels.height < smallest)
+			break;
+		parms.s.scale_log++;
+		parms.t.scale_log++;
+		rdpq_tex_upload((rdpq_tile_t)((TILE0 + i) & 7), &pixels, &parms);
+		levels++;
+	}
+	rdpq_tex_multi_end();
+	return levels;
+}
+
+/* a sprite's mipmaps (rdpq_sprite_upload's count) */
+static int sprite_mipmap_count(sprite_t *sprite)
+{
+	int count = 0;
+
+	while (count < 7 && sprite_get_lod_pixels(sprite, count + 1).buffer)
+		count++;
+	return count;
+}
+
 static void record_overlay(struct level_material *material)
 {
 	rdpq_sync_pipe();
@@ -1471,6 +1668,8 @@ static void record_overlay(struct level_material *material)
 	rdpq_mode_zmode(ZMODE_DECAL);
 	rdpq_mode_persp(true);
 	rdpq_mode_filter(FILTER_BILINEAR);
+	/* (no alpha dither: the darkening is the alpha) */
+	rdpq_mode_dithering(DITHER_SQUARE_NONE);
 	if (n64_debug_flag("debug_overlay_alpha"))
 	{
 		/* (measuring: the overlay's fog alpha drawn as grey) */
@@ -1478,18 +1677,41 @@ static void record_overlay(struct level_material *material)
 	}
 	else
 	{
-		/* (the shade's alpha is the fog's visibility, 1 near: rdpq's fog
-		blends IN by it) */
+		/* The darkening as the most ordinary of blends: black over the
+		framebuffer at an alpha of 1 - texel (rdpq's multiply blender: the
+		framebuffer times the texel), faded out by the fog (the shade's
+		alpha is its visibility, 1 near). Real consoles drew black smudges
+		on this pass away from the eye that no emulator shows (ares,
+		parallel-RDP); it was a formula of its own (the framebuffer as the
+		blender's first input, times the alpha) in two cycles (the mipmaps
+		blended): both gone, in case either was the console's trouble */
 		if (renderer.fog)
-			rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, 0), (TEX0, 1, SHADE, 1)));
+			rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, 0), (1, TEX0, SHADE, 0)));
 		else
-			rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, 0), (0, 0, 0, TEX0)));
-		rdpq_mode_blender(RDPQ_BLENDER((MEMORY_RGB, IN_ALPHA, MEMORY_RGB, ZERO)));
+			rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, 0), (1, TEX0, ENV, 0)));
+		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
 	}
 	rdpq_mode_end();
-	rdpq_sprite_upload(TILE0, level.sprites[material->texture], &(rdpq_texparms_t){
-		.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
-	});
+	rdpq_set_env_color(RGBA32(0, 0, 0, 255));
+	if (terrain_detail == TERRAIN_ALL_MIPS)
+	{
+		/* (as before: every level, chosen, not blended) */
+		rdpq_sprite_upload(TILE0, level.sprites[material->texture], &(rdpq_texparms_t){
+			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
+		});
+		rdpq_mode_mipmap(MIPMAP_NEAREST, sprite_mipmap_count(level.sprites[material->texture]));
+	}
+	else if (terrain_detail == TERRAIN_NO_MIPS)
+	{
+		detail_upload(level.sprites[material->texture], 1 << 16);
+		rdpq_mode_mipmap(MIPMAP_NONE, 0);
+	}
+	else
+	{
+		/* the levels down to 16x16, blended (two cycles, as rdpq does
+		with a sprite's mipmaps) */
+		rdpq_mode_mipmap(MIPMAP_INTERPOLATE, detail_upload(level.sprites[material->texture], DETAIL_SMALLEST));
+	}
 	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | T3D_FLAG_TEXTURED |
 		(debug_cull_front ? T3D_FLAG_CULL_FRONT : T3D_FLAG_CULL_BACK));
 }
@@ -1497,7 +1719,9 @@ static void record_overlay(struct level_material *material)
 static void record_material(int index)
 {
 	struct level_material *material = &level.materials[index];
-	int textured = material->texture >= 0 && level.sprites[material->texture] && !debug_untextured;
+	int textured = material->texture >= 0 && level.sprites[material->texture] && !debug_untextured &&
+		/* (TERRAIN DETAIL "off": the terrain's light alone) */
+		!(terrain_detail == TERRAIN_OFF && (material->flags & MATERIAL_DETAIL));
 
 	if (material->flags & MATERIAL_OVERLAY)
 	{
@@ -1547,6 +1771,22 @@ static void record_material(int index)
 	{
 		rdpq_mode_alphacompare(128);
 	}
+	/* The fog in the blender's first pass. In two cycles (a detail map's
+	mipmaps, the doubling combiner) rdpq put it in the second, alone, and
+	there a console reads the shade's alpha -- the fog -- of the next pixel
+	(libdragon's validator: a hardware bug no emulator shows; these are the
+	materials real consoles smudged). With a second pass of its own -- the
+	colour as it comes, in x 0 + in x 1 (in x a + in x (1 - a) encodes as
+	all zeros, which rdpq_mode_blender takes for no blender) -- rdpq keeps the
+	fog in the first. (TERRAIN DETAIL
+	"all mips": as before, for the comparison) */
+	/* (only where it is two cycles anyway: fog and a blender together are
+	two cycles, and a one-cycle material -- a detail map without mipmaps,
+	TERRAIN DETAIL "no mips" -- has its fog in the first pass already) */
+	if (renderer.fog && textured && !(material->flags & MATERIAL_TRANSPARENT) && terrain_detail != TERRAIN_ALL_MIPS &&
+		((material->flags & MATERIAL_DOUBLE) ||
+			((material->flags & MATERIAL_DETAIL) && terrain_detail != TERRAIN_NO_MIPS)))
+		rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, ZERO, IN_RGB, ONE)));
 	rdpq_mode_end();
 	if (material->flags & MATERIAL_WATER)
 		rdpq_set_env_color(RGBA32(255, 255, 255, WATER_ALPHA));
@@ -1554,7 +1794,19 @@ static void record_material(int index)
 		rdpq_set_env_color(RGBA32(128, 128, 128, 255));
 	else if (textured && (material->flags & MATERIAL_DOUBLE))
 		rdpq_set_env_color(RGBA32(255, 255, 255, 255));
-	if (textured)
+	if (textured && (material->flags & MATERIAL_DETAIL) && terrain_detail != TERRAIN_ALL_MIPS)
+	{
+		/* a detail map: its levels down to 16x16 (detail_upload), blended;
+		or none but the first (TERRAIN DETAIL "no mips") */
+		if (terrain_detail == TERRAIN_NO_MIPS)
+		{
+			detail_upload(level.sprites[material->texture], 1 << 16);
+			rdpq_mode_mipmap(MIPMAP_NONE, 0);
+		}
+		else
+			rdpq_mode_mipmap(MIPMAP_INTERPOLATE, detail_upload(level.sprites[material->texture], DETAIL_SMALLEST));
+	}
+	else if (textured)
 	{
 		rdpq_sprite_upload(TILE0, level.sprites[material->texture], &(rdpq_texparms_t){
 			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
@@ -1629,13 +1881,42 @@ static int within_fog(float x0, float y0, float z0, float x1, float y1, float z1
 	return dx * dx + dy * dy + dz * dz <= renderer.fog_end * renderer.fog_end;
 }
 
+/* beyond_fog for a batch, in the batch's own units (world units x
+WORLD_SCALE, 16 bits): the eye's position in them made once a view
+(draw_level). The six conversions and products a batch took to world units
+were 2% of a 4-player frame */
+static int fog_eye[3];
+static float fog_end_squared_units;
+
+static inline int batch_beyond_fog(const int16_t *minimum, const int16_t *maximum)
+{
+	int d[3];
+	float dx, dy, dz;
+
+	if (!renderer.fog || debug_fog_test == 1)
+		return 0;
+	for (int k = 0; k < 3; k++)
+		d[k] = fog_eye[k] < minimum[k] ? minimum[k] - fog_eye[k] : fog_eye[k] > maximum[k] ? fog_eye[k] - maximum[k] : 0;
+	dx = (float)d[0];
+	dy = (float)d[1];
+	dz = (float)d[2];
+	return dx * dx + dy * dy + dz * dz > fog_end_squared_units;
+}
+
 static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 {
 	int visible_count = 0;
 	int material_count;
+	static int no_level = -1;
 
-	if (!level.data || n64_debug_flag("debug_no_level"))
+	/* (a debug flag looked up once) */
+	if (no_level < 0)
+		no_level = n64_debug_flag("debug_no_level");
+	if (!level.data || no_level)
 		return;
+	for (int k = 0; k < 3; k++)
+		fog_eye[k] = (int)floorf(renderer.eye[k] * WORLD_SCALE + 0.5f);
+	fog_end_squared_units = renderer.fog_end * WORLD_SCALE * renderer.fog_end * WORLD_SCALE;
 	material_count = level.header->material_count;
 	/* the batches in view (the eye's potentially visible set of clusters,
 	the frustum)... */
@@ -1708,9 +1989,7 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 					struct level_batch *batch = &level.batches[list[i]];
 
 					if (t3d_frustum_vs_aabb_s16(&viewport->viewFrustum, batch->minimum, batch->maximum) &&
-						!beyond_fog(batch->minimum[0] * (1.f / WORLD_SCALE), batch->minimum[1] * (1.f / WORLD_SCALE),
-							batch->minimum[2] * (1.f / WORLD_SCALE), batch->maximum[0] * (1.f / WORLD_SCALE),
-							batch->maximum[1] * (1.f / WORLD_SCALE), batch->maximum[2] * (1.f / WORLD_SCALE)))
+						!batch_beyond_fog(batch->minimum, batch->maximum))
 						level.visible[visible_count++] = list[i];
 				}
 			}
@@ -1721,9 +2000,7 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 			struct level_batch *batch = &level.batches[b];
 
 			if (t3d_frustum_vs_aabb_s16(&viewport->viewFrustum, batch->minimum, batch->maximum) &&
-				!beyond_fog(batch->minimum[0] * (1.f / WORLD_SCALE), batch->minimum[1] * (1.f / WORLD_SCALE),
-					batch->minimum[2] * (1.f / WORLD_SCALE), batch->maximum[0] * (1.f / WORLD_SCALE),
-					batch->maximum[1] * (1.f / WORLD_SCALE), batch->maximum[2] * (1.f / WORLD_SCALE)))
+				!batch_beyond_fog(batch->minimum, batch->maximum))
 				level.visible[visible_count++] = (uint16_t)b;
 		}
 	}
@@ -1752,7 +2029,8 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 			if (first == level.material_starts[m] || material_pass != pass)
 				continue;
 			if (pass == 1 && (debug_untextured || level.materials[m].texture < 0 ||
-				!level.sprites[level.materials[m].texture] || n64_debug_flag("debug_no_overlay")))
+				!level.sprites[level.materials[m].texture] || n64_debug_flag("debug_no_overlay") ||
+				terrain_detail == TERRAIN_NO_OVERLAY || terrain_detail == TERRAIN_OFF))
 				continue;
 			set_material(m);
 			for (int i = first; i < level.material_starts[m]; i++)
@@ -1888,7 +2166,8 @@ static uint16_t *tinted_palette(sprite_t *sprite, unsigned long color)
 
 		if (i >= 8)
 		{
-			unsigned cr = ((c >> 11) & 31) * r / 255, cg = ((c >> 6) & 31) * g / 255, cb = ((c >> 1) & 31) * b / 255;
+			unsigned cr = n64_div255(((c >> 11) & 31) * r), cg = n64_div255(((c >> 6) & 31) * g);
+			unsigned cb = n64_div255(((c >> 1) & 31) * b);
 
 			c = (uint16_t)((cr << 11) | (cg << 6) | (cb << 1) | (c & 1));
 		}
@@ -2009,7 +2288,8 @@ void n64_render_first_person_begin(void)
 	t3d_viewport_set_perspective(viewport, renderer.fov, renderer.aspect, 0.01171875f * WORLD_SCALE, 16.0f * WORLD_SCALE);
 	t3d_viewport_attach(viewport);
 	apply_fog();
-	t3d_screen_clear_depth();
+	/* (the view's own rectangle: the viewport's scissor) */
+	clear_depth();
 	renderer.current_texture = -2;
 	renderer.first_person = 1;
 	render_phase(PHASE_FIRST_PERSON);
@@ -2210,13 +2490,24 @@ static void render_object(const struct n64_object *object)
 	T3DVec3 center;
 	int node_count;
 	int far;
+	/* (debug flags looked up once: asked for each object in each view) */
+	static int no_objects = -1, first_person_far = -1;
 
-	if (n64_debug_flag("debug_no_objects"))
+	if (no_objects < 0)
+	{
+		no_objects = n64_debug_flag("debug_no_objects");
+		/* (measuring, "debug_fp_far": the first-person models' far versions
+		with three or four views) */
+		first_person_far = n64_debug_flag("debug_fp_far");
+	}
+	if (no_objects)
 		return;
 	if (!models.data || !renderer.viewport || object->model_tag_index < 0 ||
 		object->model_tag_index >= models.tag_count || !(model = models.by_tag[object->model_tag_index]))
 		return;
 	far = 0;
+	if (renderer.first_person && first_person_far && renderer.view_total > 2)
+		far = model->far_count != 0;
 	if (!renderer.first_person)
 	{
 		/* smaller than a pixel and a half across: not drawn; smaller than
@@ -2377,14 +2668,14 @@ static void draw_counter(void)
 		renderer.fps_frames = 0;
 		renderer.fps_window_start = now;
 	}
-	if (notice_480i_frames)
+	if (notice_high_detail_frames)
 	{
-		/* (480i asked for, but the map left no room for it) */
-		notice_480i_frames--;
+		/* (high detail asked for, but the map left no room for it) */
+		notice_high_detail_frames--;
 		rdpq_sync_pipe();
 		rdpq_set_scissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 24, SCREEN_HEIGHT / 2,
-			"NOT ENOUGH MEMORY FOR 480I ON THIS MAP");
+			"NOT ENOUGH MEMORY FOR HIGH DETAIL ON THIS MAP");
 	}
 	if (renderer.hide_counter)
 		return;
@@ -2393,6 +2684,14 @@ static void draw_counter(void)
 	rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 12, "%d.%d FPS tick %lu.%lu draw %lu.%lu wait %lu.%lu",
 		renderer.fps / 10, renderer.fps % 10, n64_last_tick_us / 1000, (n64_last_tick_us % 1000) / 100,
 		render_cpu_us / 1000, (render_cpu_us % 1000) / 100, render_wait_us / 1000, (render_wait_us % 1000) / 100);
+	/* the 3D's resolution (narrower with medium and chunky: the screen's
+	after it), 480 lines interlaced */
+	if (chunky_width(SCREEN_WIDTH) != SCREEN_WIDTH)
+		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 22, "3D %dx%d ON %dx%d", chunky_width(SCREEN_WIDTH),
+			SCREEN_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT);
+	else
+		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 22, "3D %dx%d%s", SCREEN_WIDTH, SCREEN_HEIGHT,
+			SCREEN_HEIGHT > 240 ? " INTERLACED" : "");
 }
 
 void n64_profile_poll(void);

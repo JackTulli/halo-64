@@ -17,8 +17,8 @@ team), any of them chooses the game type, the map and the score to win;
 START (or A on "START GAME") plays. Settings: particles on or off, the 3D's
 resolution (standard; medium, the game's 3D drawn at four fifths
 of the width and widened; chunky, half as wide, its pixels twice as wide:
-n64_render_set_chunky), the display
-(240p, or 480i where the map leaves the memory: n64_render_set_480i), the
+n64_render_set_chunky; high detail, 480i where the map leaves the memory,
+else 640x240 at 240p: n64_render_set_high_detail), the
 anamorphic widescreen picture (n64_render_set_anamorphic), the view
 models' quality (n64_render_set_view_model_quality), the animation rate
 (full, or half: n64_half_animation_rate), the HUD's inset from
@@ -97,6 +97,7 @@ static const unsigned long player_rgb[4] = {0xC82020, 0x2050D8, 0x20A040, 0xE0C8
 static const unsigned long team_rgb[2] = {0xC82020, 0x2050D8};
 
 const char *n64_menu_map_folder(int map) { return map >= 0 && map < MAP_COUNT ? maps[map].folder : "wizard"; }
+int n64_menu_map_count(void) { return MAP_COUNT; }
 const char *n64_menu_map_name(int map) { return map >= 0 && map < MAP_COUNT ? maps[map].name : ""; }
 const char *n64_menu_game_variant(int type) { return type >= 0 && type < GAME_TYPE_COUNT ? game_types[type].variant : "slayer"; }
 int n64_menu_game_teams(int type) { return type >= 0 && type < GAME_TYPE_COUNT && game_types[type].teams; }
@@ -131,11 +132,11 @@ static struct
 	struct n64_font *large, *small;
 	sprite_t *logo;
 	struct shown_picture map_picture, type_picture;
-	/* the settings (particles: on unless turned off); the 3D's width: 0
-	standard, 1 medium (256 of 320), 2 chunky (half) */
+	/* the settings (particles: on unless turned off); the 3D's resolution:
+	0 standard, 1 medium (256 of 320), 2 chunky (half), 3 high detail
+	(n64_render_set_high_detail) */
 	int chunky;
-	/* the game in 480i (n64_render_set_480i), the anamorphic picture */
-	int interlaced;
+	/* the anamorphic picture */
 	int widescreen;
 	/* the models' poses at half their rate (n64_half_animation_rate) */
 	int half_animation;
@@ -145,6 +146,8 @@ static struct
 	/* pixels, HUD_INSET_STEP at a time up to HUD_INSET_MAXIMUM */
 	int hud_inset;
 	int fps_counter;
+	/* TERRAIN DETAIL (n64_render_set_terrain_detail): 0-4 */
+	int terrain_detail;
 	/* the CONTROLS page: each controller's chosen row (CONTROL_*), and the
 	controller whose row the help line explains */
 	int control_row[4];
@@ -644,6 +647,8 @@ static void scripted_press(void)
 static void read_pads(void)
 {
 	joypad_poll();
+	/* (every Rumble Pak still in the menu, but for a buzz asked for) */
+	n64_input_rumble_menu_frame();
 	for (int p = 0; p < 4; p++)
 	{
 		struct pad *pad = &pads[p];
@@ -695,10 +700,37 @@ players (each biped costs ~2.7 ms of a tick: many will be slow) */
 #define MAXIMUM_BOTS 8
 enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE_COUNT };
 enum { CONTROL_SCHEME, CONTROL_CROUCH, CONTROL_LOOK, CONTROL_FIRE, CONTROL_STICK_SPEED, CONTROL_C_SPEED,
-	CONTROL_COUNT };
+	CONTROL_RUMBLE, CONTROL_COUNT };
+/* the buzz a controller gives when its rumble is turned on (frames) */
+#define RUMBLE_PULSE_FRAMES 12
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
-enum { SETTING_CHUNKY, SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_VIEW_MODEL, SETTING_DISPLAY,
+enum { SETTING_CHUNKY, SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_VIEW_MODEL, SETTING_TERRAIN,
 	SETTING_WIDESCREEN, SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
+
+/* the 3D's resolutions from the lowest (menu.chunky's values) */
+#define RESOLUTION_HIGH 3
+static const int resolution_order[4] = {2, 1, 0, RESOLUTION_HIGH};
+
+static int resolution_step(int chunky, int step)
+{
+	int i = 0;
+
+	while (i < 3 && resolution_order[i] != chunky)
+		i++;
+	return resolution_order[(i + step + 4) % 4];
+}
+static const char *const terrain_details[5] = {"FULL", "NO OVERLAY", "ALL MIPS", "OFF", "NO MIPS"};
+/* (the order the values come in on the menu: off last) */
+static const int terrain_order[5] = {0, 1, 2, 4, 3};
+
+static int terrain_step(int value, int step)
+{
+	int i = 0;
+
+	while (i < 4 && terrain_order[i] != value)
+		i++;
+	return terrain_order[(i + step + 5) % 5];
+}
 #define HUD_INSET_STEP 4
 #define HUD_INSET_MAXIMUM 20
 
@@ -734,10 +766,17 @@ static void settings_pack(unsigned char *bytes)
 	bytes[6] = (unsigned char)menu.half_animation;
 	bytes[7] = (unsigned char)menu.no_particles;
 	bytes[8] = (unsigned char)menu.view_model;
-	bytes[9] = (unsigned char)menu.interlaced;
+	/* (byte 9 was the display's 480i: set with high detail, for the records
+	read before) */
+	bytes[9] = (unsigned char)(menu.chunky == RESOLUTION_HIGH);
 	bytes[10] = (unsigned char)menu.widescreen;
 	bytes[11] = (unsigned char)menu.hud_inset;
 	bytes[12] = (unsigned char)menu.fps_counter;
+	bytes[14] = (unsigned char)menu.terrain_detail;
+	/* (a bit a controller with its Rumble Pak off: 0 in the records kept
+	before there was one, so theirs are on) */
+	for (int p = 0; p < 4; p++)
+		bytes[13] |= (unsigned char)((n64_controls[p].no_rumble != 0) << p);
 	for (int p = 0; p < 4; p++)
 	{
 		unsigned char *controls = bytes + SAVED_CONTROLS + p * 6;
@@ -757,14 +796,17 @@ static int settings_unpack(const unsigned char *bytes)
 {
 	if (memcmp(bytes, "H64S", 4) || bytes[4] != SAVED_VERSION || bytes[SAVED_BYTES - 1] != saved_checksum(bytes))
 		return 0;
-	menu.chunky = bytes[5] <= 2 ? bytes[5] : 0;
+	menu.chunky = bytes[5] <= RESOLUTION_HIGH ? bytes[5] : 0;
+	/* (480i asked for in a record from before high detail: high detail) */
+	if (bytes[9] && menu.chunky == 0)
+		menu.chunky = RESOLUTION_HIGH;
 	menu.half_animation = bytes[6] != 0;
 	menu.no_particles = bytes[7] != 0;
-	menu.view_model = bytes[8] <= 2 ? bytes[8] : 0;
-	menu.interlaced = bytes[9] != 0;
+	menu.view_model = bytes[8] <= 3 ? bytes[8] : 0;
 	menu.widescreen = bytes[10] != 0;
 	menu.hud_inset = bytes[11] <= HUD_INSET_MAXIMUM && !(bytes[11] % HUD_INSET_STEP) ? bytes[11] : 0;
 	menu.fps_counter = bytes[12] != 0;
+	menu.terrain_detail = bytes[14] <= 4 ? bytes[14] : 0;
 	for (int p = 0; p < 4; p++)
 	{
 		const unsigned char *controls = bytes + SAVED_CONTROLS + p * 6;
@@ -777,6 +819,7 @@ static int settings_unpack(const unsigned char *bytes)
 		/* (the 1-10 levels less 5) */
 		n64_controls[p].stick_speed = stick >= -4 && stick <= 5 ? stick : 0;
 		n64_controls[p].c_speed = c_speed >= -4 && c_speed <= 5 ? c_speed : 0;
+		n64_controls[p].no_rumble = (bytes[13] >> p) & 1;
 	}
 	return 1;
 }
@@ -853,7 +896,7 @@ static void draw_controls(void)
 {
 	static const char *const schemes[N64_SCHEME_COUNT] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH"};
 	static const char *const labels[CONTROL_COUNT] = {
-		"SCHEME", "CROUCH", "LOOK", "FIRE BUTTON", "STICK SPEED", "C BUTTON SPEED",
+		"SCHEME", "CROUCH", "LOOK", "FIRE BUTTON", "STICK SPEED", "C BUTTON SPEED", "RUMBLE",
 	};
 	static const char *const scheme_help[N64_SCHEME_COUNT] = {
 		"THE STICK LOOKS, THE C BUTTONS MOVE",
@@ -886,7 +929,8 @@ static void draw_controls(void)
 		panel(x + 14, y + 38, x + w - 14, y + 38 + LINE, 0x808CC0FF);
 		for (int row = 0; row < CONTROL_COUNT; row++)
 		{
-			int row_y = y + 62 + row * 19, selected = menu.control_row[p] == row;
+			/* (seven rows: 17 apart, the last one's frame inside the panel) */
+			int row_y = y + 59 + row * 17, selected = menu.control_row[p] == row;
 			const char *value = text;
 
 			switch (row)
@@ -896,7 +940,8 @@ static void draw_controls(void)
 			case CONTROL_LOOK: value = controls->inverted ? "INVERTED" : "NORMAL"; break;
 			case CONTROL_FIRE: value = fire; break;
 			case CONTROL_STICK_SPEED: snprintf(text, sizeof(text), "%d", 5 + controls->stick_speed); break;
-			default: snprintf(text, sizeof(text), "%d", 5 + controls->c_speed); break;
+			case CONTROL_C_SPEED: snprintf(text, sizeof(text), "%d", 5 + controls->c_speed); break;
+			default: value = controls->no_rumble ? "OFF" : "ON"; break;
 			}
 			if (selected)
 			{
@@ -935,8 +980,12 @@ static void draw_controls(void)
 	case CONTROL_STICK_SPEED:
 		help = "HOW FAST THE STICK TURNS YOU (1-10)";
 		break;
-	default:
+	case CONTROL_C_SPEED:
 		help = "HOW FAST THE C BUTTONS TURN YOU (1-10)";
+		break;
+	default:
+		help = !n64_input_rumble_present(menu.control_pad & 3) ? "NO RUMBLE PAK IN THIS CONTROLLER" :
+			chosen_controls->no_rumble ? "THE RUMBLE PAK STAYS STILL" : "THE RUMBLE PAK SHAKES WITH SHOTS, HITS AND BLASTS";
 		break;
 	}
 	snprintf(text, sizeof(text), "PLAYER %d:", (menu.control_pad & 3) + 1);
@@ -953,11 +1002,11 @@ static void draw_settings(int item)
 {
 	/* what the chosen row does, under the list */
 	static const char *const help[SETTING_COUNT][2] = {
-		{"MEDIUM: THE 3D DRAWN 256 ACROSS, WIDENED; CHUNKY:", "HALF AS WIDE, EACH PIXEL DOUBLED (HUD SHARP)"},
+		{"MEDIUM 256 ACROSS, CHUNKY HALF; HIGH DETAIL: 480I", "WHERE THE MAP HAS ROOM, ELSE 640 ACROSS AT 240P"},
 		{"HALF: POSES, YOUR GUN'S TOO, AT HALF THE RATE", "(HALVED AGAIN WITH 3 OR 4 PLAYERS)"},
 		{"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
-		{"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES", ""},
-		{"480I: TWICE THE LINES, ON MAPS WITH THE", "MEMORY FOR IT (THE BIGGEST STAY 240P)"},
+		{"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES;", "OFF IN SPLIT: LOW, NONE WITH 3-4 PLAYERS (FASTER)"},
+		{"FULL: MIPMAPS TO 16X16; ALL MIPS: TO 8X8, AS", "BEFORE; NO MIPS: NONE (THE CONSOLE'S SMUDGES)"},
 		{"ANAMORPHIC: A 16:9 PICTURE, FOR A SCREEN", "THAT STRETCHES THE IMAGE TO 16:9"},
 		{"MOVES THE HUD IN FROM THE SCREEN'S EDGES, FOR", "TELEVISIONS THAT CUT THEM OFF"},
 		{"FRAMES A SECOND AND TIMINGS AT THE TOP", ""},
@@ -966,23 +1015,26 @@ static void draw_settings(int item)
 	char value[32];
 
 	page("SETTINGS", NULL);
-	setting_row(112, 528, 100, item == SETTING_CHUNKY, menu.large, "3D RESOLUTION",
-		menu.chunky == 2 ? "CHUNKY" : menu.chunky == 1 ? "MEDIUM" : "STANDARD");
-	setting_row(112, 528, 128, item == SETTING_ANIMATIONS, menu.large, "ANIMATIONS",
+	/* (nine rows, 25 apart) */
+	setting_row(112, 528, 98, item == SETTING_CHUNKY, menu.large, "3D RESOLUTION",
+		menu.chunky == RESOLUTION_HIGH ? "HIGH DETAIL" : menu.chunky == 2 ? "CHUNKY" :
+		menu.chunky == 1 ? "MEDIUM" : "STANDARD");
+	setting_row(112, 528, 123, item == SETTING_ANIMATIONS, menu.large, "ANIMATIONS",
 		menu.half_animation ? "HALF RATE" : "FULL RATE");
-	setting_row(112, 528, 156, item == SETTING_PARTICLES, menu.large, "PARTICLES", menu.no_particles ? "OFF" : "ON");
-	setting_row(112, 528, 184, item == SETTING_VIEW_MODEL, menu.large, "VIEW MODEL",
-		menu.view_model == 2 ? "HIGH" : menu.view_model == 1 ? "MEDIUM" : "LOW");
+	setting_row(112, 528, 148, item == SETTING_PARTICLES, menu.large, "PARTICLES", menu.no_particles ? "OFF" : "ON");
+	setting_row(112, 528, 173, item == SETTING_VIEW_MODEL, menu.large, "VIEW MODEL",
+		menu.view_model == 3 ? "OFF IN SPLIT" : menu.view_model == 2 ? "HIGH" : menu.view_model == 1 ? "MEDIUM" : "LOW");
+	setting_row(112, 528, 198, item == SETTING_TERRAIN, menu.large, "TERRAIN DETAIL",
+		terrain_details[menu.terrain_detail >= 0 && menu.terrain_detail <= 4 ? menu.terrain_detail : 0]);
 	if (menu.hud_inset)
 		snprintf(value, sizeof(value), "%d PIXELS", menu.hud_inset);
 	else
 		snprintf(value, sizeof(value), "OFF");
-	setting_row(112, 528, 212, item == SETTING_DISPLAY, menu.large, "DISPLAY", menu.interlaced ? "480I" : "240P");
-	setting_row(112, 528, 240, item == SETTING_WIDESCREEN, menu.large, "WIDESCREEN",
+	setting_row(112, 528, 223, item == SETTING_WIDESCREEN, menu.large, "WIDESCREEN",
 		menu.widescreen ? "ANAMORPHIC" : "OFF");
-	setting_row(112, 528, 268, item == SETTING_HUD_INSET, menu.large, "HUD INSET", value);
-	setting_row(112, 528, 296, item == SETTING_COUNTER, menu.large, "FPS COUNTER", menu.fps_counter ? "ON" : "OFF");
-	list_item(SCREEN_W / 2, 332, 180, item == SETTING_BACK, "BACK");
+	setting_row(112, 528, 248, item == SETTING_HUD_INSET, menu.large, "HUD INSET", value);
+	setting_row(112, 528, 273, item == SETTING_COUNTER, menu.large, "FPS COUNTER", menu.fps_counter ? "ON" : "OFF");
+	list_item(SCREEN_W / 2, 307, 180, item == SETTING_BACK, "BACK");
 	panel(112, 352, 528, 404, 0x80102040);
 	frame_line(112, 352, 528, 404, 0x806080A0);
 	for (int line = 0; line < 2; line++)
@@ -1151,6 +1203,19 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 		c->game_type = 0;
 	if (score_index < 0)
 		score_index = game_types[c->game_type].default_score;
+	/* (testing, "debug_cycle": the next map, started by itself after a
+	second -- the settings as the test's flags have them) */
+	char cycle_text[16];
+	int cycle = n64_debug_text("debug_cycle", cycle_text, sizeof(cycle_text)) && c->player_count > 0;
+	float cycle_frame = menu.frame;
+
+	if (cycle)
+	{
+		c->map = (c->map + 1) % MAP_COUNT;
+		menu.chunky = n64_debug_flag("debug_high_detail") ? RESOLUTION_HIGH : 0;
+		menu.terrain_detail = 0;
+		debugf("n64: cycle: next map %s\n", n64_menu_map_folder(c->map));
+	}
 	for (;;)
 	{
 		int start = 0;
@@ -1220,13 +1285,11 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					setting = (setting + SETTING_COUNT - 1) % SETTING_COUNT;
 				if (pad->down)
 					setting = (setting + 1) % SETTING_COUNT;
-				/* (standard, medium, chunky) */
+				/* (chunky, medium, standard, high detail: right is higher) */
 				if (setting == SETTING_CHUNKY && pad->left)
-					menu.chunky = (menu.chunky + 2) % 3;
+					menu.chunky = resolution_step(menu.chunky, -1);
 				else if (setting == SETTING_CHUNKY && (pad->right || pad->pressed.a))
-					menu.chunky = (menu.chunky + 1) % 3;
-				if (setting == SETTING_DISPLAY && (pad->left || pad->right || pad->pressed.a))
-					menu.interlaced = !menu.interlaced;
+					menu.chunky = resolution_step(menu.chunky, 1);
 				if (setting == SETTING_ANIMATIONS && (pad->left || pad->right || pad->pressed.a))
 					menu.half_animation = !menu.half_animation;
 				if (setting == SETTING_WIDESCREEN && (pad->left || pad->right || pad->pressed.a))
@@ -1234,15 +1297,19 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				if (setting == SETTING_PARTICLES && (pad->left || pad->right || pad->pressed.a))
 					menu.no_particles = !menu.no_particles;
 				if (setting == SETTING_VIEW_MODEL && pad->left)
-					menu.view_model = (menu.view_model + 2) % 3;
+					menu.view_model = (menu.view_model + 3) % 4;
 				else if (setting == SETTING_VIEW_MODEL && (pad->right || pad->pressed.a))
-					menu.view_model = (menu.view_model + 1) % 3;
+					menu.view_model = (menu.view_model + 1) % 4;
 				if (setting == SETTING_HUD_INSET && pad->left)
 					menu.hud_inset = (menu.hud_inset + HUD_INSET_MAXIMUM) % (HUD_INSET_MAXIMUM + HUD_INSET_STEP);
 				else if (setting == SETTING_HUD_INSET && (pad->right || pad->pressed.a))
 					menu.hud_inset = (menu.hud_inset + HUD_INSET_STEP) % (HUD_INSET_MAXIMUM + HUD_INSET_STEP);
 				if (setting == SETTING_COUNTER && (pad->left || pad->right || pad->pressed.a))
 					menu.fps_counter = !menu.fps_counter;
+				if (setting == SETTING_TERRAIN && pad->left)
+					menu.terrain_detail = terrain_step(menu.terrain_detail, -1);
+				else if (setting == SETTING_TERRAIN && (pad->right || pad->pressed.a))
+					menu.terrain_detail = terrain_step(menu.terrain_detail, 1);
 				if (pad->pressed.b || pad->pressed.start || (setting == SETTING_BACK && pad->pressed.a))
 					screen = SCREEN_TITLE;
 			}
@@ -1270,6 +1337,13 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					controls->inverted = !controls->inverted;
 				else if (step && *row == CONTROL_FIRE)
 					controls->swap_fire = !controls->swap_fire;
+				else if (step && *row == CONTROL_RUMBLE)
+				{
+					/* (a buzz when it is turned on) */
+					controls->no_rumble = !controls->no_rumble;
+					if (!controls->no_rumble)
+						n64_input_rumble_pulse(p, RUMBLE_PULSE_FRAMES);
+				}
 				else if (step && (*row == CONTROL_STICK_SPEED || *row == CONTROL_C_SPEED))
 				{
 					/* 1-10 (kept less 5): left and right step, A goes round */
@@ -1372,6 +1446,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 		/* (the settings kept when their page is left) */
 		if (screen != previous_screen && (previous_screen == SCREEN_SETTINGS || previous_screen == SCREEN_CONTROLS))
 			settings_save();
+		if (cycle && menu.frame >= cycle_frame + 30.f)
+			start = 1;
 		n64_render_frame_begin();
 		n64_render_set_anamorphic(menu.widescreen);
 		draw_scene();
@@ -1399,12 +1475,13 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			draw_loading(c);
 			n64_render_frame_end();
 			/* the game in chunky mode or not from its first frame */
-			n64_render_set_chunky(menu.chunky);
+			n64_render_set_chunky(menu.chunky == RESOLUTION_HIGH ? 0 : menu.chunky);
 			n64_particles_set_enabled(!menu.no_particles);
 			n64_render_set_view_model_quality(menu.view_model);
 			n64_hud_set_inset(menu.hud_inset);
 			n64_render_show_counter(menu.fps_counter);
-			n64_render_set_480i(menu.interlaced);
+			n64_render_set_terrain_detail(menu.terrain_detail);
+			n64_render_set_high_detail(menu.chunky == RESOLUTION_HIGH);
 			n64_half_animation_rate = menu.half_animation;
 			settings_save();
 			n64_render_set_anamorphic(menu.widescreen);

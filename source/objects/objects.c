@@ -3870,23 +3870,39 @@ static boolean n64_far_ai_biped(
 	/* (a player on a controller: always; a bot -- a player with none,
 	port/n64/game/n64_bots.c -- as an AI) */
 	if ((unit->unit.player_index != NONE && player_get(unit->unit.player_index)->local_player_index != NONE) ||
-		object->object.parent_object_index != NONE ||
-		((n64_pose_clock(object_index) + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & 1))
+		object->object.parent_object_index != NONE)
 		return FALSE;
-	if (!n64_object_recently_seen(object_index))
-		return TRUE;
-	for (local_player_index = 0; local_player_index < MAXIMUM_LOCAL_PLAYERS; local_player_index++)
+	/* An AI's biped seen and near a player: every tick. Unseen or far: on
+	its odd ticks (every other). Unseen and twice as far (Firefight's
+	waves on their way, those behind the players): one tick in four -- the
+	poses were the dearest part of a Firefight tick, and no view shows them */
 	{
-		long player_index = local_player_get_player_index(local_player_index);
-		long unit_index = player_index != NONE ? player_get(player_index)->unit_index : NONE;
+		long phase = (n64_pose_clock(object_index) + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & 3;
+		boolean seen;
+		real nearest = 1.0e30f;
 
-		if (unit_index != NONE &&
-			distance_squared3d(&object_get(unit_index)->object.position, &object->object.position) <
-				N64_FAR_BIPED_DISTANCE * N64_FAR_BIPED_DISTANCE)
+		if (phase == 1)
 			return FALSE;
-	}
+		seen = n64_object_recently_seen(object_index);
+		for (local_player_index = 0; local_player_index < MAXIMUM_LOCAL_PLAYERS; local_player_index++)
+		{
+			long player_index = local_player_get_player_index(local_player_index);
+			long unit_index = player_index != NONE ? player_get(player_index)->unit_index : NONE;
 
-	return TRUE;
+			if (unit_index != NONE)
+			{
+				real distance = distance_squared3d(&object_get(unit_index)->object.position, &object->object.position);
+
+				if (distance < nearest)
+					nearest = distance;
+			}
+		}
+		if (seen && nearest < N64_FAR_BIPED_DISTANCE * N64_FAR_BIPED_DISTANCE)
+			return FALSE;
+		if (!seen && nearest >= 4.f * N64_FAR_BIPED_DISTANCE * N64_FAR_BIPED_DISTANCE)
+			return TRUE;
+		return (phase & 1) == 0;
+	}
 }
 
 static boolean n64_object_unmoved(

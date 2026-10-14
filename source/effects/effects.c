@@ -2262,8 +2262,13 @@ static void effect_generate_particles(
 
 			instance = effect_location_get_next_instance(effect, &location_datum_index, camera_mode);
 		}
-		/* (port.json flag "debug_particles": which effects make the most) */
-		if (n64_debug_flag("debug_particles"))
+		/* (port.json flag "debug_particles": which effects make the most;
+		looked up once) */
+		static int n64_particle_log = -1;
+
+		if (n64_particle_log < 0)
+			n64_particle_log = n64_debug_flag("debug_particles") != 0;
+		if (n64_particle_log)
 		{
 			static struct { long definition_index; long count; } busiest[8];
 			static long calls;

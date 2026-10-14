@@ -632,6 +632,13 @@ boolean input_get_key(
 void input_vertical_blank_interrupt(
 	void)
 {
+#ifdef HALO_N64
+	/* (the rumble's thread never runs on the N64: it is sent here, once a
+	frame -- render_frame_present calls this after each frame; the Rumble
+	Pak's on and off: port/n64/src/n64_input.c) */
+	input_flush_rumble();
+	return;
+#endif
 	if (input_globals.update_event_pending)
 	{
 		SetEvent(input_globals.update_event_handle);

@@ -5,6 +5,182 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+14 October, overnight (the user asked for a night of optimisations and
+fixes, every map tested each time; runs in ares on a hidden display, the
+scripts in WSL's /root/n64/overnight): numbers are ares's, one player
+unless said.
+
+Testing. Port.json flags for unattended runs: `debug_cycle=<seconds>`
+(after so many seconds a game goes back to the menu, which starts the next
+map by itself: every map in turn through the menu, as a player goes),
+`debug_high_detail`, `debug_heap_dump` (every block in use past the maps'
+home at the menu, its size and first words: what a game left behind),
+`debug_rdpq` (libdragon's RDP validator), `debug_fp_nodraw`.
+
+Memory. The HUD's recording ran out on Blood Gulch in high detail (its
+sprites, loaded while it recorded, took the room it began with): a 64 KB
+reserve for libdragon's uncached blocks, given back when one cannot be had
+and taken again the next frame (and settled where the heap has room at a
+game's end); the HUD's sprites leave a recording its room. The maps' home
+made the menu run out after Sidewinder and Prisoner: freeing the image gave
+nothing back, and the old level and its models were still loaded when the
+menu loaded its logo -- n64_game_free_map unloads them. What each game and
+the menu left behind, found by diffing the heap dumps from game to game,
+is made at boot instead: the mixer's channel rings (made on a channel's
+first play: n64_sound_reserve plays and stops a sound on each), the sound
+bank's open file, libdragon's EEPROM cache, the models' render-mode blocks,
+and newlib's float-printing big numbers (dtoa keeps them on lists of its
+own for good). Now nothing is left: 74 blocks at every menu.
+
+The CPU. Two hidden costs found in the profiles: the FPU trapped on NaNs
+(the port emulates the instruction, thousands of cycles each) -- units.c's
+aiming change divided 0 by 0 for every unit with no aiming limit, every
+tick, and the HUD's flash colour took fmod by a zero period for every
+coloured element; both give x86's answers now without the NaN. Firefight
+on Blood Gulch: tick 17.1 -> 11.6 ms, 28.2 -> 29.7 fps (its lows 21.9 ->
+27.5); two players and six bots on Wizard 10.5 -> 12.1 fps. Then: the
+aiming change's angle from the chord (no arc cosine); Firefight's Covenant
+unseen and over 30 units from every player posed one tick in four; a level
+batch's fog test in its own 16-bit units (level 9.3 -> 8.2 ms with four
+views); the depth reset by an RDP fill held to the scissor instead of
+tiny3d's whole-buffer RSP clear behind an RDP fence (at the frame's start
+and in each view's first person); debug flags looked up once where they were
+asked for on every ray, effect, sound and AI biped; the HUD's unturned
+bitmaps without a sine and cosine, its meters' colour sums without
+divisions, and the multiplayer "player under the crosshair" casting its
+rays only to units within its angle and range. Four players on Blood Gulch
+16.4 -> 16.8 fps: that case waits on the RSP/RDP, and the first-person
+models were found its dearest part (16.8 fps drawn, 24.6 posed but not
+drawn): VIEW MODEL has a fourth value, OFF IN SPLIT (the low models, not
+drawn with three or four views; still posed, the game takes a player's shots
+from its weapon's markers).
+
+The console's smudges: the RDP validator showed the mipmapped detail
+terrain (any mipmapping is two cycles in rdpq, nearest too) and the
+doubling materials with rdpq's fog alone in the blender's second pass, where
+a console reads the shade's alpha -- the fog -- of the next pixel (a
+hardware bug the validator names; no emulator shows it), and TERRAIN
+DETAIL OFF, the one setting without smudges, was the one-cycle case. Those
+materials now have a second pass of their own (the colour as it comes, in x
+0 + in x 1: in x a + in x (1 - a) encodes as all zeros, which
+rdpq_mode_blender takes for no blender), so rdpq keeps the fog in the first:
+the validator's warnings on Blood Gulch 15499 -> 0, the picture unchanged.
+ALL MIPS keeps the old way for the comparison. Firefight on Sidewinder in
+high detail ran 25 minutes under the validator without an RDP hang.
+
+The final code went round every map through the menu again and again: four
+players (37 maps loaded), two players and six bots (56), Firefight (36),
+high detail with two players (29) -- nothing went wrong, and no FPU
+instruction needed emulating. (Rarely, the breakable surfaces' bit vector,
+at an odd address, is still read a long at a time: emulated, correct.)
+
+13 October, night: on a console, TERRAIN DETAIL "no overlay" took the
+black smudges off the cliffs but not the ground, and "off" took them all:
+the detail maps themselves, sampled far away, are the trouble. They are I4,
+64x64, with mipmaps down to 4x4, and the RDP was told to sample down to
+8x8 -- a level whose rows are half a TMEM word, loaded as I8 into padded
+rows, the one odd case on that path and only reached in the distance (on
+the ground at a glance, on the cliffs further off). FULL now uploads the
+levels down to 16x16 only (detail_upload) and blends them in two cycles,
+the overlay too; ALL MIPS is the old way, for the comparison on a console,
+and NO MIPS samples the first level alone. High detail tries 520x240 and
+480x240 after 640x240, and the FPS counter shows the 3D's resolution under
+it (the screen's too when medium or chunky draw it narrower).
+
+13 October, late: the DISPLAY setting (240p or 480i) is gone into 3D
+RESOLUTION as its highest value, HIGH DETAIL (chunky, medium, standard,
+high detail; right is higher). High detail is 480i where the map leaves the
+memory (640x480, else 512x480, as before), else Perfect Dark's high
+resolution: 640x240 shown at 240p, twice the pixels across and the same
+lines (three buffers, else two: 1.2 MB with the z-buffer, where 320x240
+took 600 KB), else 320x240 and a word on the screen (try_high_detail). The
+buffers go in the maps' home past a smaller map's image where they fit.
+A saved 480i (byte 9) reads as high detail.
+
+13 October, late: those fixes were not enough -- the heap's map on the
+console's screen showed 3973 KB free in four pieces (150, 1097, 521 and
+2189 KB), split by a 40-byte block (libdragon's list of display buffers,
+made when the game's display came back after the menu) and 44 small blocks
+(19 KB) at the top of what the menu had used, with the rest of the menu's
+memory free around them. Chasing each block left behind would never be
+sure, so the maps' images now have a home of their own: made at boot from
+the heap's bottom (n64_map_home_reserve, n64_game.c), the size of the
+largest map the menu offers (Sidewinder's 2.8 MB), never freed; every image
+is loaded into it and nothing else is made there, so that nothing can split
+it. Between games it is lent to the menu's display (its two 640x480 buffers
+and its own z-buffer, 1.8 MB, which were the heap's), and in a game the part
+past a smaller map's image to the 480i buffers: while a loan is open the
+surfaces libdragon makes come from it (the link wraps
+malloc_uncached_aligned; freeing them is nothing). Smaller maps leave the
+game the heap Sidewinder does (up to 1 MB less than before).
+
+13 October, night: Sidewinder and Blood Gulch stopped with "no memory
+for the map" (2811 and 2686 KB needed, 3947 KB free) when started from the
+menu, never when loaded directly. The screen's "3931 KB in one piece" was
+false: the halving probe's malloc, freed unused, was dropped by the
+compiler, which then took every probe for a success -- and the HUD's room
+checks (a sprite's, an upload's) had been dropped the same way and never
+looked. What split the memory: the sound's buffers and mixer were made with
+the title's music, after the menu's 640x480 buffers (1.2 MB), and stayed in
+the middle once the menu was gone (about 1.4 MB under them, 2.4 MB over);
+the mixer's VADPCM decoder states (malloc_uncached, made again for each
+sound started) stayed wherever the last ones went; and a game's HUD
+sprites, recordings and uploads and its effects' cache and atlas were only
+given back when the next map was set up, after its image. Now the sound is
+made at boot (n64_main.c, with the reserves); blocks of 64 bytes or fewer
+from malloc_uncached come from a pool of their own (the link wraps
+libdragon's malloc_uncached and free_uncached: port.json); the HUD's and
+the effects' per-map memory is given back when a game ends
+(n64_hud_release, n64_particles_release, from n64_game_free_map); the room
+checks go through n64_heap_has (the block kept in a volatile). The failure
+screen walks newlib's heap instead (n64_heap_describe): the largest piece,
+and each free piece of 64 KB or more with the blocks in use between them,
+so that if it happens again it says what stood in the way.
+
+13 October, evening: the console's black smudges are on terrain drawn
+with two textures (a colour pass, then the detail overlay darkening it).
+Nothing like it is reported for tiny3d or libdragon, and neither ares nor
+anything else here reproduces it (mupen64plus with angrylion-rdp-plus
+cannot boot libdragon's IPL3; CEN64, with the user's PIF ROM and three
+local patches, boots but hangs silently). The overlay pass is made as
+ordinary as it can be: rdpq's multiply blender (black at an alpha of
+1 - texel, the fog fading it) instead of a formula with the framebuffer as
+the blender's first input, its mipmaps chosen (MIPMAP_NEAREST: one cycle)
+instead of blended in two cycles, no alpha dither; and the converter's
+overlay texels never darker than 5/15 (OVERLAY_FLOOR_LEVEL), so that
+whatever the console does there, it cannot smear black. TERRAIN DETAIL
+stays, to tell which part it was if the smudges remain.
+
+13 October, later: two reports from a real console. (1) Sidewinder
+stopped with "no memory for the map" after another game had been played:
+the animation cache (48 blocks of 4 KB), the HUD's meter slots (96 KB),
+its blip and font and the explosions' fireball were made with the first
+map, above its image, and kept: with that map gone they split the heap,
+and Sidewinder's image (2.8 MB, the largest) found no piece big enough.
+They are made at boot now (n64_animation_reserve, n64_hud_reserve,
+n64_particles_reserve from n64_main.c), at the heap's bottom; the message
+now gives the size needed, the heap free and the largest piece. (2) Black
+smudges on the natural terrain with detail textures, away from the eye,
+on the console only (not in ares). Not reproducible here, so SETTINGS has
+TERRAIN DETAIL to find the part at fault on the console: FULL (as before),
+NO OVERLAY (the rock and earth overlays left out), NEAREST MIPS (the detail
+and overlay maps' mipmaps chosen, not blended: MIPMAP_NEAREST), OFF (the
+terrain's light alone, no overlays); kept in the EEPROM record's byte 14.
+
+13 October: Rumble Pak. Halo's rumble (player_rumble.c, two motors at any
+speed) reached XInputSetState through input_flush_rumble on a thread the
+N64 never runs: on HALO_N64 input_vertical_blank_interrupt (called by
+render_frame_present after each frame) flushes it instead. XInputSetState
+hands the speeds to n64_input_rumble (n64_input.c), which makes one
+strength (the heavy motor's, or three quarters of the light one's) and
+switches the pak's motor on for that share of the frames (a running sum:
+on in a frame where it passes 1), off below 0.08; libdragon finds the pak
+(joypad_get_rumble_supported) and the motor is only told of changes. The
+CONTROLS page has a RUMBLE row (on by default; a 12-frame buzz when turned
+on; the rows 17 pixels apart to fit seven), kept in the EEPROM record's
+byte 13 as a bit a controller with it off (records from before read as
+on). In the menu every motor is held off (n64_input_rumble_menu_frame).
+
 12 October, later (built, not yet measured): a crash out of memory while
 the HUD recorded a view (`__rdpq_block_next_buffer`): the model cache fills
 the heap down to its margin and what is allocated after it (HUD recordings

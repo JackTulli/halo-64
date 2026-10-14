@@ -5687,8 +5687,31 @@ boolean unit_update(
 		}
 
 		{
+#ifdef HALO_N64
+			/* (both are unit vectors and a tick's turn is small: the angle
+			from the chord between them, 2 asin(c/2) ~ c (1 + c^2/24) to a
+			ten-thousandth below half a radian, else the arc cosine --
+			every unit's every tick, it was 3% of a game with bots) */
+			real chord_i = unit->unit.aiming_vector.i - last_aiming_vector.i;
+			real chord_j = unit->unit.aiming_vector.j - last_aiming_vector.j;
+			real chord_k = unit->unit.aiming_vector.k - last_aiming_vector.k;
+			real chord_squared = chord_i * chord_i + chord_j * chord_j + chord_k * chord_k;
+			real angle = chord_squared < 0.25f ?
+				square_root(chord_squared) * (1.f + chord_squared * (1.f / 24.f)) :
+				angle_between_vectors3d(&unit->unit.aiming_vector, &last_aiming_vector);
+#else
 			real angle = angle_between_vectors3d(&unit->unit.aiming_vector, &last_aiming_vector);
+#endif
+#ifdef HALO_N64
+			/* (a unit whose aiming has no limit, a maximum of zero: 0/0 made
+			a NaN, and converting it to the byte below trapped the FPU --
+			emulated, every such unit's every tick, 2-3% of a game with
+			bots. x86's answers: a turn, infinity, the most; none, zero) */
+			real maximum = unit_definition->unit.aiming_velocity_maximum / TICKS_PER_SECOND;
+			real change = maximum > 0.f ? angle / maximum : angle > 0.f ? 1.f : 0.f;
+#else
 			real change = angle / (unit_definition->unit.aiming_velocity_maximum/TICKS_PER_SECOND);
+#endif
 				
 			unit->unit.aiming_change = (byte)(PIN(change, 0.f, 1.f) * 255.f);
 		}

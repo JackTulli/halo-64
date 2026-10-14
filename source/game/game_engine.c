@@ -2280,6 +2280,30 @@ static long find_closest_player_index(
 			real target_distance;
 			real target_angle;
 
+#ifdef HALO_N64
+			/* (the cheap tests first, the ray last: a ray to every unit
+			along the view, for each view's HUD, was most of its rays) */
+			extern boolean n64_autoaim_compute_target_within(long object_index, real_point3d const *position,
+				real_vector3d const *direction, long unit_index, real maximum_angle, real_point3d *target_position,
+				real_vector3d *target_direction, real *target_distance, real *target_angle);
+
+			if (distance_squared < 400.0f &&
+				(candidate->unit.active_camouflage < 1.0f ||
+				player->unknown7c == player_index_from_unit_index(candidate_object_index)) &&
+				n64_autoaim_compute_target_within(
+					object_indices[object_index],
+					&camera_position,
+					&facing_direction,
+					player->unit_index,
+					0.13083334267139435f,
+					&target_position,
+					&target_direction,
+					&target_distance,
+					&target_angle))
+			{
+				best_object_index = object_indices[object_index];
+			}
+#else
 			if ((candidate->unit.active_camouflage < 1.0f ||
 				player->unknown7c == player_index_from_unit_index(candidate_object_index)) &&
 				autoaim_compute_target(
@@ -2297,6 +2321,7 @@ static long find_closest_player_index(
 			{
 				best_object_index = object_indices[object_index];
 			}
+#endif
 		}
 	}
 

@@ -55,6 +55,8 @@ working notebook.
 - **Controls for each player**: four schemes (standard, bumper jumper,
   GoldenEye, north), toggle or hold crouch, inverted look, fire and grenade
   swapped, and separate look speeds for the stick and the C buttons.
+- **Rumble Pak**: Halo's own rumble (shots, hits, explosions, vehicles)
+  on the Rumble Pak, each player's on or off.
 - **Settings** for the picture and speed (below). Settings and controls are
   saved on the cartridge (EEPROM).
 
@@ -185,18 +187,26 @@ The other schemes:
 - **North**: the stick walks and strafes, the C buttons look.
 
 Each player also chooses: crouch held or toggled, look normal or inverted,
-fire on Z or R (grenades on the other), and the look speed of the stick and
-of the C buttons (1-10).
+fire on Z or R (grenades on the other), the look speed of the stick and of
+the C buttons (1-10), and the Rumble Pak on or off (it buzzes when turned
+on, to show it's there).
+
+**Rumble Pak.** A controller with a Rumble Pak shakes with Halo's own
+rumble: firing, taking hits, explosions, vehicles. Halo drove two motors at
+any speed; the Rumble Pak has one that is on or off, so it is switched on
+for a share of the frames as strong as Halo's rumble. In ares, choose the
+Rumble Pak as the controller's pak (it passes the rumble on to a PC
+gamepad that has motors).
 
 ### Settings
 
 | Setting | What it does |
 |---|---|
-| 3D RESOLUTION | standard (320 wide), medium (the 3D drawn 256 wide and widened) or chunky (160 wide, each pixel doubled; the HUD stays sharp). Lower is faster. |
+| 3D RESOLUTION | chunky (160 wide, each pixel doubled; the HUD stays sharp), medium (the 3D drawn 256 wide and widened), standard (320 wide) or high detail: 480i on the maps with the memory for it, else 640x240 at 240p, twice the pixels across as Perfect Dark's high resolution. Lower is faster. |
 | ANIMATIONS | full or half rate: half poses the characters, vehicles and your gun every other tick (halved again with 3 or 4 players), and the bots think less often. Faster. |
 | PARTICLES | muzzle flashes, sparks, dust and blood on or off |
-| VIEW MODEL | your gun and arms in low, medium or high detail |
-| DISPLAY | 240p, or 480i on the maps with the memory for it (the biggest stay 240p) |
+| VIEW MODEL | your gun and arms in low, medium or high detail, or off in split (low, and not drawn with 3 or 4 players: the biggest saving there) |
+| TERRAIN DETAIL | full (the detail maps' mipmaps down to 16x16), no overlay (rock and earth's second pass), all mips (down to 8x8, as before), no mips, or off: for tracking down black smudges consoles showed on distant detailed ground |
 | WIDESCREEN | off, or anamorphic 16:9 for a television that stretches the picture |
 | HUD INSET | moves the HUD in from the edges, for televisions that cut them off |
 | FPS COUNTER | frames a second and timings at the top of the screen |
@@ -210,8 +220,9 @@ the Xbox had a 733 MHz CPU and 64 MB. What it takes to fit:
   the game needs, relocated at load. The game state is trimmed to what it
   uses, models and textures are streamed from the cartridge into a cache,
   animations are streamed, and textures are 4-bit (CI4/I4) with mipmaps
-  and detail textures where they matter. 480i in the game needs 1.8 MB
-  for its buffers, so it is only used where the map leaves room.
+  and detail textures where they matter. High detail's 480i needs 1.8 MB
+  for its buffers, so it is only used where the map leaves room; elsewhere
+  it is 640x240 at 240p (1.2 MB).
 - **Drawing.** The level is drawn from tiny3d batches with the light baked
   into the vertices, culled by Halo's own potentially visible set and the
   view; objects are skinned from Halo's node matrices; draws are sorted by
@@ -283,19 +294,28 @@ Cartridge flags are files on the ROM's file system, listed in `port.json`
   `debug_game_type=<variant>`, `debug_firefight=<difficulty>`), `autotest`
   (scripted controllers), `debug_menu=<script>` (drives the menu: a press
   every 20 frames, `u d l r a b z s` on port 1, upper case on port 2, `.`
-  none), `debug_title_time=<seconds>` (the title's camera path from there).
+  none), `debug_title_time=<seconds>` (the title's camera path from there),
+  `debug_cycle=<seconds>` (after so many seconds a game goes back to the
+  menu, which starts the next map by itself: every map in turn, through the
+  menu), `debug_high_detail` (3D RESOLUTION high detail without the menu),
+  `debug_view_model=<0-3>`.
 - Drawing: `debug_chase` (view 1 follows its player), `debug_overview`,
   `debug_untextured`, `debug_no_level`, `debug_no_objects`,
   `debug_no_first_person`, `debug_no_hud` (a plain crosshair instead),
   `debug_hud_inset=<pixels>`, `debug_gpu_time` (each render phase waits for
   the RSP/RDP: their times), `debug_cull_front`, `debug_level_parts=<1|2>`,
-  `debug_explosions`.
+  `debug_explosions`, `debug_fp_nodraw` (the first-person weapon posed, not
+  drawn), `debug_rdpq` (libdragon's RDP validator: slow; it names the
+  commands that would hang or misdraw on a console).
 - Measuring: `debug_stats` (frame, tick, render, HUD and object timings in
   the log), `profile` (samples at the vertical blank from 20 to 80 s;
   `tools/n64_profile.py <log> build/n64/halo.elf`), `profile_zone`,
   `debug_ray_callers`, `debug_sound`, `debug_no_sound`, `profile_sound`,
   `debug_game_state` (Halo's game-state allocations at boot),
-  `debug_firefight_log`, `debug_bots`.
+  `debug_firefight_log`, `debug_bots`, `debug_heap_dump` (each block in use
+  past the maps' home when the menu comes back: what a game left behind).
+  The log also names each FPU instruction the port had to emulate
+  ("emulated ... at pc"): a NaN or a denormal, thousands of cycles each.
 
 `devtools/n64_timing.c` times chosen game functions through `--wrap`.
 `devtools/ares-run.sh` and `ares-shots.sh` run a ROM in ares on a hidden

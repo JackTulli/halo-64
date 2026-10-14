@@ -79,7 +79,7 @@
     "sidewinder"
   ],
   "flags": [],
-  "ldflags": [],
+  "ldflags": ["-Wl,--wrap,malloc_uncached", "-Wl,--wrap,malloc_uncached_aligned", "-Wl,--wrap,free_uncached"],
   "lto": true,
   "small_data": 8
 }

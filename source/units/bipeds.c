@@ -4310,7 +4310,12 @@ boolean biped_update(
 		extern void n64_log(const char *text);
 		extern int n64_debug_flag(const char *name);
 
-		if (biped->unit.player_index == NONE && n64_debug_flag("debug_biped_log") && !(game_time_get() & 63))
+		/* (looked up once: every AI biped asked, every tick) */
+		static int biped_log = -1;
+
+		if (biped_log < 0)
+			biped_log = n64_debug_flag("debug_biped_log") != 0;
+		if (biped->unit.player_index == NONE && biped_log && !(game_time_get() & 63))
 		{
 			char line[160];
 

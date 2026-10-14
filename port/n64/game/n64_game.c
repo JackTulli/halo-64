@@ -163,6 +163,8 @@ void n64_game_setup(
 	/* (port.json flag "debug_game_type=<n>": the menu's game type) */
 	if (n64_debug_text("debug_game_type", name, sizeof(name)))
 		n64_choice.game_type = atoi(name);
+	/* (port.json flag "debug_high_detail": the 3D in high detail) */
+	n64_render_set_high_detail(n64_debug_flag("debug_high_detail"));
 	for (i = 0; i < 4; i++)
 	{
 		static short const colors[4] = {2, 3, 6, 5};
@@ -172,6 +174,30 @@ void n64_game_setup(
 		n64_choice.colors[i] = colors[i];
 	}
 	n64_game_start();
+}
+
+/* testing (port.json flag "debug_cycle=<seconds>"): after so many seconds
+of a game, back to the menu, which starts the next map by itself
+(n64_menu_run): every map in turn, through the menu as a player goes, the
+maps' memory used and given back each time */
+void n64_game_cycle_frame(
+	void)
+{
+	static int seconds = -1;
+	static unsigned long long start;
+	char text[16];
+
+	if (seconds < 0)
+		seconds = n64_debug_text("debug_cycle", text, sizeof(text)) ? atoi(text) : 0;
+	if (!seconds)
+		return;
+	if (!start)
+		start = n64_microseconds();
+	if (n64_microseconds() - start > (unsigned long long)seconds * 1000000ULL)
+	{
+		start = 0;
+		main_goto_main_menu();
+	}
 }
 
 /* ---------- the menu's games (main.c's main_menu_load, HALO_N64) */
@@ -450,7 +476,71 @@ static struct
 	byte *image;
 	unsigned long image_size;
 	struct n64_map_header header;
+	/* the images' home (n64_map_home_reserve) */
+	byte *home;
+	unsigned long home_size;
 } n64_map;
+
+/* The maps' images have a home of their own, made at boot (n64_main.c) from
+the heap's bottom, the size of the largest map the menu offers: each image
+goes in it, and nothing else does but display buffers lent while it has
+room (n64_map_home_free_part, n64_render.c), so that no block the menu or a
+game leaves behind -- whatever made it -- can split the memory an image
+wants in one piece. After the menu, Sidewinder and Blood Gulch found none:
+the list of libdragon's display buffers (40 bytes, made when the game's
+display came back), and 44 small blocks at the top of what the menu had
+used, stood in the middle of 3.9 MB free. */
+void n64_map_home_reserve(
+	void)
+{
+	unsigned long largest = 0;
+	int count = n64_menu_map_count(), i;
+	char line[64];
+
+	for (i = 0; i < count; i++)
+	{
+		struct n64_map_header header;
+		char path[64];
+		long file;
+
+		snprintf(path, sizeof(path), "rom:/maps/%s.map", n64_menu_map_folder(i));
+		file = n64_file_open(path);
+		if (file < 0)
+			continue;
+		if (n64_file_read(file, &header, sizeof(header)) == (long)sizeof(header) &&
+			!memcmp(header.magic, "H64M", 4) && header.version == N64_MAP_VERSION && header.image_size > largest)
+			largest = header.image_size;
+		n64_file_close(file);
+	}
+	if (!largest)
+		return;
+	largest = (largest + 63) & ~63UL;
+	/* (libc's: in the game's units malloc is cseries.h's) */
+	n64_map.home = memalign(64, largest);
+	if (!n64_map.home)
+		return;
+	n64_map.home_size = largest;
+	n64_display_set_home(n64_map.home, largest);
+	snprintf(line, sizeof(line), "n64: the maps' home, %lu KB", largest / 1024);
+	n64_log(line);
+}
+
+/* what of the home no map's image is in (all of it between games), for the
+display to borrow (n64_render.c); NULL if there is no home */
+void *n64_map_home_free_part(
+	unsigned long *size)
+{
+	unsigned long used;
+
+	*size = 0;
+	if (!n64_map.home)
+		return NULL;
+	used = n64_map.image == n64_map.home ? (n64_map.image_size + 63) & ~63UL : 0;
+	if (used >= n64_map.home_size)
+		return NULL;
+	*size = n64_map.home_size - used;
+	return n64_map.home + used;
+}
 
 static void *n64_map_load(
 	char const *name)
@@ -466,8 +556,9 @@ static void *n64_map_load(
 	if (n64_map.image)
 	{
 		/* (libc's: the image is memalign's, and in the game's units free is
-		cseries.h's debug_free) */
-		(free)(n64_map.image);
+		cseries.h's debug_free; the home stays) */
+		if (n64_map.image != n64_map.home)
+			(free)(n64_map.image);
 		n64_map.image = NULL;
 	}
 
@@ -482,9 +573,25 @@ static void *n64_map_load(
 	if (memcmp(n64_map.header.magic, "H64M", 4) || n64_map.header.version != N64_MAP_VERSION)
 		n64_fatal("the map was converted for another build (tools/n64/convert.py)");
 
-	n64_map.image = memalign(16, n64_map.header.image_size);
+	/* in the home (if it is not lent to the display), else from the heap */
+	if (n64_map.home && n64_map.header.image_size <= n64_map.home_size && !n64_render_home_in_use())
+		n64_map.image = n64_map.home;
+	else
+		n64_map.image = memalign(16, n64_map.header.image_size);
 	if (!n64_map.image)
-		n64_fatal("no memory for the map");
+	{
+		/* how much there was, the largest piece, and what split the rest
+		(the heap's map: n64_heap_describe). A probe by halving said "in
+		one piece" of nearly all of it: the compiler drops a malloc that is
+		freed unused, and took every probe for a success */
+		static char text[320];
+		char pieces[200];
+		unsigned long largest = n64_heap_describe(pieces, sizeof(pieces));
+
+		snprintf(text, sizeof(text), "no memory for the map: %lu KB needed, %lu KB free, %lu KB in one piece. "
+			"Free pieces: %s", n64_map.header.image_size / 1024, n64_heap_free() / 1024, largest / 1024, pieces);
+		n64_fatal(text);
+	}
 	n64_map.image_size = n64_map.header.image_size;
 	n64_file_read(file, n64_map.image, n64_map.header.image_size);
 
@@ -525,14 +632,26 @@ static void *n64_map_load(
 void n64_game_free_map(
 	void)
 {
+	/* what the HUD and the effects made for the map, with it (else it stays
+	until the next map's is made, above where this one was, and splits the
+	memory the next image wants in one piece) */
+	n64_hud_release();
+	n64_particles_release();
+	/* and the level and its models: with the image in the maps' home,
+	freeing it gives the heap nothing, and the menu (its fonts, its logo:
+	menu_load) found the old level still there -- out of memory after
+	Sidewinder */
+	n64_render_load_scene(NULL);
 	if (n64_map.image)
 	{
-		/* (libc's free: see n64_map_load) */
-		(free)(n64_map.image);
+		/* (libc's free: see n64_map_load; the home stays) */
+		if (n64_map.image != n64_map.home)
+			(free)(n64_map.image);
 		n64_map.image = NULL;
 	}
 	n64_map.name[0] = 0;
 	n64_memory.tag_cache = NULL;
+	n64_uncached_reserve_settle();
 	{
 		char line[64];
 

@@ -141,6 +141,16 @@ static struct
 	surface_t fireball;
 } fx;
 
+static void make_fireball(void);
+
+/* the explosions' fireball, made at boot (n64_main.c): made with the first
+map it was kept above that map's image (n64_anim.c) */
+void n64_particles_reserve(void)
+{
+	if (!fx.fireball.buffer)
+		make_fireball();
+}
+
 static void fx_free(void)
 {
 	for (int i = 0; i < CACHE_ENTRIES; i++)
@@ -155,6 +165,18 @@ static void fx_free(void)
 	if (fx.atlas.buffer)
 		surface_free(&fx.atlas);
 	fx.rom = 0;
+}
+
+/* the map's effects given back (the fireball stays): at the end of a game
+(n64_game_free_map), as n64_hud_release; the RSP and the RDP done with the
+atlas first */
+void n64_particles_release(void)
+{
+	rspq_wait();
+	fx_free();
+	memset(fx.particles, 0, sizeof(fx.particles));
+	fx.live = 0;
+	memset(fx.explosions, 0, sizeof(fx.explosions));
 }
 
 /* a small hash: 0..1 */
@@ -570,8 +592,8 @@ static void draw_particles(const struct n64_particle_view *view)
 		{
 			/* the tint times the cell's own colour */
 			uint8_t const *hue = fx.cell_colours[p->cell & (CELLS - 1)];
-			uint32_t r = ((p->color >> 24) * hue[0]) / 255, g = (((p->color >> 16) & 0xFF) * hue[1]) / 255;
-			uint32_t b = (((p->color >> 8) & 0xFF) * hue[2]) / 255;
+			uint32_t r = n64_div255((p->color >> 24) * hue[0]), g = n64_div255(((p->color >> 16) & 0xFF) * hue[1]);
+			uint32_t b = n64_div255(((p->color >> 8) & 0xFF) * hue[2]);
 
 			d->color = r << 24 | g << 16 | b << 8 | (uint32_t)(alpha * 255.f);
 		}

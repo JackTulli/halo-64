@@ -432,6 +432,34 @@ boolean autoaim_compute_target(
 	return result;
 }
 
+#ifdef HALO_N64
+/* autoaim_compute_target with the angle tested before the ray: game_engine.c's
+player under the crosshair cast one to every unit along the view, for each
+view's HUD, though only those within a small angle counted. The same
+answer: TRUE when the angle is under maximum_angle and the line is clear */
+boolean n64_autoaim_compute_target_within(
+	long object_index,
+	real_point3d const *position,
+	real_vector3d const *direction,
+	long unit_index,
+	real maximum_angle,
+	real_point3d *target_position,
+	real_vector3d *target_direction,
+	real *target_distance,
+	real *target_angle)
+{
+	object_compute_autoaim_target(object_index, position, direction, target_position);
+	vector_from_points3d(position, target_position, target_direction);
+	*target_distance= normalize3d(target_direction);
+	if (*target_distance==0.f)
+		return FALSE;
+	*target_angle= arccosine(PIN(dot_product3d(direction, target_direction), -1.f, 1.f));
+	if (!(fabs(*target_angle)<maximum_angle))
+		return FALSE;
+	return aim_assist_clear_line_of_sight(position, target_position, unit_index, object_index);
+}
+#endif
+
 static short find_aim_assist_targets_recursive(
 	struct aim_assist_parameters const *parameters,
 	long object_index,

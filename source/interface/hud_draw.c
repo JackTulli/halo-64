@@ -576,7 +576,11 @@ static void hud_draw_multitexture_overlay(
 
 	csmemset(stack_buffer, 0x62, sizeof(stack_buffer));
 
+#ifdef HALO_N64
+	sin_theta = theta == 0.f ? 0.f : (real)sin(theta);
+#else
 	sin_theta = (real)sin(theta);
+#endif
 	texture_offset[0].x = overlay->map_offset[0].i;
 	texture_offset[0].y = overlay->map_offset[0].j;
 	texture_offset[1].x = overlay->map_offset[1].i;
@@ -597,7 +601,11 @@ static void hud_draw_multitexture_overlay(
 	texture_fade[2] = 1.0f;
 	geometry_offset.i = 0.0f;
 	geometry_offset.j = 0.0f;
+#ifdef HALO_N64
+	cos_theta = theta == 0.f ? 1.f : (real)cos(theta);
+#else
 	cos_theta = (real)cos(theta);
+#endif
 
 	player = player_get(local_player_get_player_index(local_player_index));
 	hud_draw_multitexture_overlay_get_current_weapon_definition(
@@ -1069,6 +1077,17 @@ pixel32 get_flash_color(
 
 	csmemset(stack_buffer, 0x62, sizeof(stack_buffer));
 
+#ifdef HALO_N64
+	/* (a colour that does not flash, a period of zero: the fmod below made
+	a NaN that trapped the FPU on every call -- emulated, each of the HUD's
+	coloured elements each time it was drawn. x86's NaN failed the test
+	below: the base colour) */
+	if (!(hud_color->flash_period > 0.f))
+	{
+		pixel32_to_real_argb_color(hud_color->color, &base_color);
+		return real_argb_color_to_pixel32(&base_color);
+	}
+#endif
 	flash_phase = (real)fmod(
 		(game_time_get() - reference_value) * (1.0f / TICKS_PER_SECOND),
 		hud_color->flash_period);
@@ -1418,8 +1437,20 @@ static void hud_draw_bitmap_internal(
 
 	csmemset(stack_buffer, 0x62, sizeof(stack_buffer));
 
-	sin_theta = (real)sin(theta);
-	cos_theta = (real)cos(theta);
+#ifdef HALO_N64
+	/* (most bitmaps are drawn unturned: no sine and cosine for those --
+	7% of the HUD's time) */
+	if (theta == 0.f)
+	{
+		sin_theta = 0.f;
+		cos_theta = 1.f;
+	}
+	else
+#endif
+	{
+		sin_theta = (real)sin(theta);
+		cos_theta = (real)cos(theta);
+	}
 
 	for (vertex_index = 0; vertex_index < 4; vertex_index++)
 	{

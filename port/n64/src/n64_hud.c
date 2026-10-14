@@ -102,8 +102,8 @@ static struct
 time the HUD was recorded: the texture loader's plans and a dozen commands.
 Each sprite rectangle uploaded is kept as a recording of its own (made once
 the HUD's recording is done: blocks don't nest while recording) and called
-from then on -- the same commands. They stay until the next map, with the
-HUD recordings that call them. */
+from then on -- the same commands. They stay until the map ends
+(n64_hud_release), with the HUD recordings that call them. */
 static struct upload_block
 {
 	surface_t surface;
@@ -141,8 +141,40 @@ static void make_blip(void)
 	data_cache_hit_writeback(hud.blip.buffer, hud.blip.stride * BLIP_SIZE);
 }
 
-void n64_hud_set_map(const char *map_name)
+/* the HUD's own font (Halo's small one, for its text) */
+static struct n64_font *hud_font;
+static int hud_font_loaded;
+
+/* what the HUD keeps from its first map on -- the meters' texture slots
+(96 KB), the blip, its font -- made at boot (n64_main.c), at the heap's
+bottom: made with the first map, above its image, they split the heap a
+later, bigger map needs in one piece (n64_anim.c) */
+void n64_hud_reserve(void)
 {
+	for (int i = 0; i < METER_CACHE; i++)
+	{
+		if (!meters[i].slot.buffer)
+			meters[i].slot = surface_alloc(FMT_RGBA16, METER_SLOT_WIDTH, METER_SLOT_HEIGHT);
+		meters[i].sprite = -1;
+	}
+	if (!hud.blip.buffer)
+		make_blip();
+	if (!hud_font_loaded)
+	{
+		hud_font = n64_font_load("small");
+		hud_font_loaded = 1;
+	}
+}
+
+/* what the HUD made for its map -- the sprites, the recordings and their
+uploads, the sprites' names -- given back (the slots, the blip and the font
+stay): at the end of a game (n64_game_free_map), so that none of it is left
+above the memory the next map's image wants in one piece, and before a new
+map's. The RSP and the RDP done with them first, their recordings freed
+before it returns */
+void n64_hud_release(void)
+{
+	rspq_wait();
 	for (int i = 0; i < MAXIMUM_SPRITES; i++)
 	{
 		if (hud.sprites[i])
@@ -168,15 +200,27 @@ void n64_hud_set_map(const char *map_name)
 
 		memset(&meters[i], 0, sizeof(meters[i]));
 		meters[i].sprite = -1;
-		meters[i].slot = slot.buffer ? slot : surface_alloc(FMT_RGBA16, METER_SLOT_WIDTH, METER_SLOT_HEIGHT);
+		meters[i].slot = slot;
+	}
+	free(hud.names);
+	hud.names = NULL;
+	hud.name_count = 0;
+	/* (the deferred frees made) */
+	rspq_wait();
+}
+
+void n64_hud_set_map(const char *map_name)
+{
+	n64_hud_release();
+	for (int i = 0; i < METER_CACHE; i++)
+	{
+		if (!meters[i].slot.buffer)
+			meters[i].slot = surface_alloc(FMT_RGBA16, METER_SLOT_WIDTH, METER_SLOT_HEIGHT);
 	}
 	if (!hud.blip.buffer)
 		make_blip();
 	snprintf(hud.map_name, sizeof(hud.map_name), "%s", map_name);
 	/* the sprites' names, in number order (tools/n64/hud.py) */
-	free(hud.names);
-	hud.names = NULL;
-	hud.name_count = 0;
 	{
 		char path[64], line[32];
 		FILE *file;
@@ -250,12 +294,14 @@ static sprite_t *hud_sprite(int number)
 		/* (asset_load doesn't check its allocation: the sprite's room is
 		looked for first, its quads left out until there is some) */
 		{
-			void *room = malloc(sprite_bytes(file) + 1024);
+			/* (and the room a recording began with kept for it: its
+			chunks are made as it goes) */
+			int room = n64_heap_has(sprite_bytes(file) + 1024 +
+				(hud.recording >= 0 ? RECORDING_ROOM_PIECE * RECORDING_ROOM_PIECES : 0));
 
 			fclose(file);
 			if (!room)
 				return NULL;
-			free(room);
 		}
 		hud.sprites[number] = sprite_load(path);
 		if (hud.sprites[number] && n64_debug_flag("debug_hud_sprites"))
@@ -267,7 +313,7 @@ static sprite_t *hud_sprite(int number)
 
 void n64_render_hud_phase(void);
 
-/* the views' recordings dropped (the display changed size: 480i), each
+/* the views' recordings dropped (the display changed size: high detail), each
 recorded again the next time its view is drawn */
 void n64_hud_forget_recordings(void)
 {
@@ -372,11 +418,8 @@ void n64_hud_end(void)
 		{
 			if (!uploads[i].block)
 			{
-				void *room = malloc(2048);
-
-				if (!room)
+				if (!n64_heap_has(2048))
 					break;
-				free(room);
 				rspq_block_begin();
 				rdpq_tex_upload_sub(TILE0, &uploads[i].surface, NULL, uploads[i].s0, uploads[i].t0, uploads[i].s1, uploads[i].t1);
 				uploads[i].block = rspq_block_end();
@@ -500,6 +543,10 @@ own strongest is drawn, at least three quarters as bright as that, the rest
 cut out (Halo's colour times the shape, opaque, drew the faint edges as dark
 rims) but coloured all the same, for the bilinear filtering of a scaled
 meter */
+/* (n64_div255: a meter's texture made again -- its level changed -- has
+nine of them a texel) */
+#define div255 n64_div255
+
 static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprite, int s0, int t0, int width, int height)
 {
 	struct meter_entry *entry, *oldest = &meters[0];
@@ -547,9 +594,9 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 	the framebuffer keeps), else nothing */
 	if (empty_alpha < 0x80)
 	{
-		unsigned r = channel(quad->background_color, 16) * scale / 255;
-		unsigned g = channel(quad->background_color, 8) * scale / 255;
-		unsigned b = channel(quad->background_color, 0) * scale / 255;
+		unsigned r = div255(channel(quad->background_color, 16) * scale);
+		unsigned g = div255(channel(quad->background_color, 8) * scale);
+		unsigned b = div255(channel(quad->background_color, 0) * scale);
 
 		empty = ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | 1;
 	}
@@ -571,15 +618,15 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 		{
 			unsigned order = in[x * 2], shape = in[x * 2 + 1];
 			int covered = shape && shape * 2 >= strongest;
-			unsigned k = (shape * 4 >= strongest * 3 ? shape : strongest * 3 / 4) * scale / 255;
+			unsigned k = div255((shape * 4 >= strongest * 3 ? shape : strongest * 3 / 4) * scale);
 
 			if (covered && order >= maximum_alpha)
 				out[x] = empty;
 			else
 			{
-				unsigned r = (channel(quad->minimum_color, 16) * (255 - order) + channel(quad->maximum_color, 16) * order) / 255;
-				unsigned g = (channel(quad->minimum_color, 8) * (255 - order) + channel(quad->maximum_color, 8) * order) / 255;
-				unsigned b = (channel(quad->minimum_color, 0) * (255 - order) + channel(quad->maximum_color, 0) * order) / 255;
+				unsigned r = div255(channel(quad->minimum_color, 16) * (255 - order) + channel(quad->maximum_color, 16) * order);
+				unsigned g = div255(channel(quad->minimum_color, 8) * (255 - order) + channel(quad->maximum_color, 8) * order);
+				unsigned b = div255(channel(quad->minimum_color, 0) * (255 - order) + channel(quad->maximum_color, 0) * order);
 
 				if (order >= minimum_alpha)
 				{
@@ -587,9 +634,9 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 					g = MIN(255u, g + channel(quad->flash_color, 8));
 					b = MIN(255u, b + channel(quad->flash_color, 0));
 				}
-				r = r * k / 255;
-				g = g * k / 255;
-				b = b * k / 255;
+				r = div255(r * k);
+				g = div255(g * k);
+				b = div255(b * k);
 				out[x] = ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (covered && order < maximum_alpha);
 			}
 		}
@@ -778,19 +825,19 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 
 void n64_hud_text(int x, int y, unsigned long color, const char *text)
 {
-	static struct n64_font *font;
-	static int font_loaded;
+	struct n64_font *font;
 
 	if (hud.dump)
 		debugf("hud text %d,%d: %s\n", x, y, text);
 	hud.mode = _mode_none;
 	hud.tmem_pixels = NULL;
 	/* Halo's small font (the menu's), from the top of the text's box */
-	if (!font_loaded)
+	if (!hud_font_loaded)
 	{
-		font = n64_font_load("small");
-		font_loaded = 1;
+		hud_font = n64_font_load("small");
+		hud_font_loaded = 1;
 	}
+	font = hud_font;
 	if (!font)
 	{
 		rdpq_sync_pipe();

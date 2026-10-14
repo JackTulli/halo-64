@@ -21,6 +21,10 @@ so the default layout is the one N64 shooters used (Turok, Perfect Dark's
     D-pad right switch grenades (white)
     Start       start
 
+The game's rumble (XInputSetState, once a frame) goes to the controller's
+Rumble Pak (n64_input_rumble: its one motor switched on for a share of the
+frames as strong as Halo's two motors).
+
 Each controller can choose another scheme on the menu's CONTROLS page
 (n64_controls, n64.h): bumper jumper (R jumps, A throws a grenade),
 GoldenEye's (the stick turns and walks, C left and right strafe, C up and
@@ -310,9 +314,19 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 
 DWORD WINAPI XInputSetState(HANDLE device, PXINPUT_FEEDBACK feedback)
 {
-	(void)device;
+	int port = controller_port(device);
+
 	if (feedback)
+	{
+		/* (the scripted players have no motors) */
+		if (port >= 0 && !n64_test_input)
+		{
+			n64_input_rumble(n64_gamepad_ports[port],
+				feedback->Rumble.wLeftMotorSpeed * (1.f / 65535.f),
+				feedback->Rumble.wRightMotorSpeed * (1.f / 65535.f));
+		}
 		feedback->Header.dwStatus = ERROR_SUCCESS;
+	}
 	return ERROR_SUCCESS;
 }
 

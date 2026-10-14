@@ -578,7 +578,11 @@ static long sound_start(
 	sound->pitch_range_index = range_index;
 	sound->looping_index = looping_index;
 	sound->salt = next_salt();
-	if (n64_debug_flag("debug_sound") && n64_sounds.logged < 300)
+	static int sound_log = -1;
+
+	if (sound_log < 0)
+		sound_log = n64_debug_flag("debug_sound") != 0;
+	if (sound_log && n64_sounds.logged < 300)
 	{
 		char line[160];
 
