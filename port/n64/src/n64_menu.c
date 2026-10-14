@@ -118,12 +118,18 @@ int n64_menu_map_from_folder(const char *folder)
 #define TEXT_BRIGHT 0xFFFFFFFFu
 #define TEXT_DIM 0xC05880B0u
 
-/* the map's or the game type's picture on the screen (one of each is kept:
-the one before is freed once the RDP is done with it) */
+/* the map's or the game type's picture on the screen, read into a place of
+its own that the next picture of its kind reuses: scrolling through the maps
+asks the heap for nothing (it used to load each picture before the one it
+replaced was freed, and ran out of memory when scrolled through quickly) */
 struct shown_picture
 {
 	sprite_t *sprite;
-	int number;
+	/* the picture's number + 1 (0: none yet; a picture with no room for it
+	is not tried again until another one is shown) */
+	int shown;
+	void *place;
+	int place_size;
 };
 
 static struct
@@ -191,17 +197,60 @@ static struct
 static sprite_t *picture(struct shown_picture *shown, const char *kind, int number)
 {
 	char path[48];
+	FILE *file;
+	int file_size, size, need = 0;
 
 	if (number < 0 || number >= 16)
 		return NULL;
-	if (shown->sprite && shown->number == number)
+	if (shown->shown == number + 1)
 		return shown->sprite;
+	/* (the RDP may still be drawing the picture before from its place) */
+	rspq_wait();
 	if (shown->sprite)
-		rdpq_call_deferred((void (*)(void *))sprite_free, shown->sprite);
+		sprite_free(shown->sprite);
+	shown->sprite = NULL;
+	shown->shown = number + 1;
 	snprintf(path, sizeof(path), "rom:/ui/%s%d.sprite", kind, number);
-	shown->sprite = sprite_load(path);
-	shown->number = number;
+	if (!(file = fopen(path, "rb")))
+		return NULL;
+	fseek(file, 0, SEEK_END);
+	file_size = (int)ftell(file);
+	fseek(file, 0, SEEK_SET);
+	size = file_size;
+	/* (the room it needs, its in-place decompression's included) */
+	asset_loadf_into(file, &size, NULL, &need);
+	if (need > shown->place_size)
+	{
+		free(shown->place);
+		shown->place_size = 0;
+		/* (a little over, for the next picture of the kind) */
+		need = (need + 2048 + 15) & ~15;
+		if (!n64_heap_has(need + 16 * 1024) || !(shown->place = memalign(16, need)))
+		{
+			/* no room: no picture rather than a crash */
+			shown->place = NULL;
+			fclose(file);
+			return NULL;
+		}
+		shown->place_size = need;
+	}
+	fseek(file, 0, SEEK_SET);
+	size = file_size;
+	need = shown->place_size;
+	if (asset_loadf_into(file, &size, shown->place, &need))
+		shown->sprite = sprite_load_buf(shown->place, size);
+	fclose(file);
 	return shown->sprite;
+}
+
+/* a picture's place given back (once the RDP is done with it: the caller
+waits for it) */
+static void picture_free(struct shown_picture *shown)
+{
+	if (shown->sprite)
+		sprite_free(shown->sprite);
+	free(shown->place);
+	*shown = (struct shown_picture){0};
 }
 
 static void load_scene(void)
@@ -262,11 +311,8 @@ static void menu_unload(void)
 	if (menu.logo)
 		sprite_free(menu.logo);
 	menu.logo = NULL;
-	if (menu.map_picture.sprite)
-		sprite_free(menu.map_picture.sprite);
-	if (menu.type_picture.sprite)
-		sprite_free(menu.type_picture.sprite);
-	menu.map_picture.sprite = menu.type_picture.sprite = NULL;
+	picture_free(&menu.map_picture);
+	picture_free(&menu.type_picture);
 	menu.loaded = 0;
 	n64_render_load_scene(NULL);
 }
