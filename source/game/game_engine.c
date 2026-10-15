@@ -1,3 +1,6 @@
+#ifdef HALO_N64_PC_EXPANSION
+#include "../../port/n64/src/n64_pc_content.h"
+#endif
 /*
 GAME_ENGINE.C
 
@@ -7745,6 +7748,10 @@ static void game_engine_update_item_spawn(
 				&scenario->netgame_equipment,
 				equipment_index,
 				struct scenario_netgame_equipment);
+#ifdef HALO_N64_PC_EXPANSION
+        if ((equipment->flags & N64_PC_EQUIPMENT_FLAG) && !n64_game_pc_equipment_enabled())
+            continue;
+#endif
 		if (match_game_type(
 			game_engine_get_type(),
 			NUMBEROF(equipment->game_type),

@@ -1,3 +1,6 @@
+#ifdef HALO_N64_PC_EXPANSION
+#include "../../port/n64/src/n64_pc_content.h"
+#endif
 /*
 OBJECTS.C
 */
@@ -4300,6 +4303,13 @@ long object_new_from_scenario(
 
 			if (definition_index!=NONE)
 			{
+#ifdef HALO_N64_PC_EXPANSION
+                /* Only converter-marked vehicle rows are optional additions. */
+                if (palette == &global_scenario_get()->vehicle_palette &&
+                    (scenario_object->placement_flags & N64_PC_VEHICLE_FLAG) &&
+                    !n64_game_pc_vehicle_enabled())
+                    return NONE;
+#endif
 				object_placement_data_new(&placement_data, definition_index, NONE);
 				placement_data.position = scenario_object->position;
 				vectors3d_from_euler_angles3d(

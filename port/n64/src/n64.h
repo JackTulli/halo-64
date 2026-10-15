@@ -1,3 +1,6 @@
+#ifdef HALO_N64_PC_EXPANSION
+#include "n64_pc_content.h"
+#endif
 /*
 N64.H
 

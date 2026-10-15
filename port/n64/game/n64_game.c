@@ -219,7 +219,11 @@ void n64_game_setup(
 	if (n64_debug_text("debug_game_type", name, sizeof(name)))
 		n64_choice.game_type = atoi(name);
 	if (n64_debug_text("debug_weapons", name, sizeof(name)))
+#ifdef HALO_N64_PC_EXPANSION
+		n64_choice.weapon_set = PIN(atoi(name), 0, N64_WEAPONS_PC_ADDITIVE);
+#else
 		n64_choice.weapon_set = PIN(atoi(name), 0, 3);
+#endif
 	if (n64_debug_text("debug_vehicles", name, sizeof(name)))
 		n64_choice.vehicle_set = PIN(atoi(name), 0, N64_VEHICLES_COUNT - 1);
 	n64_choice.big_head = n64_debug_flag("debug_big_head");
@@ -633,19 +637,26 @@ void n64_game_menu(
 Pro variant a new unit gets a pistol (in hand) and an assault rifle instead
 of the map's starting weapons; FALSE otherwise */
 boolean n64_game_pro_weapons(
-	long unit_index)
+    long unit_index)
 {
 	static char const *const loadouts[3][2] = {
 		{ "weapons\\pistol\\pistol", "weapons\\assault rifle\\assault rifle" },
 		{ "weapons\\plasma_cannon\\plasma_cannon", "weapons\\pistol\\pistol" },
 		{ "weapons\\flamethrower\\flamethrower", "weapons\\pistol\\pistol" }
 	};
-	char const *const *names = loadouts[n64_choice.weapon_set > 1 ? PIN(n64_choice.weapon_set - 1, 0, 2) : 0];
+	/* Optional world pickups use MAP DEFAULT's exact loadout policy,
+	including its Pistol + AR override for Pro game variants. */
+	int weapon_set =
+#ifdef HALO_N64_PC_EXPANSION
+		n64_choice.weapon_set == N64_WEAPONS_PC_ADDITIVE ? 0 :
+#endif
+		n64_choice.weapon_set;
+	char const *const *names = loadouts[weapon_set > 1 ? PIN(weapon_set - 1, 0, 2) : 0];
 	boolean first = TRUE;
 	short i;
 	char diagnostic[160];
 
-	if ((!n64_pro_weapons && !n64_choice.weapon_set) || unit_index == NONE || n64_choice.firefight)
+	if ((!n64_pro_weapons && !weapon_set) || unit_index == NONE || n64_choice.firefight)
 		return FALSE;
 	/* Refuse a partial loadout: keep the map's starting weapons instead. */
 	if (tag_loaded('weap', names[0]) == NONE || tag_loaded('weap', names[1]) == NONE)
@@ -1447,3 +1458,16 @@ real_rgb_color player_profile_get_rgb_color(
 }
 
 word player_profile_number_of_available_primary_colors(void) { return NUMBEROF(n64_profile_color_table); }
+
+#ifdef HALO_N64_PC_EXPANSION
+int n64_game_pc_equipment_enabled(void)
+{
+    return n64_pc_equipment_enabled(n64_choice.weapon_set,
+        n64_choice.firefight || n64_choice.campaign);
+}
+int n64_game_pc_vehicle_enabled(void)
+{
+    return n64_pc_vehicle_enabled(n64_choice.vehicle_set,
+        n64_choice.firefight || n64_choice.campaign);
+}
+#endif

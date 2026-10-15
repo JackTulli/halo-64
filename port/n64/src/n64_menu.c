@@ -769,7 +769,7 @@ enum { CONTENT_WEAPONS,
 	CONTENT_FEEDBACK, CONTENT_BIG_HEAD, CONTENT_PAINTBALL, CONTENT_BACK, CONTENT_COUNT };
 static const char *const weapon_sets[] = {"MAP DEFAULT", "PISTOL + AR",
 #ifdef HALO_N64_PC_EXPANSION
-	"FUEL ROD + PISTOL", "FLAME + PISTOL",
+	"FUEL ROD + PISTOL", "FLAME + PISTOL", "PC PICKUPS",
 #endif
 };
 #define WEAPON_SET_COUNT ((int)(sizeof(weapon_sets) / sizeof(weapon_sets[0])))
@@ -1201,7 +1201,13 @@ static void draw_content(const struct n64_menu_choice *c, int item)
 	list_item(SCREEN_W / 2, 134 + CONTENT_BACK * 42, 180, item == CONTENT_BACK, "BACK");
 	panel(80, 374, 560, 424, 0x80102040);
 	frame_line(80, 374, 560, 424, FRAME_COLOR);
-	help = item == CONTENT_WEAPONS ? "STARTING WEAPONS FOR PLAYERS AND BOTS" :
+	help = item == CONTENT_WEAPONS ?
+#ifdef HALO_N64_PC_EXPANSION
+        (c->weapon_set == N64_WEAPONS_PC_ADDITIVE ? "PC PICKUPS; MAP STARTING WEAPONS" :
+         "STARTING WEAPONS FOR PLAYERS AND BOTS") :
+#else
+        "STARTING WEAPONS FOR PLAYERS AND BOTS" :
+#endif
 #ifdef HALO_N64_PC_EXPANSION
 		item == CONTENT_VEHICLES ? vehicle_help[vehicle] :
 #endif
