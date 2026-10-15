@@ -8,11 +8,87 @@ loads separately at the address its scenario reference gives
 (scenario_structure_bsp_reference: file_offset, file_size, base_address).
 """
 
+import os
+import re
 import struct
 import zlib
 from pathlib import Path
 
 TAG_BASE = 0x803A6000
+
+
+# Supported offline conversion ceiling, not a console RAM limit. The owned
+# 19-map expansion + UI + ten Xbox campaigns peak at 279,763,456 bytes.
+MAX_MAP_BYTES = 512 << 20
+# Permit zlib framing/deflate overhead and the cache's 4096-byte zero padding.
+MAX_MAP_FILE_BYTES = MAX_MAP_BYTES + (1 << 20) + 4096
+_MAP_CHUNK = 1 << 20
+
+
+def read_xbox_map(path):
+    """Read one v5 cache with bounded inflation and exact stream/padding checks.
+
+    Accept header-declared zero padding of 0..4095 bytes after the zlib stream.
+    Reject changed inputs; open the supplied file read-only throughout.
+    """
+    with Path(path).open('rb') as stream:
+        before = os.fstat(stream.fileno())
+        if not 2048 < before.st_size <= MAX_MAP_FILE_BYTES:
+            raise ValueError('Xbox cache compressed size exceeds supported bounds')
+        header = stream.read(2048)
+        if len(header) != 2048 or header[:4] != b'daeh' or header[-4:] != b'toof':
+            raise ValueError('Invalid Xbox cache header/footer')
+        version, declared, padding, tag_offset, tag_size = struct.unpack_from('<5I', header, 4)
+        if version != 5:
+            raise ValueError('Expected Xbox cache version 5')
+        if (not 2048 < declared <= MAX_MAP_BYTES or padding > 4095 or
+                tag_offset < 2048 or tag_size < 36 or tag_offset + tag_size > declared):
+            raise ValueError('Invalid Xbox cache declared size, padding or tag bounds')
+        raw_name = header[0x20:0x40]
+        name = raw_name.split(b'\0', 1)[0]
+        if (b'\0' not in raw_name or not re.fullmatch(rb'[A-Za-z0-9][A-Za-z0-9_-]{0,30}', name) or
+                re.fullmatch(rb'(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])', name)):
+            raise ValueError('Unsafe or unterminated Xbox cache name')
+        decompressor = zlib.decompressobj()
+        data = bytearray(header)
+        remaining = before.st_size - len(header)
+        trailing = 0
+        try:
+            while remaining:
+                block = stream.read(min(_MAP_CHUNK, remaining))
+                if not block:
+                    raise ValueError('Truncated Xbox compressed stream')
+                remaining -= len(block)
+                if not decompressor.eof:
+                    while block:
+                        # The extra byte detects overflow without inflating the
+                        # rest of a forged stream or allocating declared size.
+                        chunk = decompressor.decompress(block, min(_MAP_CHUNK, declared - len(data) + 1))
+                        if len(data) + len(chunk) > declared:
+                            raise ValueError('Xbox cache exceeds its declared decompressed size')
+                        data.extend(chunk)
+                        if decompressor.eof:
+                            block = decompressor.unused_data
+                            break
+                        block = decompressor.unconsumed_tail
+                if decompressor.eof:
+                    trailing += len(block)
+                    if trailing > padding or any(block):
+                        raise ValueError('Invalid Xbox cache trailing padding')
+        except zlib.error as error:
+            raise ValueError('Invalid Xbox compressed stream') from error
+        after = os.fstat(stream.fileno())
+        if stream.read(1) or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise ValueError('Xbox cache changed while reading')
+        if not decompressor.eof or len(data) != declared or trailing != padding:
+            raise ValueError('Incomplete Xbox stream or inconsistent length/padding')
+    tag_header = data[tag_offset:tag_offset + 36]
+    address, scenario, _, count = struct.unpack_from('<4I', tag_header)
+    relative = address - 0x803A6000
+    if (tag_header[32:] != b'sgat' or not 0 < count <= 65535 or relative < 36 or
+            relative + count * 32 > tag_size or (scenario & 0xffff) >= count):
+        raise ValueError('Invalid Xbox tag table bounds')
+    return bytes(data)
 
 
 class Tag:
@@ -31,9 +107,8 @@ class Tag:
 class XboxMap:
     def __init__(self, path):
         self.path = Path(path)
-        raw = self.path.read_bytes()
-        self.header = raw[:0x800]
-        self.data = raw[:0x800] + zlib.decompressobj().decompress(raw[0x800:])
+        self.data = read_xbox_map(self.path)
+        self.header = self.data[:0x800]
         (self.signature, self.version, self.file_length, _, self.tag_data_offset,
          self.tag_data_size) = struct.unpack_from("<4sIIIII", self.data, 0)
         self.name = self.data[0x20:0x40].split(b"\0")[0].decode()
