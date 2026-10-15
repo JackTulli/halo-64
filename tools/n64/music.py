@@ -5,10 +5,9 @@ title1): a track whose start sound ("in", the monks) plays once and whose
 loop sound ("loops") then plays for ever, one of its three versions at a
 time. Each version is a chain of permutations (next permutation index)
 whose samples are Xbox ADPCM in the cache file: 4-bit IMA ADPCM in
-36-byte blocks a channel (a 4-byte header -- the predictor and step index,
-not itself a sample -- then 64 samples' nibbles, interleaved between the
-channels 4 bytes at a time; as port/linux/src/dsound_sdl.c decodes them:
-ffmpeg's IMA WAV decoder outputs the header as a 65th sample). The chains
+36-byte blocks a channel (a 4-byte header with the first sample and step
+index, then 63 used sample nibbles and one padding nibble, interleaved
+between channels 4 bytes at a time). Each block contains 64 frames. The chains
 are joined (each block starts afresh), decoded here, and resampled and
 compressed to VADPCM wav64 files with libdragon's audioconv64 (its
 libsamplerate; ffmpeg did the resampling, which the Windows ROM builder
@@ -89,9 +88,10 @@ def decode_xbox_adpcm(data, channels):
         for c in range(channels):
             predictor = struct.unpack_from("<h", data, base + 4 * c)[0]
             index = min(data[base + 4 * c + 2], 88)
+            out[frame + c] = predictor
             for group in range(8):
                 nibbles = base + 4 * channels + (group * channels + c) * 4
-                for k in range(8):
+                for k in range(7 if group == 7 else 8):
                     nibble = (data[nibbles + (k >> 1)] >> (4 * (k & 1))) & 15
                     step = STEP_TABLE[index]
                     difference = step >> 3
@@ -105,7 +105,7 @@ def decode_xbox_adpcm(data, channels):
                         difference = -difference
                     predictor = max(-32768, min(32767, predictor + difference))
                     index = max(0, min(88, index + INDEX_TABLE[nibble]))
-                    out[frame + (group * 8 + k) * channels + c] = predictor
+                    out[frame + (group * 8 + k + 1) * channels + c] = predictor
     return struct.pack(f"<{len(out)}h", *out)
 
 

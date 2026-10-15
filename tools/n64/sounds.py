@@ -49,7 +49,7 @@ NONE = 0xFFFFFFFF
 RATE = 22050
 SAMPLE_RATES = {0: 22050, 1: 44100}
 # the cache's version: a change to the conversion makes new files
-CACHE_VERSION = b"n64 sound 2"
+CACHE_VERSION = b"n64 sound 3"
 
 # Halo's sound classes the N64 plays (sound_classes.c): weapons, impacts,
 # explosions, footsteps, vehicles, dialogue, the announcer and the HUD's
@@ -72,9 +72,9 @@ CLASS_DISTANCES = {
     50: (3.0, 20.0),
 }
 
-# Xbox ADPCM (IMA ADPCM, 36-byte blocks a channel: a 4-byte header with the
-# predictor and step index, then 64 samples' nibbles, interleaved between
-# the channels 4 bytes at a time; port/linux/src/dsound_sdl.c)
+# Xbox ADPCM (36-byte blocks a channel: a 4-byte header with the
+# predictor and step index, then 63 used nibbles and one padding nibble;
+# channel data alternates 4 bytes at a time, low nibble first)
 INDEX_TABLE = (-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8)
 STEP_TABLE = (
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97,
@@ -105,7 +105,7 @@ DIFF, NEXT = _tables()
 
 
 def decode_xbox_adpcm(data, channels):
-    """16-bit PCM (interleaved) from Xbox ADPCM: 64 samples a block"""
+    """16-bit interleaved PCM: predictor + 63 codes per channel/block."""
     block = 36 * channels
     blocks = len(data) // block
     out = [0] * (blocks * 64 * channels)
@@ -117,10 +117,12 @@ def decode_xbox_adpcm(data, channels):
             predictor = struct.unpack_from("<h", data, base + 4 * c)[0]
             state = min(data[base + 4 * c + 2], 88) * 16
             o = frame + c
+            out[o] = predictor
+            o += channels
             for group in range(8):
                 p = base + 4 * channels + (group * channels + c) * 4
                 word = data[p] | data[p + 1] << 8 | data[p + 2] << 16 | data[p + 3] << 24
-                for _ in range(8):
+                for _ in range(7 if group == 7 else 8):
                     k = state + (word & 15)
                     word >>= 4
                     predictor += diff[k]
