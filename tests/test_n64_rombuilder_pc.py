@@ -46,6 +46,10 @@ class RecordingBuilder(rb.RomBuilder):
             bitmap.write_bytes(b"fixture")
             (maps.parent / "manifest.json").write_text(json.dumps({"status": "complete", "outputs": []}))
             (folder / "result.json").write_text(json.dumps({"maps": str(maps), "ui_bitmap": str(bitmap)}))
+        elif module == "fx_pool":
+            folder = Path(arguments[arguments.index("--output") + 1])
+            folder.mkdir()
+            folder.with_name(folder.name + ".fx-pool.json").write_text(json.dumps({"source_unchanged": True}))
         elif module == "music":
             (Path(arguments[arguments.index("--filesystem") + 1]) / "music").mkdir()
 
@@ -90,8 +94,11 @@ class BuilderTests(unittest.TestCase):
         conversions = [a for m, a in builder.calls if m == "convert"]
         self.assertEqual(len(conversions), 14)
         self.assertFalse(any("--pc-expansion" in a or "--pc-maps" in a for a in conversions))
-        self.assertFalse(any(m in ("pc_prepare", "pc_thumbnails", "compress_map") for m, _ in builder.calls))
+        self.assertFalse(any(m in ("pc_prepare", "pc_thumbnails", "compress_map", "fx_pool") for m, _ in builder.calls))
         self.assertFalse(builder.input_stage.exists())
+        for module, args in builder.calls:
+            if module == "tool" and args[0] == "mkdfs":
+                self.assertEqual(Path(args[-1]).name, "filesystem")
 
     def test_pc_separate_19_map_pipeline_explicit_sources_and_ui(self):
         builder = self.builder(["pc_expansion"], pc_source=self.pc, pc_tools=self.tools)
@@ -115,6 +122,21 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(sum(m == "pc_thumbnails" for m, _ in builder.calls), 1)
         self.assertEqual(sum(m == "paint_masks" for m, _ in builder.calls), 1)
         self.assertEqual(sum(m == "decal_bank" for m, _ in builder.calls), 1)
+        pool = [(i, a) for i, (m, a) in enumerate(builder.calls) if m == "fx_pool"]
+        self.assertEqual(len(pool), 1)
+        pool_index, pool_args = pool[0]
+        raw_fs = Path(pool_args[pool_args.index("--filesystem") + 1])
+        packed_fs = Path(pool_args[pool_args.index("--output") + 1])
+        self.assertEqual(pool_args[pool_args.index("--maps") + 1:], BASE + list(PC_MAPS))
+        self.assertNotEqual(raw_fs, packed_fs)
+        prune_indexes = [i for i, (m, _) in enumerate(builder.calls) if m == "prune"]
+        self.assertTrue(prune_indexes and max(prune_indexes) < pool_index)
+        self.assertFalse(any(i > pool_index for i in prune_indexes))
+        mkdfs_calls = [(i, a) for i, (m, a) in enumerate(builder.calls) if m == "tool" and a[0] == "mkdfs"]
+        self.assertEqual(len(mkdfs_calls), 1)
+        self.assertGreater(mkdfs_calls[0][0], pool_index)
+        self.assertEqual(Path(mkdfs_calls[0][1][-1]), packed_fs)
+        self.assertTrue((builder.receipts / "pc-fx-pool.json").is_file())
         manifest = json.loads((builder.receipts / "pc-inputs.json").read_text())
         self.assertTrue(manifest["maps"])
         self.assertFalse(builder.input_stage.exists())
@@ -134,6 +156,71 @@ class BuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(rb.BuildError, "also needs"):
             builder.run()
         self.assertEqual(builder.calls, [])
+
+    def test_oversize_rom_preserves_final_and_removes_only_owned_temporary(self):
+        builder = self.builder(["multiplayer"])
+        builder.output.mkdir()
+        final = builder.output / "halo-n64.z64"
+        final.write_bytes(b"previous known ROM")
+        other = builder.output / "halo-n64.tmp"
+        other.write_bytes(b"unrelated pre-existing temporary")
+        original_tool = builder.run_tool
+        def oversized(text, command):
+            original_tool(text, command)
+            if "--output" in command:
+                with Path(command[command.index("--output") + 1]).open("r+b") as stream:
+                    stream.truncate(rb.MAX_ROM_BYTES + 1)
+        builder.run_tool = oversized
+        with self.assertRaisesRegex(rb.BuildError, "maximum ROM size is 64 MiB"):
+            builder.run()
+        self.assertEqual(final.read_bytes(), b"previous known ROM")
+        self.assertEqual(other.read_bytes(), b"unrelated pre-existing temporary")
+        self.assertEqual(list(builder.output.glob("halo-n64-*.tmp")), [])
+        self.assertFalse(builder.input_stage.exists())
+
+    def test_exact_64mib_boundary_can_publish(self):
+        builder = self.builder(["multiplayer"])
+        original_tool = builder.run_tool
+        def exact_size(text, command):
+            original_tool(text, command)
+            if "--output" in command:
+                with Path(command[command.index("--output") + 1]).open("r+b") as stream:
+                    stream.truncate(rb.MAX_ROM_BYTES)
+        builder.run_tool = exact_size
+        output, = builder.run()
+        self.assertEqual(output.stat().st_size, rb.MAX_ROM_BYTES)
+        self.assertEqual(list(builder.output.glob("halo-n64-*.tmp")), [])
+
+    def test_actual_fx_pool_worker_keeps_source_and_non_fx_bytes(self):
+        from tools.n64 import fx_pool
+        raw = self.root / "raw-fs"
+        (raw / "fx").mkdir(parents=True)
+        (raw / "levels").mkdir()
+        (raw / "levels" / "keep.bin").write_bytes(b"unchanged non-FX payload")
+        # One zero-emitter event record shared by two independently indexed maps.
+        atlas = 48
+        record = atlas + fx_pool.ATLAS_BYTES
+        explosions = record + 16
+        def fixture(tag):
+            data = bytearray(explosions + 4)
+            struct.pack_into(">4sIHHIIIHB5x", data, 0, b"N64F", 2, 1, 1, 32, atlas, explosions, 1, 0)
+            struct.pack_into(">HHI", data, 32, tag, 8, record)
+            struct.pack_into(">HHH", data, record, 0, 0, 0)
+            struct.pack_into(">HH", data, explosions, tag, 0)
+            return bytes(data)
+        originals = {"first": fixture(7), "second": fixture(9)}
+        for name, data in originals.items():
+            (raw / "fx" / (name + ".fx")).write_bytes(data)
+        packed = self.root / "packed-fs"
+        with patch.object(sys, "argv", ["worker"]):
+            self.assertEqual(rb.run_worker(["fx_pool", "--filesystem", str(raw), "--output", str(packed),
+                                            "--maps", "first", "second"]), 0)
+        for name, data in originals.items():
+            self.assertEqual((raw / "fx" / (name + ".fx")).read_bytes(), data)
+            fx_pool.verify_map(data, (packed / "fx" / (name + ".fx")).read_bytes(),
+                               (packed / fx_pool.BANK_PATH).read_bytes(), name)
+        self.assertEqual((packed / "levels" / "keep.bin").read_bytes(), b"unchanged non-FX payload")
+        self.assertFalse(any(p.name.endswith((".json", ".stamp")) for p in packed.iterdir()))
 
     def test_pc_missing_mkasset_fails_before_conversion(self):
         self.mkasset.unlink()

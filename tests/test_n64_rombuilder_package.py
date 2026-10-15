@@ -97,6 +97,7 @@ class PackageTests(unittest.TestCase):
         self.assertIn("elf/pc-expansion/halo.elf.stripped", self.payload)
         self.assertIn("bin/mkasset.exe", self.payload)
         self.assertIn("compress_map", package.CONVERTERS)
+        self.assertIn("fx_pool", package.CONVERTERS)
         manifest = json.loads(self.payload["pc-tools.json"])
         self.assertEqual(len(manifest), len(package.PC_TOOLS) + 1)
         self.assertTrue(all(len(item["sha256"]) == 64 for item in manifest))

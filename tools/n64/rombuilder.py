@@ -49,6 +49,7 @@ CARTRIDGES = {
 WEIGHTS = {"map": 10, "campaign map": 60, "ui": 6, "music": 4, "sounds": 2, "pack": 2, "rom": 1}
 # a converter's memory at most (three at a time took ~2.4 GB)
 CONVERSION_BYTES = 900 << 20
+MAX_ROM_BYTES = 64 << 20
 
 
 class BuildError(Exception):
@@ -457,19 +458,36 @@ class RomBuilder:
         self.run_worker(f"Preparing impact decals ({label})", "decal_bank", decal_args)
         # the cartridge's file system
         self.run_worker(f"Tidying the files ({label})", "prune", [str(fsdir), *names, "ui"])
+        packed_fs = fsdir
+        if cartridge == "pc_expansion":
+            packed_fs = variant / "packed-filesystem"
+            self.run_worker("Sharing exact PC effect records", "fx_pool",
+                            ["--filesystem", str(fsdir), "--output", str(packed_fs), "--maps", *names])
+            manifest = packed_fs.with_name(packed_fs.name + ".fx-pool.json")
+            shutil.copy2(manifest, self.receipts / "pc-fx-pool.json")
+        # The pooled tree is already final; do not prune or modify it here.
         dfs = variant / "halo.dfs"
-        self.run_tool(f"Packing the files ({label})", [tool("mkdfs"), str(dfs), str(fsdir)])
+        self.run_tool(f"Packing the files ({label})", [tool("mkdfs"), str(dfs), str(packed_fs)])
         self.step(WEIGHTS["pack"], f"Files packed ({label})")
         # the ROM: the program, its symbols, the files
         elf, symbols = elf_files(cartridge)
         rom = self.output / CARTRIDGES[cartridge]["rom"]
-        temporary = rom.with_suffix(".tmp")
+        # Reserve a unique owned temporary file so rejection/cleanup cannot
+        # remove another build's file or the previously published ROM.
+        with tempfile.NamedTemporaryFile(prefix=rom.stem + "-", suffix=".tmp", dir=self.output, delete=False) as reserved:
+            temporary = Path(reserved.name)
         title = config.get("title", "HALO N64")
-        self.run_tool(f"Making the ROM ({label})", [tool("n64tool"), "--toc", "--title", title, "--output",
-                                                   str(temporary), "--align", "256", str(elf), str(symbols), str(dfs)])
-        self.run_tool(f"Making the ROM ({label})", [tool("ed64romconfig"), "--expansionpak", "required", "--savetype",
-                                                   "eeprom4k", "--regionfree", str(temporary)])
-        os.replace(temporary, rom)
+        try:
+            self.run_tool(f"Making the ROM ({label})", [tool("n64tool"), "--toc", "--title", title, "--output",
+                                                       str(temporary), "--align", "256", str(elf), str(symbols), str(dfs)])
+            self.run_tool(f"Making the ROM ({label})", [tool("ed64romconfig"), "--expansionpak", "required", "--savetype",
+                                                       "eeprom4k", "--regionfree", str(temporary)])
+            size = temporary.stat().st_size
+            if size > MAX_ROM_BYTES:
+                raise BuildError(f"{rom.name} would be {size / (1 << 20):.2f} MiB; maximum ROM size is 64 MiB")
+            os.replace(temporary, rom)
+        finally:
+            temporary.unlink(missing_ok=True)
         self.step(WEIGHTS["rom"], f"{rom.name} made")
         self.log(f"{rom}: {rom.stat().st_size / (1 << 20):.1f} MB")
         return rom
@@ -613,7 +631,7 @@ def run_worker(arguments):
         os.environ.setdefault(key, value)
     import importlib
     import traceback
-    allowed = {"convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank", "compress_map"}
+    allowed = {"convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank", "compress_map", "fx_pool"}
     if module not in allowed:
         print(f"no such converter: {module}")
         return 2

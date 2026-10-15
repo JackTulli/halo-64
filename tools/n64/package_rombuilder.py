@@ -28,7 +28,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent.parent
 NAME = "Halo64RomBuilder"
 TOOLS = ("mksprite", "audioconv64", "mkdfs", "n64tool", "ed64romconfig")
-CONVERTERS = ("convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank", "compress_map")
+CONVERTERS = ("convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank", "compress_map", "fx_pool")
 PC_ASSET_TOOLS = ("mkasset",)
 PC_TOOLS = tuple("invader-" + name for name in ("extract", "convert", "refactor", "bludgeon", "edit", "sound", "build")) + ("ffmpeg",)
 
