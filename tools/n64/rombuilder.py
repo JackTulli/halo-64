@@ -295,6 +295,8 @@ class RomBuilder:
                 raise BuildError("PC expansion also needs your Halo PC retail disc image or installed maps folder")
             if "pc_expansion" not in self.config:
                 raise BuildError("this builder has no PC expansion configuration")
+            if not Path(tool("mkasset")).is_file():
+                raise BuildError("PC expansion needs the trusted libdragon mkasset tool; include it in N64_TOOLS")
             from .pc_input import PCMapSource, PC_MAPS
             from .pc_prepare import validate_tools
             try:
@@ -421,6 +423,10 @@ class RomBuilder:
                 arguments += ["--pc-expansion", "--pc-maps", str(self.pc_maps)]
             tasks.append((f"Converting {name} ({label})", "convert", arguments, weight))
         self.run_parallel(tasks)
+        if cartridge == "pc_expansion":
+            for name in names:
+                self.run_worker(f"Compressing {name} ({label})", "compress_map",
+                                [str(fsdir / "maps" / f"{name}.map")])
         self.run_worker(f"Converting the menu ({label})", "ui", [str(maps / "ui.map"), "--filesystem", str(fsdir)])
         if cartridge == "pc_expansion":
             self.run_worker("Adding the PC map thumbnails", "pc_thumbnails",
@@ -607,11 +613,20 @@ def run_worker(arguments):
         os.environ.setdefault(key, value)
     import importlib
     import traceback
-    allowed = {"convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank"}
+    allowed = {"convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank", "compress_map"}
     if module not in allowed:
         print(f"no such converter: {module}")
         return 2
     try:
+        if module == "compress_map":
+            if len(rest) != 1:
+                print("compress_map worker expects exactly one generated map path")
+                return 2
+            # Keep the existing Ninja CLI/helper unchanged: it is a global
+            # converter dependency. The installer only needs this function.
+            from .compress_map import compress
+            compress(Path(rest[0]))
+            return 0
         target = importlib.import_module(f"tools.n64.{module}")
         sys.argv = [f"tools.n64.{module}", *rest]
         result = target.main()

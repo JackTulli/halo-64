@@ -70,10 +70,12 @@ class BuilderTests(unittest.TestCase):
         self.elf.write_bytes(b"code")
         self.tools = self.root / "trusted-tools"
         self.tools.mkdir()
+        self.mkasset = self.root / "mkasset.exe"
+        self.mkasset.write_bytes(b"trusted tool fixture, never executed")
         self.addCleanup(patch.stopall)
         patch.object(rb, "port_config", return_value=CONFIG).start()
         patch.object(rb, "elf_files", return_value=(self.elf, self.elf)).start()
-        patch.object(rb, "tool", side_effect=lambda name: name).start()
+        patch.object(rb, "tool", side_effect=lambda name: str(self.mkasset) if name == "mkasset" else name).start()
         patch.object(rb, "halo_font", return_value=None).start()
 
     def builder(self, selections, **kwargs):
@@ -88,7 +90,7 @@ class BuilderTests(unittest.TestCase):
         conversions = [a for m, a in builder.calls if m == "convert"]
         self.assertEqual(len(conversions), 14)
         self.assertFalse(any("--pc-expansion" in a or "--pc-maps" in a for a in conversions))
-        self.assertFalse(any(m in ("pc_prepare", "pc_thumbnails") for m, _ in builder.calls))
+        self.assertFalse(any(m in ("pc_prepare", "pc_thumbnails", "compress_map") for m, _ in builder.calls))
         self.assertFalse(builder.input_stage.exists())
 
     def test_pc_separate_19_map_pipeline_explicit_sources_and_ui(self):
@@ -103,6 +105,13 @@ class BuilderTests(unittest.TestCase):
             self.assertEqual(Path(args[args.index("--pc-maps") + 1]), builder.pc_maps)
             source = Path(args[0])
             self.assertEqual(source.parent, builder.pc_maps if source.stem in PC_MAPS else builder.input_stage / "xbox")
+        compressed = [(index, args) for index, (module, args) in enumerate(builder.calls) if module == "compress_map"]
+        converted = [index for index, (module, _) in enumerate(builder.calls) if module == "convert"]
+        self.assertEqual(len(compressed), 19)
+        self.assertLess(max(converted), compressed[0][0])
+        self.assertLess(compressed[-1][0], next(i for i, (m, _) in enumerate(builder.calls) if m == "ui"))
+        self.assertEqual({Path(args[0]).stem for _, args in compressed}, set(BASE) | set(PC_MAPS))
+        self.assertTrue(all(len(args) == 1 for _, args in compressed))
         self.assertEqual(sum(m == "pc_thumbnails" for m, _ in builder.calls), 1)
         self.assertEqual(sum(m == "paint_masks" for m, _ in builder.calls), 1)
         self.assertEqual(sum(m == "decal_bank" for m, _ in builder.calls), 1)
@@ -125,6 +134,24 @@ class BuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(rb.BuildError, "also needs"):
             builder.run()
         self.assertEqual(builder.calls, [])
+
+    def test_pc_missing_mkasset_fails_before_conversion(self):
+        self.mkasset.unlink()
+        builder = self.builder(["pc_expansion"], pc_source=self.pc, pc_tools=self.tools)
+        with self.assertRaisesRegex(rb.BuildError, "mkasset"):
+            builder.run()
+        self.assertEqual(builder.calls, [])
+
+    def test_compressor_worker_dispatches_function_without_main_adapter(self):
+        with patch("tools.n64.compress_map.compress") as compress:
+            self.assertEqual(rb.run_worker(["compress_map", "generated.map"]), 0)
+            compress.assert_called_once_with(Path("generated.map"))
+
+    def test_compressor_worker_rejects_missing_or_extra_arguments(self):
+        with patch("tools.n64.compress_map.compress") as compress:
+            for args in ([], ["generated.map", "extra"]):
+                self.assertEqual(rb.run_worker(["compress_map", *args]), 2)
+            compress.assert_not_called()
 
     def test_wrong_xbox_pc_input_and_wrong_pc_xbox_input_rejected(self):
         cache(self.xbox / "bloodgulch.map", 7)
