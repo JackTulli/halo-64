@@ -46,12 +46,15 @@ class Field:
 
 
 class TagDefinitions:
-    def __init__(self, directory=DEFINITIONS):
+    def __init__(self, directory=None):
+        directory = Path(directory if directory is not None else
+                         os.environ.get("INVADER_DEFINITIONS", DEFINITIONS)).expanduser().resolve()
+        fourcc_header = directory.parent.parent.parent.parent / "include/invader/hek/fourcc.hpp"
         self.structs = {}
         self.enums = {}
         self.bitfields = {}
         self.class_struct = {}
-        for path in sorted(Path(directory).glob("*.json")):
+        for path in sorted(directory.glob("*.json")):
             for d in json.load(open(path, encoding="utf-8")):
                 kind = d["type"]
                 if kind == "struct":
@@ -63,7 +66,7 @@ class TagDefinitions:
                 elif kind == "bitfield":
                     self.bitfields[d["name"]] = d
         self.fourcc_class = {}
-        text = FOURCC_HEADER.read_text(encoding="utf-8")
+        text = fourcc_header.read_text(encoding="utf-8")
         for name, value in re.findall(r"TAG_FOURCC_([A-Z_]+) = (0x[0-9A-Fa-f]+)", text):
             self.fourcc_class[int(value, 16)] = name.lower()
         self._fields = {}

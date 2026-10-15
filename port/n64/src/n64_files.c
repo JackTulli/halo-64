@@ -14,6 +14,7 @@ the XDK-facing file layer (xdk_kernel.c) and the map loader.
 #define MAXIMUM_FILES 8
 
 static FILE *files[MAXIMUM_FILES];
+static int decoded_sizes[MAXIMUM_FILES];
 
 long n64_file_open(const char *path)
 {
@@ -21,7 +22,12 @@ long n64_file_open(const char *path)
 	{
 		if (!files[i])
 		{
-			files[i] = fopen(path, "rb");
+			/* Map reads are sequential, with only forward/alignment seeks.
+			Streaming LZ4 uses a bounded 64 KiB history, never a second map image. */
+			size_t length = strlen(path);
+			decoded_sizes[i] = -1;
+			files[i] = length > 4 && !strcmp(path + length - 4, ".map") ?
+				asset_fopen(path, &decoded_sizes[i]) : fopen(path, "rb");
 			return files[i] ? i : -1;
 		}
 	}
@@ -30,6 +36,8 @@ long n64_file_open(const char *path)
 
 long n64_file_size(long handle)
 {
+	if (decoded_sizes[handle] >= 0)
+		return decoded_sizes[handle];
 	FILE *file = files[handle];
 	long position = ftell(file);
 	long size;

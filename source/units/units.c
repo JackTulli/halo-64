@@ -8002,6 +8002,12 @@ static boolean unit_set_or_test_seat_and_weapon_label(
 		}
 	}
 
+#ifdef HALO_N64
+	/* Old Xbox cyborg graphs lack the PC Fuel Rod stance. Keep PC graphs
+	   when present, otherwise use their existing two-handed rocket pose. */
+	if (!result && weapon_label && !strcmp(weapon_label, "pc"))
+		return unit_set_or_test_seat_and_weapon_label(object_index, seat_label, "rl", change_flag);
+#endif
 	return result;
 }
 

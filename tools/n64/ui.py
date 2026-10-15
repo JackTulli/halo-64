@@ -408,7 +408,7 @@ class UIModels(ModelConverter):
             d.save(detail_png)
             repeats = read("detail map scale", "<f") or 1.0
             scale_log = -max(0, round(math.log2(max(1.0, repeats * HULL_DETAIL_SIZE / HULL_SIZE))))
-            command += ["--detail", f"{detail_png},I4,{HULL_DETAIL_FACTOR}",
+            command += ["--detail", f"{detail_png.as_posix()},I4,{HULL_DETAIL_FACTOR}",
                         "--detail-texparms", f"0,{scale_log},2048,0"]
         toolpaths.run(command + ["-o", str(png.parent), str(png)], check=True, capture_output=True)
         png.unlink()

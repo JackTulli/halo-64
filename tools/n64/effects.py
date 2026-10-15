@@ -48,6 +48,7 @@ EXPLOSIONS = {
     "weapons\\rocket launcher\\effects\\rocket explosion": 2,
     "vehicles\\scorpion\\shell explosion": 3,
     "weapons\\needler\\effects\\explosion": 4,
+    "weapons\\plasma_cannon\\effects\\explosion": 5,
 }
 CELL = 16
 COLUMNS, ROWS = 8, 4
@@ -98,7 +99,7 @@ class EffectParticles:
     def sprite(self, part):
         """the particle's bitmap's first sprite, 16x16 greyscale (its
         brightness times its coverage)"""
-        bitmap = self._dep(part.address + self.pf["bitmap"])
+        bitmap = part if part.group_name == "bitm" else self._dep(part.address + self.pf["bitmap"])
         if bitmap is None or bitmap.group_name != "bitm":
             return None, None
         if bitmap.index in self.sprites:
@@ -106,7 +107,7 @@ class EffectParticles:
         image = None
         try:
             images = bitmap_images(self.map, bitmap, self.defs)
-            first = struct.unpack("<h", self.map.read(part.address + self.pf["first sequence index"], 2))[0]
+            first = 0 if part.group_name == "bitm" else struct.unpack("<h", self.map.read(part.address + self.pf["first sequence index"], 2))[0]
             count, pointer = self._block(bitmap.address + self.bf["bitmap group sequence"])
             index, box = 0, (0.0, 0.0, 1.0, 1.0)
             sequence = first if 0 <= first < count else 0
@@ -190,9 +191,21 @@ class EffectParticles:
             if any(events):
                 emitters_by_effect[tag.index] = events
         # the cells: the most used bitmaps, the rest the most like one of them
-        ranked = [b for b, _ in sorted(usage.items(), key=lambda kv: -kv[1])]
+        # The PC flame travels as a contrail, rather than an effect emitter.
+        # Reserve its original cloud-fire sprite explicitly for the native trail.
+        for tag in self.map.tags:
+            if tag.group_name == "bitm" and tag.name == "weapons\\flamethrower\\bitmaps\\cloud fire":
+                _, image = self.sprite(tag)
+                if image is not None:
+                    usage[tag.index] = usage.get(tag.index, 0) + 1
+        # Keep actual flame shapes instead of replacing the Flamethrower
+        # stream with the nearest generic spark when the 32-cell atlas fills.
+        ranked = [b for b, _ in sorted(usage.items(), key=lambda kv:
+                  (not self.map.tags[kv[0]].name.startswith("weapons\\flamethrower\\"), -kv[1]))]
         cells = [_blob()] + [self.sprites[b] for b in ranked[:CELLS - 1]]
         cell_of = {b: i + 1 for i, b in enumerate(ranked[:CELLS - 1])}
+        self.flame_cell = next((cell_of[b] for b in ranked[:CELLS - 1]
+                               if self.map.tags[b].name.startswith("weapons\\flamethrower\\")), 0)
         for b in ranked[CELLS - 1:]:
             img = list(self.sprites[b].getdata())
             best, best_cost = 0, None
@@ -301,6 +314,7 @@ class EffectParticles:
                             if t.group_name == "effe" and t.name in EXPLOSIONS)
         out += b"\0" * ((-len(out)) % 4)
         struct.pack_into(">IH", out, 20, len(out), len(explosions))
+        out[26] = self.flame_cell
         for index, kind in explosions:
             out += struct.pack(">HBB", index, kind, 0)
         Path(path).parent.mkdir(parents=True, exist_ok=True)

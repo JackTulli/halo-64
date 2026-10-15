@@ -242,10 +242,9 @@ symbols in this file:
 /* ---------- constants */
 
 #ifdef HALO_N64
-/* The N64 draws no decals (bullet holes, scorch marks, the maps' painted
-ones): none are made (decals_enabled), which spared a ray and the clipping
-of a decal against the level's surfaces at every impact, and the pools are
-tokens (the game state's 2048 decals were 112 KB of the heap) */
+/* The Xbox pool remains disabled (2048 entries consumed 112 KB). Native
+impact art and optional Paintball use the separate bounded N64 surface path
+in n64_modifiers.c/n64_paint.c; these tokens do not restore the Xbox pools. */
 enum
 {
 	NUMBER_OF_DECAL_LAYERS = 5,
@@ -2288,6 +2287,12 @@ void decal_new(
 	short forced_sequence_index,
 	struct decal_editor_geometry *editor_geometry)
 {
+#ifdef HALO_N64
+	{
+		extern void n64_paint_impact(long tag, real_point3d const *origin, real_vector3d const *velocity, real radius_modifier);
+		n64_paint_impact(decal_definition_index, origin, velocity, radius_modifier);
+	}
+#endif
 	if (decals_enabled)
 	{
 		unsigned long *local_random_seed_address= get_global_local_random_seed_address();

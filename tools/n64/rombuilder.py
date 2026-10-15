@@ -14,6 +14,10 @@ so does a command line:
     python3 -m tools.n64.rombuilder <disc image or maps folder> -o <folder>
         [--multiplayer] [--campaign] [--jobs N] [--work <folder>] [--font <Halo.ttf>]
 
+    # optional, separate PC expansion (also requires Xbox data):
+    python3 -m tools.n64.rombuilder <Xbox maps> -o <folder> --pc-expansion
+        --pc-source <retail PC ISO or Maps folder> --pc-tools <trusted tools>
+
 Each conversion runs in a process of its own (the converters take ~800 MB
 each): this program again, "--worker <module> <arguments>", its output in a
 log file.
@@ -27,6 +31,8 @@ import shutil
 import subprocess
 import sys
 import threading
+import tempfile
+import struct
 import time
 from pathlib import Path
 
@@ -37,6 +43,7 @@ REPO = Path(__file__).resolve().parent.parent.parent
 CARTRIDGES = {
     "multiplayer": {"rom": "halo-n64.z64", "elf": "multiplayer"},
     "campaign": {"rom": "halo-campaign.z64", "elf": "campaign"},
+    "pc_expansion": {"rom": "halo-pc-expansion.z64", "elf": "pc-expansion"},
 }
 # what a conversion costs, roughly (the progress bar's shares)
 WEIGHTS = {"map": 10, "campaign map": 60, "ui": 6, "music": 4, "sounds": 2, "pack": 2, "rom": 1}
@@ -75,7 +82,7 @@ def elf_files(cartridge):
     if root:
         folder = root / "elf" / CARTRIDGES[cartridge]["elf"]
     else:
-        folder = REPO / "build" / "n64" / ("campaign" if cartridge == "campaign" else "")
+        folder = REPO / "build" / "n64" / ({"campaign": "campaign", "pc_expansion": "pc-expansion"}.get(cartridge, ""))
     return folder / "halo.elf.stripped", folder / "halo.elf.sym"
 
 
@@ -157,12 +164,14 @@ class MapSource:
                                 if n.startswith("maps/") and n.endswith(".map") and n.count("/") == 1)
         elif self.path.is_dir():
             for candidate in (self.path, self.path / "maps", self.path / "Maps"):
-                if candidate.is_dir() and any(candidate.glob("*.map")):
+                if candidate.is_dir() and any(p.is_file() and p.suffix.lower() == ".map" for p in candidate.iterdir()):
                     self.folder = candidate
                     break
             if self.folder is None:
                 raise BuildError(f"no Halo maps (.map files) in {self.path}")
-            self.names = sorted(p.stem.lower() for p in self.folder.glob("*.map"))
+            self.names = sorted(p.stem.lower() for p in self.folder.iterdir() if p.is_file() and p.suffix.lower() == ".map")
+            if len(self.names) != len(set(self.names)):
+                raise BuildError("ambiguous map names differing only in case")
         else:
             raise BuildError(f"{self.path} is neither a disc image nor a folder")
 
@@ -180,8 +189,8 @@ class MapSource:
 
     def map_path(self, name):
         if self.folder:
-            for p in self.folder.glob("*.map"):
-                if p.stem.lower() == name:
+            for p in self.folder.iterdir():
+                if p.is_file() and p.suffix.lower() == ".map" and p.stem.lower() == name:
                     return p
         raise KeyError(name)
 
@@ -192,14 +201,39 @@ class MapSource:
         folder.mkdir(parents=True, exist_ok=True)
         for name in names:
             target = folder / f"{name}.map"
-            if target.exists() and target.stat().st_size == self.size(name):
-                continue
             if self.disc:
                 self.disc.extract(f"maps/{name}.map", target,
                                   (lambda done, total, n=name: progress(n, done, total)) if progress else None)
             else:
                 shutil.copyfile(self.map_path(name), target)
         return folder
+
+    def validate(self, names):
+        """Reject PC/Custom Edition data in the Xbox input before converters run."""
+        missing = self.missing(names)
+        if missing:
+            raise BuildError("missing Xbox maps: " + ", ".join(missing))
+        for name in names:
+            size = self.size(name)
+            if self.disc:
+                sector, _ = self.disc.files[f"maps/{name}.map"]
+                self.disc.file.seek(self.disc.partition + sector * 2048)
+                header = self.disc.file.read(2048)
+            else:
+                with self.map_path(name).open("rb") as stream:
+                    header = stream.read(2048)
+            if (len(header) != 2048 or header[:4] != b"daeh" or
+                    struct.unpack_from("<I", header, 4)[0] != 5 or header[-4:] != b"toof"):
+                raise BuildError(f"{name}.map is not a Halo Xbox version-5 cache file; choose Xbox data here")
+            declared, _, tag_offset, tag_size = struct.unpack_from("<4I", header, 8)
+            # Xbox files are compressed and 4096-byte padded; the length in
+            # the cache header describes the decompressed stream.
+            if (size < 2048 or not 2048 <= declared <= (2 << 30) or
+                    tag_offset < 2048 or tag_size < 36 or tag_offset + tag_size > declared):
+                raise BuildError(f"{name}.map has invalid Xbox tag-data bounds")
+            actual_name = header[0x20:0x40].split(b"\0", 1)[0]
+            if actual_name.lower() != name.encode("ascii"):
+                raise BuildError(f"{name}.map identifies itself as another map")
 
     def describe(self):
         """a line on what was found: is it Halo for Xbox?"""
@@ -214,12 +248,16 @@ class RomBuilder:
     progress(fraction, step) report, cancel (a threading.Event) stops it"""
 
     def __init__(self, source, output, cartridges, work=None, jobs=None, font=None, log=print, progress=None,
-                 cancel=None):
+                 cancel=None, pc_source=None, pc_tools=None):
         self.source = MapSource(source)
+        self.pc_source = Path(pc_source) if pc_source is not None else None
+        self.pc_tools = Path(pc_tools) if pc_tools is not None else None
+        self.pc_maps = None
+        self.pc_bitmap = None
         self.output = Path(output)
         self.cartridges = list(cartridges)
         self.work = Path(work) if work else default_work_folder()
-        self.jobs = jobs or default_jobs()
+        self.jobs = default_jobs() if jobs is None else jobs
         self.font = font or halo_font()
         self.log = log
         self.report = progress or (lambda fraction, step: None)
@@ -234,24 +272,45 @@ class RomBuilder:
 
     # (what each cartridge needs)
     def maps_for(self, cartridge):
-        if cartridge == "campaign":
-            return list(self.config["campaign"]["maps"])
+        if cartridge in ("campaign", "pc_expansion"):
+            return list(self.config[cartridge]["maps"])
         return list(self.config["maps"])
 
     def needed_maps(self):
         names = {"ui"}
         for cartridge in self.cartridges:
-            names.update(self.maps_for(cartridge))
-            if cartridge == "multiplayer":
+            names.update(self.config["maps"] if cartridge == "pc_expansion" else self.maps_for(cartridge))
+            if cartridge in ("multiplayer", "pc_expansion"):
                 # (Firefight's Covenant come from a30, convert.py)
                 names.add("a30")
         return sorted(names)
 
     def check(self):
+        if not isinstance(self.jobs, int) or self.jobs < 1:
+            raise BuildError("conversion jobs must be a positive integer")
+        if not self.cartridges or any(c not in CARTRIDGES for c in self.cartridges):
+            raise BuildError("choose at least one supported cartridge")
+        if "pc_expansion" in self.cartridges:
+            if not self.pc_source:
+                raise BuildError("PC expansion also needs your Halo PC retail disc image or installed maps folder")
+            if "pc_expansion" not in self.config:
+                raise BuildError("this builder has no PC expansion configuration")
+            from .pc_input import PCMapSource, PC_MAPS
+            from .pc_prepare import validate_tools
+            try:
+                pc = PCMapSource(self.pc_source)
+                try:
+                    pc.validate([*PC_MAPS, "ui"])
+                finally:
+                    pc.close()
+                self.pc_tools = validate_tools(self.pc_tools or ((payload_root() / "pc-tools") if payload_root() else None))
+            except (ValueError, OSError) as error:
+                raise BuildError(str(error)) from error
         missing = self.source.missing(self.needed_maps())
         if missing:
             raise BuildError("these maps are not in " + self.source.path.name + ": " + ", ".join(missing) +
                              " (Halo 64 needs Halo: Combat Evolved for the original Xbox)")
+        self.source.validate(self.needed_maps())
         for cartridge in self.cartridges:
             for path in elf_files(cartridge):
                 if not path.is_file():
@@ -263,6 +322,14 @@ class RomBuilder:
             self.report(min(1.0, self.done / self.total), text)
 
     def run(self):
+        try:
+            return self._run()
+        except (ValueError, OSError) as error:
+            raise BuildError(str(error)) from error
+        finally:
+            self.source.close()
+
+    def _run(self):
         started = time.time()
         self.check()
         self.output.mkdir(parents=True, exist_ok=True)
@@ -277,64 +344,87 @@ class RomBuilder:
         self.log(f"{self.source.describe()}; {self.jobs} conversion(s) at a time; work folder {self.work}")
         if not self.font:
             self.log("(no Halo.ttf font installed: the menu's logo is drawn without its 64)")
-        maps = self.provide_maps()
         made = []
+        # Each run owns a new input stage; equal-size data from a previous disc
+        # can never be reused. Only this generated temporary folder is removed.
+        self.input_stage = Path(tempfile.mkdtemp(prefix="inputs-", dir=self.work))
+        self.receipts = self.work / "receipts" / self.input_stage.name
+        self.receipts.mkdir(parents=True)
         try:
+            maps = self.provide_maps()
+            if "pc_expansion" in self.cartridges:
+                self.prepare_pc()
             for cartridge in self.cartridges:
                 made.append(self.build(cartridge, maps))
         finally:
-            self.source.close()
-        if self.source.disc:
-            # (the maps copied from the disc, ~450 MB: the sounds' cache,
-            # which makes the next build quicker, stays)
-            shutil.rmtree(maps, ignore_errors=True)
+            shutil.rmtree(self.input_stage, ignore_errors=True)
         self.report(1.0, "Done")
         self.log(f"done in {(time.time() - started) / 60:.1f} minutes: " + ", ".join(str(m) for m in made))
         return made
 
     def provide_maps(self):
-        maps = self.work / "maps"
+        maps = self.input_stage / "xbox"
+        names = self.needed_maps()
+        def progress(name, done, size):
+            self.check_cancel()
+            self.report(min(1.0, self.done / self.total), f"Copying {name}.map")
+        self.source.provide(names, maps, progress)
         if self.source.disc:
-            names = self.needed_maps()
-            total = sum(self.source.size(n) for n in names)
-            copied = {"before": 0}
-
-            def progress(name, done, size):
-                self.check_cancel()
-                self.report(min(1.0, (self.done + 10 * (copied["before"] + done) / total) / self.total),
-                            f"Copying {name}.map from the disc")
-
-            for name in names:
-                self.source.provide([name], maps, progress)
-                copied["before"] += self.source.size(name)
             self.step(10, "Maps copied from the disc")
-            return maps
-        if self.source.folder:
-            return self.source.folder
-        return self.source.provide(self.needed_maps(), maps)
+        return maps
+
+    def prepare_pc(self):
+        from .pc_input import PCMapSource
+        source = PCMapSource(self.pc_source)
+        try:
+            from .pc_input import PC_MAPS
+            available = set(source.names())
+            needed = [*PC_MAPS, "ui", *[name for name in ("bitmaps", "sounds") if name in available]]
+            raw = source.provide(needed, self.input_stage / "pc-retail",
+                                 lambda *_: self.check_cancel())
+            (self.receipts / "pc-inputs.json").write_text(json.dumps(source.last_manifest, indent=2), encoding="utf-8")
+        finally:
+            source.close()
+        destination = self.input_stage / "pc-preparation"
+        self.run_worker("Preparing your PC expansion maps", "pc_prepare",
+                        [str(raw), "--work", str(destination), "--tools", str(self.pc_tools)])
+        result = json.loads((destination / "result.json").read_text(encoding="utf-8"))
+        self.pc_maps = Path(result["maps"])
+        self.pc_bitmap = Path(result["ui_bitmap"])
+        # The worker must return generated paths inside this run's own stage.
+        for path in (self.pc_maps, self.pc_bitmap):
+            if not path.resolve().is_relative_to(destination.resolve()):
+                raise BuildError("PC preparation returned a path outside its work folder")
+        shutil.copy2(self.pc_maps.parent / "manifest.json", self.receipts / "pc-normalization.json")
 
     def build(self, cartridge, maps):
-        config = self.config["campaign"] if cartridge == "campaign" else self.config
+        config = self.config[cartridge] if cartridge in ("campaign", "pc_expansion") else self.config
         names = self.maps_for(cartridge)
-        variant = self.work / cartridge
+        variant = self.input_stage / cartridge
         fsdir = variant / "filesystem"
         fsdir.mkdir(parents=True, exist_ok=True)
         # (the flags a developer's build may carry: files at the root)
         for path in fsdir.iterdir():
             if path.is_file():
                 path.unlink()
-        label = "the campaign" if cartridge == "campaign" else "multiplayer"
+        label = {"campaign": "the campaign", "pc_expansion": "PC expansion"}.get(cartridge, "multiplayer")
         weight = WEIGHTS["campaign map" if cartridge == "campaign" else "map"]
         # the maps, a few at a time
         tasks = []
         for name in names:
-            arguments = [str(maps / f"{name}.map"), "-o", str(fsdir / "maps" / f"{name}.map"),
+            source_maps = self.pc_maps if cartridge == "pc_expansion" and name not in self.config["maps"] else maps
+            arguments = [str(source_maps / f"{name}.map"), "-o", str(fsdir / "maps" / f"{name}.map"),
                          "--filesystem", str(fsdir)]
             if cartridge == "campaign":
                 arguments.append("--campaign")
+            elif cartridge == "pc_expansion":
+                arguments += ["--pc-expansion", "--pc-maps", str(self.pc_maps)]
             tasks.append((f"Converting {name} ({label})", "convert", arguments, weight))
         self.run_parallel(tasks)
         self.run_worker(f"Converting the menu ({label})", "ui", [str(maps / "ui.map"), "--filesystem", str(fsdir)])
+        if cartridge == "pc_expansion":
+            self.run_worker("Adding the PC map thumbnails", "pc_thumbnails",
+                            ["--bitmap", str(self.pc_bitmap), "--output", str(fsdir / "ui")])
         self.step(WEIGHTS["ui"], f"Menu converted ({label})")
         if self.music:
             shutil.copytree(self.music, fsdir / "music", dirs_exist_ok=True)
@@ -345,6 +435,20 @@ class RomBuilder:
         self.step(WEIGHTS["music"], f"Music converted ({label})")
         self.run_worker(f"Packing the sounds ({label})", "soundbank", [str(variant), str(fsdir), *names])
         self.step(WEIGHTS["sounds"], f"Sounds packed ({label})")
+        # Derive decal pixels from the selected legal maps; the paint mask's
+        # outline is project-original art, packaged separately from Halo data.
+        paint_map = self.pc_maps / "timberland.map" if cartridge == "pc_expansion" else maps / "a30.map"
+        root = payload_root()
+        paint_art = root / "art" / "paint-splatter-original.png" if root else REPO / "assets" / "paintball" / "paint-splatter-original.png"
+        self.run_worker(f"Preparing paint ({label})", "paint_masks",
+                        ["--map", str(paint_map), "--output", str(fsdir / "paint" / "masks.i4"), "--art", str(paint_art)])
+        decal_maps = [str((self.pc_maps if cartridge == "pc_expansion" and n not in self.config["maps"] else maps) / f"{n}.map") for n in names]
+        decal_args = ["--maps", *decal_maps, "--output", str(fsdir / "decals" / "materials.bank")]
+        if cartridge == "pc_expansion":
+            decal_args += ["--pc-expansion", "--pc-maps", str(self.pc_maps)]
+        elif cartridge == "campaign":
+            decal_args += ["--campaign"]
+        self.run_worker(f"Preparing impact decals ({label})", "decal_bank", decal_args)
         # the cartridge's file system
         self.run_worker(f"Tidying the files ({label})", "prune", [str(fsdir), *names, "ui"])
         dfs = variant / "halo.dfs"
@@ -354,7 +458,7 @@ class RomBuilder:
         elf, symbols = elf_files(cartridge)
         rom = self.output / CARTRIDGES[cartridge]["rom"]
         temporary = rom.with_suffix(".tmp")
-        title = config.get("title", "HALO N64") if cartridge == "campaign" else "HALO N64"
+        title = config.get("title", "HALO N64")
         self.run_tool(f"Making the ROM ({label})", [tool("n64tool"), "--toc", "--title", title, "--output",
                                                    str(temporary), "--align", "256", str(elf), str(symbols), str(dfs)])
         self.run_tool(f"Making the ROM ({label})", [tool("ed64romconfig"), "--expansionpak", "required", "--savetype",
@@ -407,7 +511,15 @@ class RomBuilder:
             processes = list(self.processes)
         for process in processes:
             try:
-                process.kill()
+                if sys.platform == "win32" and process.poll() is None:
+                    # A converter can own an Invader/FFmpeg child. Stop that
+                    # process tree rather than leaving a writer behind.
+                    taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
+                    subprocess.run([str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
+                if process.poll() is None:
+                    process.kill()
             except OSError:
                 pass
 
@@ -460,7 +572,13 @@ class RomBuilder:
         self.check_cancel()
         self.report(min(1.0, self.done / self.total), text)
         process = self.start(command, capture=True)
-        output = process.stdout.read() if process.stdout else b""
+        while True:
+            try:
+                output, _ = process.communicate(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                if self.cancel.is_set():
+                    self.stop_all()
         code = self.wait(process)
         if code != 0:
             raise BuildError(f"{text} failed: {Path(command[0]).name} said:\n" +
@@ -489,7 +607,7 @@ def run_worker(arguments):
         os.environ.setdefault(key, value)
     import importlib
     import traceback
-    allowed = {"convert", "ui", "music", "soundbank", "prune"}
+    allowed = {"convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank"}
     if module not in allowed:
         print(f"no such converter: {module}")
         return 2
@@ -515,18 +633,21 @@ def main():
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--multiplayer", action="store_true")
     parser.add_argument("--campaign", action="store_true")
+    parser.add_argument("--pc-expansion", action="store_true", help="separate 19-map PC expansion cartridge")
+    parser.add_argument("--pc-source", type=Path, help="your PC retail ISO or installed maps folder (PC expansion only)")
+    parser.add_argument("--pc-tools", type=Path, help="trusted local Invader and FFmpeg tools (source runs only)")
     parser.add_argument("--jobs", type=int)
     parser.add_argument("--work", type=Path)
     parser.add_argument("--font", type=Path)
     args = parser.parse_args()
-    cartridges = [c for c in ("multiplayer", "campaign") if getattr(args, c)] or ["multiplayer", "campaign"]
+    cartridges = [c for c in ("multiplayer", "campaign", "pc_expansion") if getattr(args, c)] or ["multiplayer", "campaign"]
 
     def progress(fraction, step):
         print(f"[{fraction * 100:5.1f}%] {step}", flush=True)
 
     try:
         RomBuilder(args.source, args.output, cartridges, work=args.work, jobs=args.jobs, font=args.font,
-                   log=lambda text: print("   ", text, flush=True), progress=progress).run()
+                   pc_source=args.pc_source, pc_tools=args.pc_tools, log=lambda text: print("   ", text, flush=True), progress=progress).run()
     except BuildError as error:
         print(f"error: {error}", file=sys.stderr)
         sys.exit(1)

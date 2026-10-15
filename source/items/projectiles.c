@@ -708,10 +708,26 @@ boolean projectile_update(
 	short collision_count;
 	boolean flyby_sound_played;
 	boolean detonation_timer_running;
+#ifdef HALO_N64
+	boolean n64_sniper = FALSE;
+	extern void n64_sniper_ribbon(const float *, const float *);
+#endif
 
 	projectile = projectile_runtime_get(projectile_index);
 	definition = projectile_definition_get(projectile->definition_index);
 	time_remaining = 1.0f;
+#ifdef HALO_N64
+	{
+		char const *name = tag_get_name(projectile->definition_index);
+		n64_sniper = name && !strncmp(name, "weapons\\sniper rifle\\", 21);
+		if (name && !strncmp(name, "weapons\\flamethrower\\", 21))
+		{
+			extern void n64_flame_trail(const float *, const float *);
+			n64_flame_trail((const float *)&projectile->object.position,
+				(const float *)&projectile->object.translational_velocity);
+		}
+	}
+#endif
 	collision_count = 0;
 	flyby_sound_played = FALSE;
 
@@ -970,6 +986,11 @@ boolean projectile_update(
 			if (collision.plane.n.k > 0.3f)
 				SET_FLAG(projectile->projectile.flags, _projectile_collided_once_bit, TRUE);
 
+#ifdef HALO_N64
+			/* Capture the real collision endpoint before the handler can attach,
+			   penetrate or move the projectile. Existing impact effects stay intact. */
+			if (n64_sniper) n64_sniper_ribbon((const float *)&projectile->object.position, (const float *)&collision.point);
+#endif
 			projectile->projectile.ignore_object_index = NONE;
 			projectile_collision(
 				projectile_index,
@@ -990,6 +1011,9 @@ boolean projectile_update(
 		}
 		else
 		{
+			#ifdef HALO_N64
+			if (n64_sniper && moved) n64_sniper_ribbon((const float *)&projectile->object.position, (const float *)&new_position);
+#endif
 			if (collision_count == MAXIMUM_PROJECTILE_COLLISIONS_PER_UPDATE)
 				projectile_set_action(projectile_index, _projectile_action_detonate);
 			time_remaining = 0.0f;

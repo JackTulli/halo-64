@@ -2172,6 +2172,17 @@ static void trigger_create_projectiles(
 	trigger_marker_names[1]= "secondary trigger";
 
 	marker_count= object_get_marker_by_name(weapon_get_effect_object_index(weapon_index), trigger_marker_names[trigger_index], markers, MAXIMUM_MARKERS_PER_OBJECT);
+#ifdef HALO_N64
+	/* The PC flame starts at the visible view-model nozzle, rather than the
+	unused Xbox world-model marker below the local player's camera. Bots
+	and other weapons retain the normal world-marker path. */
+	if (!strcmp(tag_get_name(weapon->definition_index), "weapons\\flamethrower\\flamethrower"))
+	{
+		short first_person_markers = first_person_weapon_get_marker_by_name(weapon_index,
+			trigger_marker_names[trigger_index], markers, MAXIMUM_MARKERS_PER_OBJECT);
+		if (first_person_markers > 0) marker_count = first_person_markers;
+	}
+#endif
 	if (!marker_count)
 	{
 		marker_count= 1;

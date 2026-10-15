@@ -136,6 +136,10 @@ long tag_loaded(long group_tag, const char *name);
 
 void *tag_get(long group_tag, long tag_index);
 
+#if defined(HALO_LINUX) || defined(HALO_N64)
+boolean tag_index_is_group(long tag_index, long group_tag);
+#endif
+
 /* ---------- globals */
 
 /* ---------- public code */

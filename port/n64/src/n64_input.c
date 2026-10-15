@@ -23,7 +23,7 @@ page (n64_controls.no_rumble).
 
 struct n64_controls n64_controls[4];
 
-/* START, A and B pressed since n64_input_take_pressed last asked, each port
+/* START, A, B and D-pad pressed since n64_input_take_pressed last asked, each port
 (the pause menu's: a frame at 10 fps is longer than a quick press) */
 static unsigned short pressed_latch[4];
 
@@ -40,6 +40,10 @@ void n64_input_poll(void)
 		if (pressed.start) pressed_latch[port] |= N64_BUTTON_START;
 		if (pressed.a) pressed_latch[port] |= N64_BUTTON_A;
 		if (pressed.b) pressed_latch[port] |= N64_BUTTON_B;
+		if (pressed.d_up) pressed_latch[port] |= N64_BUTTON_D_UP;
+		if (pressed.d_down) pressed_latch[port] |= N64_BUTTON_D_DOWN;
+		if (pressed.d_left) pressed_latch[port] |= N64_BUTTON_D_LEFT;
+		if (pressed.d_right) pressed_latch[port] |= N64_BUTTON_D_RIGHT;
 	}
 }
 

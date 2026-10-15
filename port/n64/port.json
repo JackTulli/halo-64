@@ -1,6 +1,8 @@
 {
   "comment": "Nintendo 64 build inputs (tools/n64_build.py). See port/n64/README.md.",
-  "optimisation": "-O2",
+  "optimisation": "-Os",
+  "platform_optimisation": "-O2",
+  "rom_elf_compression": 1,
   "defines": [
     "HALO_RELEASE",
     "profile_dump=halo_profile_dump"
@@ -42,6 +44,7 @@
     "source/interface/ui_widget_text_search_and_replace_functions.c",
     "source/interface/virtual_keyboard.c",
     "source/structures/structure_detail_objects.c",
+    "source/structures/structure_visibility.c",
     "source/structures/structure_render.c"
   ],
   "linux_platform_sources": [
@@ -84,7 +87,37 @@
     "maps": ["a30"],
     "defines": ["HALO_N64_CAMPAIGN"],
     "rom": "halo-campaign.z64",
+    "rom_elf_compression": 1,
     "title": "HALO 64 CAMPAIGN",
+    "flags": []
+  },
+  "pc_expansion": {
+    "comment": "Additive PC multiplayer cartridge; explicit PC map input is required by tools/n64_build.py.",
+    "maps": [
+      "wizard",
+      "beavercreek",
+      "bloodgulch",
+      "boardingaction",
+      "carousel",
+      "chillout",
+      "damnation",
+      "hangemhigh",
+      "longest",
+      "prisoner",
+      "putput",
+      "ratrace",
+      "sidewinder",
+      "dangercanyon",
+      "deathisland",
+      "gephyrophobia",
+      "icefields",
+      "infinity",
+      "timberland"
+    ],
+    "defines": ["HALO_N64_PC_EXPANSION"],
+    "rom": "halo-pc-expansion.z64",
+    "rom_elf_compression": 0,
+    "title": "HALO 64 PC EXPANSION",
     "flags": []
   },
   "ldflags": ["-Wl,--wrap,malloc_uncached", "-Wl,--wrap,malloc_uncached_aligned", "-Wl,--wrap,free_uncached"],

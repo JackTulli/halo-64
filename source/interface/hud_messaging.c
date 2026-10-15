@@ -513,6 +513,54 @@ long time_code_time = NONE;
 long time_code_stop_time = NONE;
 static long split_screen_hud_message_offset = 17;
 
+#ifdef HALO_N64
+/* Reuse the original authored B-button icon, including its clip, tint,
+   offsets and split-screen scale. N64 B is the action button in every
+   current preset (xdk_input.c maps it to logical Xbox X). */
+extern int n64_hud_ensure_sprite(int number);
+short n64_hud_original_action_icon(short x, short baseline, pixel32 color, short *bottom)
+{
+	rectangle2d bounds = {0}, cursor = {0};
+	struct icon_hud_element_definition const *icon;
+	struct bitmap_data const *bitmap = NULL;
+	real_rectangle2d const *clip = NULL;
+	long frame_index = 0;
+	if (!hud_globals || hud_globals->messaging.button_icons.count <= _icon_b_button)
+		return x;
+	icon = TAG_BLOCK_GET_ELEMENT(&hud_globals->messaging.button_icons,
+		_icon_b_button, struct icon_hud_element_definition);
+	/* Never replace missing art with a fabricated button. The caller retains
+	   its existing text fallback if the original bitmap cannot be drawn. */
+	if (TEST_FLAG(icon->flags, _hud_icon_use_text_bit))
+		return x;
+	/* Confirm the original atlas is actually resident before the stock
+	   renderer advances the cursor. Its later quad reuses the same cache;
+	   low-memory or missing-file failures keep the existing B text. */
+	if (icon->frame_rate)
+		frame_index = game_time_get() / icon->frame_rate;
+	hud_retrieve_bitmap_and_bounding_rect(hud_globals->messaging.messaging_icons.index,
+		icon->sequence_index, frame_index, &bitmap, &clip);
+	if (!bitmap || bitmap->pixels_offset <= 0 ||
+		!n64_hud_ensure_sprite((int)(bitmap->pixels_offset - 1)))
+		return x;
+	/* Stock bitmap points are local to this view; the N64 backend adds
+	   viewport origin when translating its vertices. */
+	cursor.x0 = x - render.camera.viewport_bounds.x0;
+	cursor.y1 = baseline - render.camera.viewport_bounds.y0;
+	bounds = cursor;
+	render_state_bitmap(&bounds, &cursor, color, icon);
+	if (bottom)
+	{
+		real scale = local_player_count() > 1 ? 0.75f : 1.f;
+		/* Bottom-left bitmap bounds end at zero: its actual bottom is
+		   the stock short-truncated point before the backend HUD scale. */
+		*bottom = (short)(cursor.y1 - icon->offset.y * scale) +
+			render.camera.viewport_bounds.y0;
+	}
+	return cursor.x0 + render.camera.viewport_bounds.x0;
+}
+#endif
+
 /* ---------- public code */
 
 static void render_state_text(

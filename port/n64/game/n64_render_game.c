@@ -25,6 +25,7 @@ renderer's (port/n64/src/n64_render.c).
 #include "render/render.h"
 #include "objects/objects.h"
 #include "objects/object_definitions.h"
+#include "units/units.h"
 #include "models/model_definitions.h"
 #include "items/weapon_definitions.h"
 #include "tag_files/tag_groups.h"
@@ -256,8 +257,9 @@ void render_initialize_for_new_map(
 	extern short player_spawn_count;
 
 	n64_fog_for_new_map();
-	/* three or four views: the level's lighter version */
-	n64_render_load_level(n64_loaded_map_name(), player_spawn_count > 2);
+	/* Keep room for the held weapon and player models on the largest maps,
+	using the existing lighter geometry/model set under the 8 MiB ceiling. */
+	n64_render_load_level(n64_loaded_map_name(), player_spawn_count > 2 || n64_heap_free() < 1024 * 1024);
 	n64_hud_set_map(n64_loaded_map_name());
 	n64_particles_load(n64_loaded_map_name());
 	n64_debug_starting_weapon();
@@ -286,6 +288,29 @@ static struct frame_object
 static short frame_object_count;
 static long frame_objects_frame = -1;
 
+/* Match the translucent camouflage fallback without inventing refraction.
+The native unit property already fades in/out and responds to damage. */
+static unsigned char camouflage_opacity(float camouflage)
+{
+	if (!isfinite(camouflage) || camouflage <= 0.f) return 255;
+	if (camouflage > 1.f) camouflage = 1.f;
+	return (unsigned char)((1.f - 0.92f * camouflage) * 255.f + 0.5f);
+}
+
+static unsigned char object_camouflage_opacity(struct object_datum *object)
+{
+	/* A held weapon inherits the nearest unit, including a seated unit whose
+	ultimate parent is a vehicle. The vehicle itself stays opaque. */
+	for (int depth = 0; object && depth < 16; depth++)
+	{
+		if (TEST_FLAG(_object_mask_unit, object->object.type))
+			return camouflage_opacity(((struct unit_datum *)object)->unit.active_camouflage);
+		if (object->object.parent_object_index == NONE) break;
+		object = object_try_and_get(object->object.parent_object_index);
+	}
+	return 255;
+}
+
 static void gather_frame_objects(
 	void)
 {
@@ -313,14 +338,36 @@ static void gather_frame_objects(
 		n64->model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(definition->object.model.index);
 		n64->node_count = (short)model_definition_get(definition->object.model.index)->nodes.count;
 		n64->node_matrices = (const float *)object_get_node_matrices(iterator.index);
+		n64->head_node = -1;
+		n64->head_mask[0] = n64->head_mask[1] = 0;
+		if (n64_big_head_enabled() && object->object.type == _object_type_biped)
+		{
+			struct model *model = model_definition_get(definition->object.model.index);
+			for (int n = 0; n < model->nodes.count && n < 64; n++)
+			{
+				struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, n, struct model_node);
+				if (!strcmp(node->name, "head") || !strcmp(node->name, "bip01 head")) n64->head_node = n;
+			}
+			if (n64->head_node >= 0)
+				for (int n = 0; n < model->nodes.count && n < 64; n++)
+				{
+					int parent = n, steps = 0;
+					while (parent >= 0 && parent < model->nodes.count && steps++ < 64)
+					{
+						if (parent == n64->head_node) { n64->head_mask[n >> 5] |= 1UL << (n & 31); break; }
+						parent = TAG_BLOCK_GET_ELEMENT(&model->nodes, parent, struct model_node)->parent_node_index;
+					}
+				}
+		}
 		n64->key = (unsigned long)iterator.index;
 		n64->region_permutations = object->object.region_permutations;
 		n64->region_count = MAXIMUM_REGIONS_PER_OBJECT;
 		n64->center[0] = object->object.bounding_sphere_center.x;
 		n64->center[1] = object->object.bounding_sphere_center.y;
 		n64->center[2] = object->object.bounding_sphere_center.z;
-		n64->radius = object->object.bounding_sphere_radius;
+		n64->radius = object->object.bounding_sphere_radius + (n64->head_node >= 0 ? 0.35f : 0.f);
 		n64->tint[0] = n64->tint[1] = n64->tint[2] = n64->tint[3] = 0xFF;
+		n64->tint[3] = object_camouflage_opacity(object);
 		owner = entry->ultimate_parent == iterator.index ? object : object_get(entry->ultimate_parent);
 		if (TEST_FLAG(_object_mask_unit, object->object.type) || TEST_FLAG(_object_mask_unit, owner->object.type))
 		{
@@ -430,6 +477,8 @@ void n64_first_person_model_draw(
 	n64.model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(model_index);
 	n64.node_count = (short)model_definition_get(model_index)->nodes.count;
 	n64.node_matrices = (const float *)node_matrices;
+	n64.head_node = -1;
+	n64.head_mask[0] = n64.head_mask[1] = 0;
 	n64.key = 0;
 	n64.region_permutations = no_permutations;
 	n64.region_count = 0;
@@ -442,6 +491,12 @@ void n64_first_person_model_draw(
 	n64.tint[1] = tint ? (unsigned char)PIN(tint->green * 255.f, 0.f, 255.f) : 0xFF;
 	n64.tint[2] = tint ? (unsigned char)PIN(tint->blue * 255.f, 0.f, 255.f) : 0xFF;
 	n64.tint[3] = 0xFF;
+	long player_index = local_player_get_player_index(render.local_player_index);
+	if (player_index != NONE)
+	{
+		long unit_index = player_get(player_index)->unit_index;
+		if (unit_index != NONE) n64.tint[3] = object_camouflage_opacity(object_try_and_get(unit_index));
+	}
 	n64_render_object(&n64);
 }
 

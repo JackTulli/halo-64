@@ -11,6 +11,7 @@ libdragon's MIPS GCC for the big-endian VR4300. The platform layer
 (port/n64/src) is ordinary libdragon code. See port/n64/README.md.
 """
 
+import argparse
 import fnmatch
 import json
 import os
@@ -20,7 +21,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from tools.ninja_syntax import Writer  # noqa: E402
+from tools.ninja_syntax import Writer, escape_path  # noqa: E402
+
+def posix(value):
+    return str(value).replace("\\", "/")
+
+
+def q(value):
+    """Quote one literal path/argument for the POSIX shell used by Ninja/MSYS."""
+    return shlex.quote(posix(value).replace("\\", "/")).replace("$", "$$")
+
 
 N64_INST = Path(os.environ.get("N64_INST", Path.home() / "n64" / "toolchain"))
 PORT_DIR = Path("port/n64")
@@ -28,20 +38,27 @@ BUILD_DIR = Path("build/n64")
 XDK_INCLUDE = Path("port/include/xdk")
 TINY3D = Path(os.environ.get("TINY3D", Path.home() / "n64" / "tiny3d"))
 
+# The installer and archive/PC normalization tools produce the explicit input
+# files before conversion. They are not imported by the converter dependency
+# closure and must not invalidate every converted level when their UI changes.
+NON_CONVERTER_TOOLS = frozenset({"package_rombuilder.py", "pc_input.py", "pc_prepare.py", "xiso.py"})
+
+
+def converter_source(path):
+    return path.name not in NON_CONVERTER_TOOLS and not path.name.startswith(("rombuilder", "test_"))
+
+
 # The MSVC/Xbox environment of the game (see tools/linux_build.py for the
 # reasons behind each): 16-bit wchar_t, C89 with common tentative
 # definitions, MSVC's tolerance of aliasing, overflow and null checks, small
 # structures returned in registers (hs_runtime.c), no fused multiply-adds.
-# Code generation for the VR4300 under ares (both the game and the platform
-# layer). No nop after each floating point multiply: -mfix4300 (the
-# toolchain's default, libdragon 39d0d60) works around a multiplier bug of
-# the earliest consoles' CPUs, which ares does not have; 8,179 nops, a cycle
-# each. No padding before loops, jump targets and labels: the VR4300 issues
+# Retain the early hardware multiplier workaround for physical cartridges.
+# No padding before loops, jump targets and labels: the VR4300 issues
 # one instruction a cycle from its 16 KB instruction cache, so aligning them
 # to 8 bytes gains nothing and the padding takes cache lines (a miss is 48
 # cycles in ares).
 CODE_FLAGS = [
-    "-mno-fix4300",
+    "-mfix4300",
     "-falign-jumps=1", "-falign-loops=1", "-falign-labels=1",
 ]
 
@@ -85,9 +102,9 @@ GAME_FLAGS = [
 # libdragon's own flags (n64.mk), for the platform layer
 PLATFORM_FLAGS = [
     "-march=vr4300", "-mtune=vr4300", "-mabi=o64", "-G0",
-    f"-I{N64_INST}/mips64-elf/include/newlib_overrides" if (N64_INST / "mips64-elf/include/newlib_overrides").is_dir() else "",
-    f"-I{N64_INST}/include",
-    f"-I{N64_INST}/mips64-elf/include",
+    q(f"-I{N64_INST}/mips64-elf/include/newlib_overrides") if (N64_INST / "mips64-elf/include/newlib_overrides").is_dir() else "",
+    q(f"-I{N64_INST}/include"),
+    q(f"-I{N64_INST}/mips64-elf/include"),
     "-include", "ktls.h",
     "-falign-functions=32",
     *CODE_FLAGS,
@@ -103,14 +120,37 @@ def load_projects():
     return {p["name"]: p for p in config["projects"]}
 
 
-def main():
+def main(argv=None):
+    global BUILD_DIR
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pc-expansion", action="store_true", help="also generate the separate PC multiplayer cartridge")
+    parser.add_argument("--pc-maps", type=Path, help="explicit folder containing all six normalized Xbox-v5 PC maps")
+    parser.add_argument("--pc-ui-bitmap", type=Path, help="owned extracted HEK mp_map_grafix.bitmap with the PC thumbnails")
+    parser.add_argument("--definitions", type=Path, default=Path(os.environ.get("INVADER_DEFINITIONS", "dependencies/invader/src/tag/hek/definition")))
+    parser.add_argument("--build-dir", type=Path, default=BUILD_DIR, help="generated artifacts (default build/n64; Ninja execution uses a POSIX/MSYS shell)")
+    args = parser.parse_args(argv)
     os.chdir(ROOT)
+    BUILD_DIR = args.build_dir
+    from tools.n64.convert import validate_pc_maps, PC_MAPS
+    try:
+        pc_maps = validate_pc_maps(args.pc_expansion, args.pc_maps)
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
+    if args.pc_expansion:
+        if args.pc_ui_bitmap is None or not args.pc_ui_bitmap.is_file():
+            parser.error("--pc-expansion requires --pc-ui-bitmap with the extracted owned PC menu bitmap")
+        args.pc_ui_bitmap = args.pc_ui_bitmap.resolve()
+    elif args.pc_ui_bitmap is not None:
+        parser.error("--pc-ui-bitmap requires --pc-expansion")
+    definitions = args.definitions.resolve()
+    p8_palette = posix(definitions.parents[2] / "bitmap" / "p8" / "p8_palette")
     port = json.load(open(PORT_DIR / "port.json", encoding="utf-8"))
     opt = port.get("optimisation", "-Os")
     # the game's units (and the XDK layer compiled with them) may have a
-    # level of their own ("game_optimisation"); the platform layer keeps
-    # "optimisation"
+    # level of their own ("game_optimisation"). The cartridge platform
+    # retains its separately selected optimisation (rendering is speed-sensitive).
     game_opt = port.get("game_optimisation", opt)
+    platform_opt = port.get("platform_optimisation", opt)
     # small data ("small_data": bytes, -G): globals up to that size in
     # .sdata/.sbss, reached from $gp in one instruction instead of two
     # (libdragon itself is built with the compiler's default, 8); 0 keeps
@@ -129,12 +169,13 @@ def main():
     out = open(BUILD_DIR / "build.ninja", "w", encoding="utf-8")
     n = Writer(out)
     n.comment("generated by tools/n64_build.py - do not edit")
-    n.variable("builddir", str(BUILD_DIR))
-    n.variable("root", str(ROOT))
-    n.variable("bin", str(N64_INST / "bin"))
-    n.variable("n64inst", str(N64_INST))
-    n.variable("cc", str(N64_INST / "bin" / "mips64-elf-gcc"))
-    n.variable("python", sys.executable)
+    n.variable("builddir", posix(BUILD_DIR))
+    n.variable("root", q(ROOT))
+    n.variable("bin", q(N64_INST / "bin"))
+    n.variable("n64inst", q(N64_INST))
+    n.variable("cc", q(N64_INST / "bin" / "mips64-elf-gcc"))
+    n.variable("python", q(os.environ.get("N64_PYTHON", sys.executable)))
+    n.variable("definitions", q(definitions))
     n.newline()
 
     n.rule("cc", command="cd $root && $cc -MMD -MF $out.d $cflags -c $in -o $out",
@@ -143,25 +184,25 @@ def main():
            command="cd $root && $python tools/linux_msvc_semantics.py --output $out $scan",
            description="N64 MSVC SEMANTICS $out", restat=True)
     n.rule("link",
-           command=("cd $root && $cc -march=vr4300 -mtune=vr4300 -mabi=o64 -g -o $out @$out.rsp "
+           command=("cd $root && export N64_INST=$n64inst && $cc -march=vr4300 -mtune=vr4300 -mabi=o64 -g -o $out @$out.rsp "
                     "-L$libdir $ldlibs -lc -Wl,-L$libdir -Wl,-Tn64.ld -Wl,--gc-sections "
                     "-Wl,--wrap,__do_global_ctors -Wl,-Map=$out.map $ldflags "
                     "&& $python tools/n64_link_check.py $objlist --check"),
            description="N64 LINK $out", rspfile="$out.rsp", rspfile_content="$in_newline")
     n.rule("z64",
-           command=("cd $root && export N64_INST=$n64inst && $bin/n64sym --all $in $in.sym && cp $in $in.stripped && "
+           command=("cd $root && export N64_INST=$n64inst INVADER_DEFINITIONS=$definitions && $bin/n64sym --all $in $in.sym && cp $in $in.stripped && "
                     "$bin/mips64-elf-strip -s $in.stripped && "
-                    "$bin/n64elfcompress -o $outdir -c 1 $in.stripped && "
+                    "$bin/n64elfcompress -o $outdir -c $rom_elf_compression $in.stripped && "
                     "$bin/n64tool --toc --title \"$title\" --output $out.tmp --align 256 $in.stripped $in.sym $extra && "
                     "$bin/ed64romconfig --expansionpak required --savetype eeprom4k --regionfree $out.tmp && mv $out.tmp $out"),
            description="N64 ROM $out")
     n.newline()
 
     semantics = BUILD_DIR / "halo_msvc_semantics.h"
-    game_headers = sorted(str(p) for p in Path("source").rglob("*") if p.suffix in (".c", ".h"))
-    n.build(str(semantics), "semantics",
-            implicit=["tools/linux_msvc_semantics.py", *map(str, sorted(XDK_INCLUDE.glob("*.h"))), *game_headers],
-            variables={"scan": f"--all-inlines --exclude-static --tags source --inlines source --inlines {XDK_INCLUDE}"})
+    game_headers = sorted(posix(p) for p in Path("source").rglob("*") if p.suffix in (".c", ".h"))
+    n.build(posix(semantics), "semantics",
+            implicit=["tools/linux_msvc_semantics.py", *map(posix, sorted(XDK_INCLUDE.glob("*.h"))), *game_headers],
+            variables={"scan": f"--all-inlines --exclude-static --tags source --inlines source --inlines {XDK_INCLUDE.as_posix()}"})
 
     base_defines = " ".join(f"-D{d}" for d in options.get("defines") or [] if d not in port.get("drop_defines", []))
     base_defines += " " + " ".join(f"-D{d}" for d in port.get("defines", []))
@@ -178,22 +219,22 @@ def main():
     source_flags = port.get("source_flags", {})
 
     def add(objects, obj_dir, source, cflags):
-        name = str(source).replace(os.sep, "/")
+        name = posix(source).replace(os.sep, "/")
         extra = " ".join(flags for pattern, flags in source_flags.items()
                          if pattern == name or fnmatch.fnmatchcase(name, pattern))
         if extra:
             cflags = f"{cflags} {extra}"
         obj = obj_dir / Path(source).with_suffix(".o")
-        objects.append(str(obj))
-        n.build(str(obj), "cc", str(source), implicit=[str(semantics)],
+        objects.append(posix(obj))
+        n.build(posix(obj), "cc", posix(source), implicit=[posix(semantics)],
                 variables={"cflags": cflags})
 
     # the game's sin, pow and the rest (port/include/halo_math.h): the same
     # objects for every cartridge
     musl_objects = []
     musl = Path("port/third_party/musl-math")
-    musl_cflags = " ".join([*GAME_ABI, "-O2", "-std=gnu11", "-w", f"-I{musl}/include",
-                            f"-include {musl}/include/libm.h"])
+    musl_cflags = " ".join([*GAME_ABI, "-O2", "-std=gnu11", "-w", f"-I{musl.as_posix()}/include",
+                            f"-include {musl.as_posix()}/include/libm.h"])
     for source in sorted((musl / "src").glob("*.c")):
         add(musl_objects, BUILD_DIR / "obj", source, musl_cflags)
 
@@ -201,15 +242,15 @@ def main():
     # port.json asks for (an "autotest" file drives the controllers by script)
     # the converters take ~800 MB each: three at a time (thirteen at once,
     # with the link, ran a 15 GB machine out of memory and froze it)
-    n.pool("convert", 3)
+    n.pool("convert", 1 if sys.platform == "win32" or os.environ.get("N64_SERIAL_CONVERT") else 3)
     n.rule("convert_map",
-           command="cd $root && export N64_INST=$n64inst && $python -m tools.n64.convert $in -o $map --filesystem $fsdir $convert_flags",
+           command="cd $root && export N64_INST=$n64inst INVADER_DEFINITIONS=$definitions && $python -m tools.n64.convert $in -o $map --filesystem $fsdir $convert_flags && $python -m tools.n64.compress_map $map --backup $map_backup",
            pool="convert",
            description="N64 MAP $out")
-    n.rule("convert_ui", command="cd $root && export N64_INST=$n64inst && $python -m tools.n64.ui $in --filesystem $fsdir",
+    n.rule("convert_ui", command="cd $root && export N64_INST=$n64inst INVADER_DEFINITIONS=$definitions && $python -m tools.n64.ui $in --filesystem $fsdir",
            pool="convert",
            description="N64 MENU $out")
-    n.rule("convert_music", command="cd $root && $python -m tools.n64.music $in --filesystem $fsdir",
+    n.rule("convert_music", command="cd $root && export INVADER_DEFINITIONS=$definitions && $python -m tools.n64.music $in --filesystem $fsdir",
            pool="convert",
            description="N64 MUSIC $out")
     n.rule("sound_bank", command="cd $root && $python -m tools.n64.soundbank $variantdir $fsdir $maps",
@@ -217,19 +258,31 @@ def main():
     n.rule("touch", command="cd $root && mkdir -p $$(dirname $out) && : > $out", description="N64 FLAG $out")
     n.rule("mkdfs", command="cd $root && $python -m tools.n64.prune $fsdir $maps && $bin/mkdfs $out $fsdir > /dev/null && : $in $flags",
            description="N64 DFS $out")
-    tool_sources = sorted(str(p) for p in Path("tools/n64").glob("*.py"))
+    n.rule("paint_masks", command="cd $root && export INVADER_DEFINITIONS=$definitions && $python -m tools.n64.paint_masks --map $source_map --output $out", description="N64 PAINT $out")
+    n.rule("decal_bank", command="cd $root && export INVADER_DEFINITIONS=$definitions && $python -m tools.n64.decal_bank --maps $sources --output $out $convert_flags", pool="convert", description="N64 DECALS $out")
+    n.rule("pc_thumbnails", command="cd $root && export N64_INST=$n64inst INVADER_DEFINITIONS=$definitions && $python -m tools.n64.pc_thumbnails --bitmap $bitmap --output $outputdir", description="N64 PC MAP PICTURES")
+    converter_tools = [posix(N64_INST / "bin" / (name + (".exe" if sys.platform == "win32" else ""))) for name in ("mksprite", "audioconv64", "mkasset")]
+    tool_sources = sorted(posix(p) for p in Path("tools/n64").glob("*.py") if converter_source(p)) + [p8_palette]
+    tool_sources += sorted(posix(p) for p in definitions.glob("*.json"))
 
-    def variant(variant_dir, extra_defines, maps, flags, rom, title, campaign):
+    def variant(variant_dir, extra_defines, maps, flags, rom, title, campaign, pc_expansion=False, compression=1):
         """one cartridge: the game compiled with its defines, its files, its
         ROM"""
+        if type(compression) is not int or not 0 <= compression <= 3:
+            raise ValueError("rom_elf_compression must be an integer from 0 to 3")
+        convert_flags = "--campaign" if campaign else ""
+        if pc_expansion:
+            convert_flags = "--pc-expansion --pc-maps " + q(pc_maps)
+        def map_source(name):
+            return pc_maps / f"{name}.map" if pc_expansion and name in PC_MAPS else Path(f"build/xbox/disc/maps/{name}.map")
         defines = base_defines + " " + " ".join(f"-D{d}" for d in extra_defines)
         game_cflags = " ".join([
             *GAME_ABI, game_opt, *lto, *GAME_FLAGS,
-            f"-I{PORT_DIR}/include", "-Iport/linux/include", "-Iport/include",
-            f"-include {PORT_DIR}/include/halo_n64_prefix.h",
-            f"-include {semantics}",
+            f"-I{PORT_DIR.as_posix()}/include", "-Iport/linux/include", "-Iport/include",
+            f"-include {PORT_DIR.as_posix()}/include/halo_n64_prefix.h",
+            f"-include {q(semantics)}",
             defines, includes,
-            f"-idirafter {XDK_INCLUDE}",
+            f"-idirafter {XDK_INCLUDE.as_posix()}",
         ])
         obj_dir = variant_dir / "obj"
         objects = []
@@ -243,7 +296,10 @@ def main():
             add(objects, obj_dir, name, game_cflags)
             game_objects.append(name)
         for source in sorted((PORT_DIR / "game").glob("*.c")):
-            add(objects, obj_dir, source, game_cflags)
+            extra_flags = " -std=gnu99" if source.name in {"n64_golden.c", "n64_modifiers.c", "n64_render_game.c"} else ""
+            if source.name in {"n64_golden.c", "n64_modifiers.c"}:
+                extra_flags += " -Werror=implicit-function-declaration -Werror=int-conversion"
+            add(objects, obj_dir, source, game_cflags + extra_flags)
         for extra in port.get("extra_game_sources", []):
             add(objects, obj_dir, extra, game_cflags)
 
@@ -253,11 +309,11 @@ def main():
         xdk_cflags = " ".join([
             *GAME_ABI, game_opt, *lto,
             "-std=gnu11", "-w", "-DHALO_LINUX_PLATFORM_LAYER",
-            f"-I{PORT_DIR}/src", f"-I{PORT_DIR}/include", "-Iport/linux/src",
+            f"-I{PORT_DIR.as_posix()}/src", f"-I{PORT_DIR.as_posix()}/include", "-Iport/linux/src",
             "-Iport/linux/include", "-Iport/include", "-Isource", "-Isource/cseries",
-            f"-include {PORT_DIR}/include/halo_n64_prefix.h",
-            f"-include {semantics}",
-            f"-idirafter {XDK_INCLUDE}",
+            f"-include {PORT_DIR.as_posix()}/include/halo_n64_prefix.h",
+            f"-include {q(semantics)}",
+            f"-idirafter {XDK_INCLUDE.as_posix()}",
             " ".join(f"-D{d}" for d in extra_defines),
         ])
         for source in sorted((PORT_DIR / "src").glob("xdk_*.c")):
@@ -266,8 +322,8 @@ def main():
             add(objects, obj_dir, Path("port/linux/src") / name, xdk_cflags)
 
         # the libdragon-facing half (port/n64/src/n64_*.c)
-        platform_cflags = " ".join([opt, *[f for f in PLATFORM_FLAGS if f], f"-I{PORT_DIR}/src", f"-I{PORT_DIR}/include",
-                                    f"-I{TINY3D}/src", *(f"-D{d}" for d in extra_defines)])
+        platform_cflags = " ".join([platform_opt, *[f for f in PLATFORM_FLAGS if f], f"-I{PORT_DIR.as_posix()}/src", f"-I{PORT_DIR.as_posix()}/include",
+                                    q(f"-I{TINY3D}/src"), *(f"-D{d}" for d in extra_defines)])
         for source in sorted((PORT_DIR / "src").glob("n64_*.c")):
             add(objects, obj_dir, source, platform_cflags)
         objects += musl_objects
@@ -278,10 +334,12 @@ def main():
         objlist.write_text("\n".join(objects) + "\n", encoding="utf-8")
         elf = variant_dir / "halo.elf"
         libdir = N64_INST / "mips64-elf" / "lib"
-        n.build(str(elf), "link", objects, variables={
-            "libdir": str(libdir),
-            "objlist": str(objlist),
-            "ldlibs": " ".join(port.get("libraries", [])) + f" {TINY3D}/build/libt3d.a -ldragon -lm -ldragonsys",
+        link_dependencies = [posix(libdir / name) for name in ("libdragon.a", "libm.a", "libdragonsys.a", "libc.a", "n64.ld", "crt0.o")]
+        link_dependencies += [posix(TINY3D / "build/libt3d.a"), "tools/n64_link_check.py"]
+        n.build(posix(elf), "link", objects, implicit=link_dependencies, variables={
+            "libdir": q(libdir),
+            "objlist": q(objlist),
+            "ldlibs": " ".join(port.get("libraries", [])) + f" {q(TINY3D / 'build/libt3d.a')} -ldragon -lm -ldragonsys",
             # (four link-time jobs: each lto1 takes hundreds of MB, and sixteen
             # of them beside the map conversions froze a 15 GB machine)
             "ldflags": " ".join(port.get("ldflags", []) + (["-flto=4", game_opt, small, *CODE_FLAGS] if lto else [])),
@@ -291,33 +349,55 @@ def main():
         fs_files = []
         for name in maps:
             out_map = fsdir / "maps" / f"{name}.map"
-            outputs = [str(out_map), str(fsdir / "levels" / f"{name}.lvl"), str(fsdir / "maps" / f"{name}.anims"),
-                       str(variant_dir / "sound" / f"{name}.slist"), str(fsdir / "fx" / f"{name}.fx")]
+            outputs = [posix(out_map), posix(fsdir / "levels" / f"{name}.lvl"), posix(fsdir / "maps" / f"{name}.anims"),
+                       posix(variant_dir / "sound" / f"{name}.slist"), posix(fsdir / "fx" / f"{name}.fx")]
             if campaign:
-                outputs.append(str(fsdir / "levels" / f"{name}.enc"))
+                outputs.append(posix(fsdir / "levels" / f"{name}.enc"))
             else:
-                outputs += [str(fsdir / "levels" / f"{name}.tiles"), str(fsdir / "levels" / f"{name}-low.lvl"),
-                            str(fsdir / "levels" / f"{name}-low.mdl")]
-            n.build(outputs, "convert_map",
-                    f"build/xbox/disc/maps/{name}.map", implicit=tool_sources + ["build/xbox/disc/maps/a30.map"],
-                    variables={"fsdir": str(fsdir), "map": str(out_map),
-                               "convert_flags": "--campaign" if campaign else ""})
-            fs_files.append(str(out_map))
+                outputs += [posix(fsdir / "levels" / f"{name}.tiles"), posix(fsdir / "levels" / f"{name}-low.lvl"),
+                            posix(fsdir / "levels" / f"{name}-low.mdl")]
+            sources = ["build/xbox/disc/maps/a30.map"] if not campaign else []
+            if pc_expansion:
+                sources += [posix(pc_maps / "timberland.map")]
+            n.build(outputs, "convert_map", posix(map_source(name)), implicit=tool_sources + converter_tools + sources,
+                    variables={"fsdir": q(fsdir), "map": q(out_map),
+                               "map_backup": q(variant_dir / "maps-uncompressed" / f"{name}.map"),
+                               "convert_flags": convert_flags})
+            fs_files.append(posix(out_map))
+        # Variant-local material banks have explicit owned source maps.
+        paint = fsdir / "paint/masks.i4"
+        paint_source = pc_maps / "timberland.map" if pc_expansion else Path("build/xbox/disc/maps/a30.map")
+        n.build(posix(paint), "paint_masks", posix(paint_source), implicit=tool_sources + ["assets/paintball/paint-splatter-original.png"],
+                variables={"source_map": q(paint_source)})
+        fs_files.append(posix(paint))
+        decals = fsdir / "decals/materials.bank"
+        decal_sources = [posix(map_source(name)) for name in maps]
+        imports = ["build/xbox/disc/maps/a30.map"] if not campaign else []
+        if pc_expansion:
+            imports.append(posix(pc_maps / "timberland.map"))
+        n.build(posix(decals), "decal_bank", decal_sources, implicit=tool_sources + imports,
+                variables={"sources": " ".join(q(p) for p in decal_sources), "convert_flags": convert_flags})
+        fs_files.append(posix(decals))
         # the maps' gameplay sounds in one bank (tools/n64/soundbank.py)
         bank = fsdir / "snd" / "sounds.bank"
-        n.build([str(bank)] + [str(fsdir / "snd" / f"{name}.ofs") for name in maps], "sound_bank",
-                [str(variant_dir / "sound" / f"{name}.slist") for name in maps], implicit=["tools/n64/soundbank.py"],
-                variables={"variantdir": str(variant_dir), "fsdir": str(fsdir), "maps": " ".join(maps)})
-        fs_files.append(str(bank))
+        n.build([posix(bank)] + [posix(fsdir / "snd" / f"{name}.ofs") for name in maps], "sound_bank",
+                [posix(variant_dir / "sound" / f"{name}.slist") for name in maps], implicit=["tools/n64/soundbank.py"],
+                variables={"variantdir": q(variant_dir), "fsdir": q(fsdir), "maps": " ".join(maps)})
+        fs_files.append(posix(bank))
         # the menu (port/n64/src/n64_menu.c): ui.map's scene, fonts and pictures
         ui_scene = fsdir / "ui" / "scene.bin"
-        n.build([str(ui_scene), str(fsdir / "levels" / "ui.mdl"), str(fsdir / "fonts" / "small.glyphs")], "convert_ui",
-                "build/xbox/disc/maps/ui.map", implicit=tool_sources, variables={"fsdir": str(fsdir)})
-        fs_files.append(str(ui_scene))
+        n.build([posix(ui_scene), posix(fsdir / "levels" / "ui.mdl"), posix(fsdir / "fonts" / "small.glyphs")], "convert_ui",
+                "build/xbox/disc/maps/ui.map", implicit=tool_sources + converter_tools, variables={"fsdir": q(fsdir)})
+        fs_files.append(posix(ui_scene))
+        if pc_expansion:
+            pictures = [posix(fsdir / "ui" / f"map{i}.sprite") for i in range(13, 19)]
+            n.build(pictures, "pc_thumbnails", posix(args.pc_ui_bitmap), implicit=tool_sources + converter_tools + [posix(ui_scene)],
+                    variables={"bitmap": q(args.pc_ui_bitmap), "outputdir": q(fsdir / "ui")})
+            fs_files.extend(pictures)
         # the main menu's music (tools/n64/music.py, port/n64/src/n64_sound.c)
-        music = [str(fsdir / "music" / f"title_{name}.wav64") for name in ("in", "loop0", "loop1", "loop2")]
+        music = [posix(fsdir / "music" / f"title_{name}.wav64") for name in ("in", "loop0", "loop1", "loop2")]
         n.build(music, "convert_music", "build/xbox/disc/maps/ui.map", implicit=tool_sources,
-                variables={"fsdir": str(fsdir)})
+                variables={"fsdir": q(fsdir)})
         fs_files.append(music[0])
         # the debug switches the cartridge carries (n64_debug_flag) are the files
         # at its root (everything else is in folders): the ones port.json does
@@ -336,19 +416,19 @@ def main():
                 if not out_flag.exists() or out_flag.read_text() != value + "\n":
                     out_flag.write_text(value + "\n")
             else:
-                n.build(str(out_flag), "touch")
-            fs_files.append(str(out_flag))
+                n.build(posix(out_flag), "touch")
+            fs_files.append(posix(out_flag))
         dfs = variant_dir / "halo.dfs"
-        n.build(str(dfs), "mkdfs", fs_files, variables={"fsdir": str(fsdir), "flags": " ".join(flags),
+        n.build(posix(dfs), "mkdfs", fs_files, variables={"fsdir": q(fsdir), "flags": " ".join(flags),
                                                            "maps": " ".join(maps + ["ui"])})
         target = BUILD_DIR / rom
-        n.build(str(target), "z64", str(elf), implicit=[str(dfs)],
-                variables={"extra": str(dfs), "outdir": str(variant_dir), "title": title})
+        n.build(posix(target), "z64", posix(elf), implicit=[posix(dfs)] + [posix(N64_INST / "bin" / (name + (".exe" if sys.platform == "win32" else ""))) for name in ("n64sym", "mips64-elf-strip", "n64elfcompress", "n64tool", "ed64romconfig")],
+                variables={"extra": q(dfs), "outdir": q(variant_dir), "title": title, "rom_elf_compression": str(compression)})
         return target, len(game_objects), len(objects)
 
     targets = []
     main_rom, game_count, object_count = variant(BUILD_DIR, [], port.get("maps", []), port.get("flags", []),
-                                                 "halo.z64", "HALO N64", False)
+                                                 "halo.z64", "HALO N64", False, compression=port.get("rom_elf_compression", 1))
     targets.append(main_rom)
     # the campaign's cartridge (port.json "campaign"): its own build of the
     # game (HALO_N64_CAMPAIGN: the compact collision of tools/n64/
@@ -357,10 +437,20 @@ def main():
     if campaign:
         rom, _, _ = variant(BUILD_DIR / "campaign", campaign.get("defines", []), campaign.get("maps", []),
                             campaign.get("flags", []), campaign.get("rom", "halo-campaign.z64"),
-                            campaign.get("title", "HALO N64 CAMPAIGN"), True)
+                            campaign.get("title", "HALO N64 CAMPAIGN"), True, compression=campaign.get("rom_elf_compression", 1))
         targets.append(rom)
-    n.build("campaign", "phony", [str(t) for t in targets[1:]])
-    n.default([str(main_rom)] + [str(t) for t in targets[1:]])
+    n.build("campaign", "phony", [posix(t) for t in targets[1:]])
+    if args.pc_expansion:
+        pc = port.get("pc_expansion")
+        if not pc:
+            parser.error("port.json has no pc_expansion configuration")
+        rom, _, _ = variant(BUILD_DIR / "pc-expansion", pc.get("defines", []), pc.get("maps", []),
+                            pc.get("flags", []), pc.get("rom", "halo-pc-expansion.z64"),
+                            pc.get("title", "HALO 64 PC EXPANSION"), False, True,
+                            pc.get("rom_elf_compression", 0))
+        targets.append(rom)
+        n.build("pc-expansion", "phony", posix(rom))
+    n.default([escape_path(posix(t)) for t in targets])
     out.close()
     print(f"wrote {BUILD_DIR / 'build.ninja'}: {game_count} game units, {object_count} objects a cartridge, "
           f"{len(targets)} cartridges")

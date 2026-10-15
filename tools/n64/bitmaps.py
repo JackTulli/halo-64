@@ -9,8 +9,11 @@ is linear, and are unswizzled here.
 
 import io
 import struct
+from functools import lru_cache
 
 from PIL import Image
+
+from .tagdefs import DEFINITIONS
 
 FORMATS = ['a8', 'y8', 'ay8', 'a8y8', 'unused1', 'unused2', 'r5g6b5', 'unused3', 'a1r5g5b5',
            'a4r4g4b4', 'x8r8g8b8', 'a8r8g8b8', 'unused4', 'unused5', 'dxt1', 'dxt3', 'dxt5', 'p8', 'bc7']
@@ -18,6 +21,20 @@ BYTES_PER_PIXEL = {'a8': 1, 'y8': 1, 'ay8': 1, 'a8y8': 2, 'r5g6b5': 2, 'a1r5g5b5
                    'x8r8g8b8': 4, 'a8r8g8b8': 4, 'p8': 1}
 FLAG_SWIZZLED = 1 << 3
 FLAG_LINEAR = 1 << 4
+
+
+@lru_cache(maxsize=1)
+def _p8_palette():
+    """Halo's fixed bump-normal palette (ARGB in Invader's source data).
+    Its last two entries have zero alpha; treating indices as greyscale
+    loses the cutouts on Xbox environment textures such as ladder grates.
+    """
+    path = DEFINITIONS.parents[2] / "bitmap" / "p8" / "p8_palette"
+    data = path.read_bytes()
+    if len(data) != 1024:
+        raise ValueError("Halo P8 palette must contain 256 ARGB entries")
+    return tuple(bytes((data[i + 1], data[i + 2], data[i + 3], data[i]))
+                 for i in range(0, len(data), 4))
 
 
 class BitmapImage:
@@ -133,7 +150,10 @@ def decode(xmap, image, target=64):
         img = Image.new("RGBA", (width, height), (255, 255, 255, 255))
         img.putalpha(Image.frombytes("L", (width, height), data))
         return img
-    if fmt in ('y8', 'p8'):
+    if fmt == 'p8':
+        palette = _p8_palette()
+        return Image.frombytes("RGBA", (width, height), b"".join(palette[v] for v in data))
+    if fmt == 'y8':
         return Image.frombytes("L", (width, height), data).convert("RGBA")
     if fmt == 'ay8':
         g = Image.frombytes("L", (width, height), data)

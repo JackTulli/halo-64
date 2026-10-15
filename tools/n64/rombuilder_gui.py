@@ -29,6 +29,8 @@ TITLE = "Halo 64 ROM Builder"
 CARTRIDGE_TEXT = {
     "multiplayer": ("Multiplayer", "halo-n64.z64", "Blood Gulch and twelve more maps, split screen for four, bots, Firefight"),
     "campaign": ("Campaign: Halo", "halo-campaign.z64", "the level \"Halo\" on a cartridge of its own"),
+    "pc_expansion": ("PC expansion (optional)", "halo-pc-expansion.z64",
+                     "six more PC maps, weapons and vehicles on a separate cartridge; also needs your Halo PC copy"),
 }
 
 
@@ -71,6 +73,8 @@ class App:
         self.root = root
         self.settings = load_settings()
         self.source = None
+        self.pc_source = None
+        self.pc_tools = tk.StringVar(value=self.settings.get("pc_tools", ""))
         self.builder_thread = None
         self.cancel = threading.Event()
         self.messages = queue.Queue()
@@ -128,11 +132,33 @@ class App:
         choices.grid(row=6, column=0, sticky="ew", pady=(6, 10))
         self.choice = {}
         for row, (key, (name, file, description)) in enumerate(CARTRIDGE_TEXT.items()):
-            var = tk.BooleanVar(value=self.settings.get(key, True))
+            var = tk.BooleanVar(value=self.settings.get(key, key != "pc_expansion"))
             self.choice[key] = var
-            ttk.Checkbutton(choices, text=f"{name}   ({file})", variable=var).grid(row=row * 2, column=0, sticky="w")
-            ttk.Label(choices, text=description, style="Small.TLabel").grid(row=row * 2 + 1, column=0, sticky="w",
+            ttk.Checkbutton(choices, text=f"{name}   ({file})", variable=var, command=self.toggle_pc_inputs).grid(row=row * 2, column=0, sticky="w")
+            ttk.Label(choices, text=description, style="Small.TLabel", wraplength=670).grid(row=row * 2 + 1, column=0, sticky="w",
                                                                             padx=(28, 0), pady=(0, 6))
+
+        # The PC source is part of the optional cartridge's existing flow.
+        self.pc_panel = ttk.Frame(choices, padding=(28, 4, 0, 6))
+        self.pc_panel.grid(row=len(CARTRIDGE_TEXT) * 2, column=0, sticky="ew")
+        ttk.Label(self.pc_panel, text="Your Halo: Combat Evolved for PC", style="Section.TLabel").grid(
+            row=0, column=0, sticky="w")
+        ttk.Label(self.pc_panel, text="Choose a PC retail ISO with loose maps, or the installed game's maps folder. "
+                  "Installer-only discs: install your copy first, then choose its maps folder.",
+                  style="Small.TLabel", wraplength=660).grid(row=1, column=0, sticky="w", pady=(2, 6))
+        pc_buttons = ttk.Frame(self.pc_panel)
+        pc_buttons.grid(row=2, column=0, sticky="w")
+        ttk.Button(pc_buttons, text="Choose PC disc image…", command=self.choose_pc_image).pack(side="left", padx=(0, 12))
+        ttk.Button(pc_buttons, text="Choose PC maps folder…", command=self.choose_pc_folder).pack(side="left")
+        self.pc_source_label = ttk.Label(self.pc_panel, text="No PC source selected", style="Small.TLabel", wraplength=660)
+        self.pc_source_label.grid(row=3, column=0, sticky="w", pady=(6, 0))
+        if payload_root() is None:
+            tools_row = ttk.Frame(self.pc_panel)
+            tools_row.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+            ttk.Label(tools_row, text="Local PC conversion tools:", style="Small.TLabel").pack(side="left")
+            ttk.Entry(tools_row, textvariable=self.pc_tools, width=36).pack(side="left", padx=6)
+            ttk.Button(tools_row, text="Browse…", command=self.choose_pc_tools).pack(side="left")
+        self.toggle_pc_inputs()
 
         # 3. where they go
         ttk.Label(outer, text="3   Save the ROMs in", style="Section.TLabel").grid(row=7, column=0, sticky="w")
@@ -163,8 +189,7 @@ class App:
         status = ttk.Frame(outer)
         status.grid(row=11, column=0, sticky="ew")
         status.columnconfigure(0, weight=1)
-        self.step = ttk.Label(status, text="A first build takes 20 to 40 minutes (later ones are quicker) and "
-                              "about 3 GB of memory.", style="Small.TLabel")
+        self.step = ttk.Label(status, text="Choose your cartridges and source files, then build.", style="Small.TLabel")
         self.step.grid(row=0, column=0, sticky="w")
         self.clock = ttk.Label(status, text="", style="Small.TLabel")
         self.clock.grid(row=0, column=1, sticky="e")
@@ -202,6 +227,8 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.close)
         if self.settings.get("source") and Path(self.settings["source"]).exists():
             self.set_source(self.settings["source"], quiet=True)
+        if self.settings.get("pc_source") and self.choice["pc_expansion"].get():
+            self.set_pc_source(self.settings["pc_source"], quiet=True)
         self.root.after(100, self.poll)
 
     # ---------- the source
@@ -244,6 +271,10 @@ class App:
             return
         try:
             source = MapSource(path)
+            try:
+                source.validate(["ui", "a30", "bloodgulch"])
+            finally:
+                source.close()
         except (BuildError, ValueError, OSError) as error:
             self.source = None
             if not quiet:
@@ -263,6 +294,57 @@ class App:
 
     def show_source(self, text, good):
         self.source_label.configure(text=text, fg="#6ccb5f" if good else "#ff6b6b")
+
+    def toggle_pc_inputs(self):
+        if not hasattr(self, "pc_panel"):
+            return
+        if self.choice["pc_expansion"].get():
+            self.pc_panel.grid()
+            # Keep the optional source controls and Build button visible.
+            height = min(920, self.root.winfo_screenheight() - 80)
+            self.root.geometry(f"{max(760, self.root.winfo_width())}x{height}")
+        else:
+            self.pc_panel.grid_remove()
+
+    def choose_pc_image(self):
+        if self.busy():
+            return
+        path = filedialog.askopenfilename(title="Your Halo: Combat Evolved PC retail disc image",
+                                         filetypes=[("PC disc images", "*.iso"), ("All files", "*.*")])
+        if path:
+            self.set_pc_source(path)
+
+    def choose_pc_folder(self):
+        if self.busy():
+            return
+        path = filedialog.askdirectory(title="Halo PC's installed maps folder")
+        if path:
+            self.set_pc_source(path)
+
+    def choose_pc_tools(self):
+        if self.busy():
+            return
+        path = filedialog.askdirectory(title="Trusted local Invader and FFmpeg tools")
+        if path:
+            self.pc_tools.set(path)
+
+    def set_pc_source(self, path, quiet=False):
+        if self.busy():
+            return
+        from .pc_input import PCMapSource, PC_MAPS
+        try:
+            source = PCMapSource(path)
+            try:
+                source.validate([*PC_MAPS, "ui"])
+                description = f"{Path(path).name}: {len(source.names())} PC maps"
+            finally:
+                source.close()
+        except (ValueError, OSError) as error:
+            self.pc_source = None
+            self.pc_source_label.configure(text=f"✖  {error}")
+            return
+        self.pc_source = str(path)
+        self.pc_source_label.configure(text=f"✔  {description}")
 
     # ---------- where the ROMs go
 
@@ -291,6 +373,9 @@ class App:
         if not cartridges:
             messagebox.showinfo(TITLE, "Tick at least one cartridge to build.")
             return
+        if "pc_expansion" in cartridges and not self.pc_source:
+            messagebox.showinfo(TITLE, "Choose your Halo PC retail disc image or installed maps folder for the PC expansion.")
+            return
         output = self.output.get().strip()
         if not output:
             messagebox.showinfo(TITLE, "Choose a folder for the ROMs.")
@@ -304,11 +389,12 @@ class App:
         self.build_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
         self.started = time.time()
-        self.builder_thread = threading.Thread(target=self.run_build, args=(self.source, output, cartridges),
+        self.builder_thread = threading.Thread(target=self.run_build, args=(self.source, output, cartridges, self.pc_source if "pc_expansion" in cartridges else None,
+                                                     self.pc_tools.get().strip() or None),
                                                daemon=True)
         self.builder_thread.start()
 
-    def run_build(self, source, output, cartridges):
+    def run_build(self, source, output, cartridges, pc_source=None, pc_tools=None):
         def log(text):
             self.messages.put(("log", text))
 
@@ -316,7 +402,7 @@ class App:
             self.messages.put(("progress", (fraction, step)))
 
         try:
-            builder = RomBuilder(source, output, cartridges, log=log, progress=progress, cancel=self.cancel)
+            builder = RomBuilder(source, output, cartridges, log=log, progress=progress, cancel=self.cancel, pc_source=pc_source, pc_tools=pc_tools)
             made = builder.run()
             self.messages.put(("done", made))
         except Cancelled:
@@ -396,6 +482,10 @@ class App:
         values = {"output": self.output.get(), "geometry": self.root.geometry()}
         if self.source:
             values["source"] = self.source
+        if self.pc_tools.get().strip():
+            values["pc_tools"] = self.pc_tools.get().strip()
+        if self.pc_source:
+            values["pc_source"] = self.pc_source
         for key, var in self.choice.items():
             values[key] = var.get()
         save_settings(values)

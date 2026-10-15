@@ -228,6 +228,9 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
+#ifdef HALO_N64
+#include "../../port/n64/src/n64.h"
+#endif
 #include "cseries/profile.h"
 #include "ai/ai.h"
 #include "ai/ai_debug.h"
@@ -3739,6 +3742,10 @@ void players_update_before_game(
 						&action->desired_facing);
 					control_data.facing_vector =
 						control_data.looking_vector = control_data.aiming_vector;
+#ifdef HALO_N64
+					if (player->local_player_index != NONE)
+						n64_golden_ray(player->local_player_index, (float *)&control_data.aiming_vector);
+#endif
 					control_data.throttle.i = action->throttle.i;
 					control_data.throttle.j = action->throttle.j;
 					control_data.throttle.k = 0.f;

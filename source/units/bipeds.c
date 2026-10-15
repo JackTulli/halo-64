@@ -526,6 +526,42 @@ n64_bots.c n64_bot_move_interval, the user's ask) -- its physics' sweep of
 the pill (collision_move_pill) goes the whole way, its acceleration and
 gravity count both ticks, its velocity stays a tick's */
 static real n64_biped_step = 1.f;
+/* Per-object held movement state. skipped fits the old entry's padding;
+   it credits only a grounded update actually omitted, never a first tick. */
+static struct n64_biped_held_movement
+{
+	long biped_index;
+	struct unit_animation_update_data animation;
+	boolean skipped;
+} n64_biped_held[HALO_PORT_MAXIMUM_OBJECTS_PER_MAP];
+typedef char n64_biped_held_entry_size[sizeof(struct n64_biped_held_movement) == 8 ? 1 : -1];
+
+static void n64_biped_movement_forget(long biped_index)
+{
+	short slot = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(biped_index) & (HALO_PORT_MAXIMUM_OBJECTS_PER_MAP - 1));
+	n64_biped_held[slot].biped_index = NONE;
+	n64_biped_held[slot].skipped = FALSE;
+}
+
+static short n64_biped_movement_step(long biped_index, int interval, long now)
+{
+	short slot = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(biped_index) & (HALO_PORT_MAXIMUM_OBJECTS_PER_MAP - 1));
+	struct n64_biped_held_movement *held = &n64_biped_held[slot];
+	short step = 1;
+	/* The current bot contract is one or two ticks only. */
+	if (interval == 2 && held->biped_index == biped_index)
+	{
+		if ((now + DATUM_INDEX_TO_ABSOLUTE_INDEX(biped_index)) & 1)
+		{
+			held->skipped = TRUE;
+			return 0;
+		}
+		if (held->skipped) step = 2;
+	}
+	held->biped_index = interval == 2 ? biped_index : NONE;
+	held->skipped = FALSE;
+	return step;
+}
 #define BIPED_STEP n64_biped_step
 #else
 #define BIPED_STEP 1.f
@@ -597,6 +633,15 @@ void bipeds_initialize(
 void bipeds_initialize_for_new_map(
 	void)
 {
+#ifdef HALO_N64
+	short slot;
+	/* Native datum salts restart with a map; old held poses must not. */
+	for (slot = 0; slot < HALO_PORT_MAXIMUM_OBJECTS_PER_MAP; slot++)
+	{
+		n64_biped_held[slot].biped_index = NONE;
+		n64_biped_held[slot].skipped = FALSE;
+	}
+#endif
 	return;
 }
 
@@ -627,6 +672,9 @@ void biped_place(
 void biped_delete(
 	long biped_index)
 {
+#ifdef HALO_N64
+	n64_biped_movement_forget(biped_index);
+#endif
 	return;
 }
 
@@ -634,6 +682,9 @@ void biped_reset(
 	long biped_index)
 {
 	struct biped_datum *biped = biped_get(biped_index);
+#ifdef HALO_N64
+	n64_biped_movement_forget(biped_index);
+#endif
 	csmemset(&biped->biped, 0, sizeof(biped->biped));
 	biped->biped.ground_plane = depths_of_hell;
 	biped->biped.last_falling_communication_time = NONE;
@@ -4344,37 +4395,32 @@ boolean biped_update(
 			or more, staggered, twice as far (n64_biped_step); between, its
 			last animation state (else it would stand still a tick of two).
 			In the air or landing, every tick: its jumps and falls exact */
-			/* (by the biped's absolute index: one each; a tick off with no
-			move of its own held -- its first -- moves a tick's way) */
-			static struct
-			{
-				long biped_index;
-				struct unit_animation_update_data animation;
-			} held[HALO_PORT_MAXIMUM_OBJECTS_PER_MAP];
 			short slot = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(biped_index) & (HALO_PORT_MAXIMUM_OBJECTS_PER_MAP - 1));
 			int interval = 1;
-			boolean on;
+			short step;
 
 			if (!TEST_FLAG(biped->object.damage_flags, _object_dead_bit) &&
-				!TEST_FLAG(biped->biped.flags, _biped_airborne_bit) && biped->biped.landing == NONE)
+				!TEST_FLAG(biped->biped.flags, _biped_airborne_bit) && biped->biped.landing == NONE &&
+				!TEST_FLAG(biped->unit.control_flags, _unit_control_jump_bit))
 			{
 				interval = n64_bot_move_interval(biped_index);
 			}
-			on = interval <= 1 || (game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(biped_index)) % interval == 0;
-			if (!on && held[slot].biped_index == biped_index)
+			/* A jump edge is consumed inside moving, so never hold that tick.
+			Interval1 clears any grounded credit rather than doubling air time. */
+			step = n64_biped_movement_step(biped_index, interval, game_time_get());
+			if (!step)
 			{
-				animation = held[slot].animation;
+				animation = n64_biped_held[slot].animation;
 			}
 			else
 			{
 				unsigned long n64_start = n64_ticks();
 
-				n64_biped_step = on ? (real)interval : 1.f;
+				n64_biped_step = (real)step;
 				biped_update_moving(biped_index, &animation);
 				n64_biped_step = 1.f;
 				n64_part_time[4] += n64_ticks() - n64_start;
-				held[slot].biped_index = interval > 1 ? biped_index : NONE;
-				held[slot].animation = animation;
+				n64_biped_held[slot].animation = animation;
 			}
 		}
 #else

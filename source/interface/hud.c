@@ -354,12 +354,68 @@ static long get_object_icon_text_index(
 		object_get(object_index)->definition_index)->object.icon_text_index;
 }
 
+#ifdef HALO_N64
+/* State-message templates contain Xbox button/weapon icons. The N64 text
+backend cannot compose those icon fragments. Draw one complete N64 prompt,
+but only after the real interaction scan has selected an eligible weapon. */
+extern void n64_hud_game_weapon_prompt(char const *name, int swap);
+static boolean n64_hud_weapon_action_response(struct player_datum *player)
+{
+	struct weapon_datum *weapon;
+	struct object_definition *definition;
+	char name[48];
+	const char *fallback;
+	wchar_t const *localized = NULL;
+	long strings;
+	short i = 0;
+	if (player->unit_index == NONE || player->action_object_index == NONE ||
+		(player->action_result != _player_action_result_swap_for_weapon &&
+		player->action_result != _player_action_result_add_weapon_to_inventory)) return FALSE;
+	weapon = weapon_try_and_get(player->action_object_index);
+	if (!weapon || weapon->object.parent_object_index != NONE) return FALSE;
+	definition = object_definition_get(weapon->definition_index);
+	strings = hud_globals->messaging.alternate_icon_text.index;
+	if (strings != NONE && definition->object.icon_text_index >= 0)
+	{
+		struct string_list *list = unicode_string_list_definition_get(strings);
+		if (definition->object.icon_text_index < list->strings.count)
+			localized = unicode_string_list_get_string(strings, definition->object.icon_text_index);
+	}
+	if (localized && localized[0] && localized[0] != '<')
+		while (i < (short)sizeof(name) - 1 && localized[i])
+		{
+			name[i] = localized[i] >= 32 && localized[i] < 127 ? (char)localized[i] : '?';
+			i++;
+		}
+	if (!i)
+	{
+		fallback = tag_name_strip_path(tag_get_name(weapon->definition_index));
+		if (!fallback || !fallback[0]) fallback = "WEAPON";
+		while (i < (short)sizeof(name) - 1 && fallback[i])
+		{
+			name[i] = fallback[i] == '_' ? ' ' : fallback[i];
+			i++;
+		}
+	}
+	name[i] = 0;
+	for (i = 0; name[i]; i++) if (name[i] >= 'a' && name[i] <= 'z') name[i] -= 'a' - 'A';
+	/* Only the replaced state line is cleared; kill/pickup messages remain. */
+	hud_enable_custom_state_message(render.local_player_index, FALSE);
+	n64_hud_game_weapon_prompt(name, player->action_result == _player_action_result_swap_for_weapon);
+	return TRUE;
+}
+#endif
+
 static void hud_show_action_response(
 	long player_index)
 {
 	struct player_datum *player = player_get(player_index);
 	short respawn_failure = players_get_respawn_failure();
 	short item_name_index;
+
+#ifdef HALO_N64
+	if (n64_hud_weapon_action_response(player)) return;
+#endif
 
 	if (respawn_failure != _player_respawn_failure_none &&
 		player->unit_index == NONE)

@@ -41,11 +41,16 @@ struct structure_leaf
 #else
 struct structure_leaf
 {
+#ifdef HALO_N64
+	/* Native renderer owns its bounds/surfaces. Gameplay needs the cluster. */
+	short cluster_index;
+#else
 	byte_rectangle3d bounds;
 	word pad;
 	short cluster_index;
 	short surface_reference_count;
 	long first_surface_reference_index;
+#endif
 };
 #endif
 

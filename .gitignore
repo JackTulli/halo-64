@@ -2,3 +2,7 @@ build/
 __pycache__/
 *.pyc
 *.z64
+dependencies/
+cartridges/
+emulator/
+roms/

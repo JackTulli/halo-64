@@ -43,6 +43,9 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
+#ifdef HALO_N64
+#include "../../port/n64/src/n64.h"
+#endif
 #include "game/aim_assist.h"
 
 #include "camera/director.h"
@@ -636,6 +639,16 @@ long player_aim_projectile(
 {
 	long target_object_index= NONE;
 	struct player_datum *player= player_get(player_index);
+#ifdef HALO_N64
+	/* The visible Golden Style cursor already follows the authoritative aim
+	   vector. Do not add Halo's second, invisible projectile correction. */
+	if (n64_golden_projectile(player_index, (const float *)position, (float *)direction, &target_object_index))
+	{
+		player->aim_assist_unit_index = target_object_index;
+		player->aim_assist_timestamp = game_time_get();
+		return target_object_index;
+	}
+#endif
 	long aiming_unit_index= unit_get_aiming_unit_index(player->unit_index);
 	struct aim_assist_parameters parameters;
 

@@ -90,7 +90,12 @@ symbols in this file:
 
 enum
 {
+#ifdef HALO_N64
+	/* The native renderer does not call the Xbox weather pass. */
+	MAXIMUM_NUMBER_OF_WEATHER_PARTICLES = 1,
+#else
 	MAXIMUM_NUMBER_OF_WEATHER_PARTICLES = 512,
+#endif
 	MAXIMUM_NUMBER_OF_WEATHER_PARTICLE_TYPES = 8,
 	MAXIMUM_NUMBER_OF_VISIBLE_WEATHER_POLYHEDRA = 8,
 	MAXIMUM_NUMBER_OF_VISIBLE_WEATHER_PARTICLE_BOXES = 26,
@@ -316,7 +321,11 @@ static void weather_particle_system_render(
 
 real const one_over_char_max = 1.f/255.f;
 
+#ifdef HALO_N64
+boolean weather = FALSE;
+#else
 boolean weather = TRUE;
+#endif
 
 static struct weather_particle_system_globals weather_particle_system_globals = { 0 };
 

@@ -2980,12 +2980,21 @@ static void game_engine_update_purge(
 	{
 		struct item_datum *item = item_get(iterator.index);
 
+#ifdef HALO_N64
+		/* Release expired items before this tick's scheduled replacements. */
+		if (item->item.last_owned_time <= cutoff_time &&
+#else
 		if (item->item.last_owned_time < cutoff_time &&
+#endif
 			!TEST_FLAG(item->item.flags, _item_attached_to_unit_bit))
 		{
 			long item_index = iterator.index;
 			if (can_delete_item(item_index))
+#ifdef HALO_N64
+				object_delete_immediately(iterator.index);
+#else
 				object_delete(iterator.index);
+#endif
 		}
 	}
 
@@ -6754,7 +6763,23 @@ long game_engine_remap_vehicle(
 			result != vehicle1->vehicle.index &&
 			result != vehicle2->vehicle.index)
 		{
+#ifdef HALO_N64
+			/* Keep every authored PC vehicle in the globals palette, including
+			Banshee, turret and Rocket Warthog. Xbox palettes remain unchanged. */
+			short i;
 			result = NONE;
+			for (i = 3; i < vehicles->count; i++)
+			{
+				vehicle = TAG_BLOCK_GET_ELEMENT(vehicles, i, struct game_globals_vehicle);
+				if (vehicle->vehicle.index == vehicle_definition_index)
+				{
+					result = vehicle_definition_index;
+					break;
+				}
+			}
+#else
+			result = NONE;
+#endif
 		}
 
 		switch (global_variant.universal_variant.vehicle_set)
@@ -6792,6 +6817,12 @@ long game_engine_remap_vehicle(
 		}
 	}
 
+#ifdef HALO_N64
+	{
+		extern long n64_game_vehicle_override(long definition_index);
+		result = n64_game_vehicle_override(result);
+	}
+#endif
 	return result;
 }
 
@@ -6800,6 +6831,19 @@ long game_engine_remap_weapon(
 {
 	long weapon_list_index =
 		weapon_definition_index_to_list_index(weapon_definition_index);
+
+#ifdef HALO_N64
+	/* Xbox's standard list treats its unused PC weapon slot as a rocket
+	launcher. The expansion contains the real PC weapon; retain it for
+	the normal weapon set and its explicit starting loadouts. */
+	if (weapon_definition_index != NONE && global_variant.universal_variant.weapon_set == 0)
+	{
+		char const *name = tag_get_name(weapon_definition_index);
+		if (!strcmp(name, "weapons\\flamethrower\\flamethrower") ||
+			!strcmp(name, "weapons\\plasma_cannon\\plasma_cannon"))
+			return weapon_definition_index;
+	}
+#endif
 
 	if (weapon_list_index == 10 ||
 		weapon_list_index == 11 ||

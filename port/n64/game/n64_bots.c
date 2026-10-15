@@ -50,7 +50,12 @@ a clear line (objects included) to the enemy.
 
 #include <math.h>
 #include <stdio.h>
+#include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "n64_bot_names.h"
+#include "n64_bot_ghosts.h"
 
 /* ---------- constants */
 
@@ -122,67 +127,6 @@ static short const grenade_chance[4] = { 2, 4, 6, 8 }; /* in 1000 a tick */
 purple, cyan, cobalt, brown, teal, sage, salmon, tan, maroon, white) */
 static short const bot_colors[MAXIMUM_BOTS] = { 7, 11, 8, 9, 10, 14, 12, 13, 17, 15, 16, 0 };
 
-/* their names, a different one each, drawn at random each game (the
-user's ask: Mario's, Zelda's, GoldenEye's and Rare's other N64 characters'):
-up to 11 letters, the most a player's name holds */
-static char const *const bot_names[] =
-{
-	/* Super Mario (Super Mario 64, Paper Mario, Mario Kart, Mario Party ...) */
-	"Mario", "Luigi", "Peach", "Daisy", "Toad", "Toadette", "Toadsworth", "Yoshi", "Birdo",
-	"Bowser", "Bowser Jr.", "Wario", "Waluigi", "Donkey Kong", "Rosalina", "Pauline", "Koopa",
-	"Goomba", "Boo", "King Boo", "Shy Guy", "Lakitu", "Spiny", "Hammer Bro", "Kamek",
-	"Magikoopa", "Bob-omb", "Chain Chomp", "Thwomp", "Whomp", "Wiggler", "Blooper",
-	"Dry Bones", "Petey", "Ludwig", "Lemmy", "Larry", "Wendy", "Iggy", "Morton", "Roy Koopa",
-	"Kooper", "Goombario", "Bombette", "Parakarry", "Watt", "Sushie", "Lakilester", "Mips",
-	"Ukiki", "Klepto", "Eyerok", "Cappy", "Bullet Bill", "Fawful", "Geno", "Mallow", "Smithy",
-	"Tatanga",
-	/* The Legend of Zelda (Ocarina of Time, Majora's Mask ...) */
-	"Link", "Zelda", "Ganondorf", "Ganon", "Navi", "Epona", "Impa", "Saria", "Darunia", "Ruto",
-	"Nabooru", "Rauru", "Sheik", "Malon", "Talon", "Ingo", "Mido", "Kaepora", "Skull Kid",
-	"Tingle", "Tatl", "Tael", "Majora", "Kafei", "Anju", "Dampe", "Biggoron", "Beedle",
-	"Koume", "Kotake", "Twinrova", "Volvagia", "Gohma", "Dodongo", "Morpha", "Bongo Bongo",
-	"Agahnim", "Vaati", "Midna", "Zant", "Tetra", "Medli", "Makar", "Komali", "Ghirahim",
-	"Groose", "Revali", "Urbosa", "Daruk", "Mipha", "Kass", "Darmani", "Mikau", "Odolwa",
-	"Goht", "Gyorg", "Twinmold", "Romani", "Cremia", "Happy Mask", "Gorman", "Grog",
-	"King Zora",
-	/* GoldenEye 007 (and the Bond villains its multiplayer had) */
-	"Bond", "James Bond", "Natalya", "Trevelyan", "Alec", "Xenia", "Onatopp", "Ourumov",
-	"Boris", "Grishenko", "Mishkin", "Valentin", "Zukovsky", "Jack Wade", "Dr. Doak", "Jaws",
-	"Oddjob", "Mayday", "Samedi", "Scaramanga", "Nick Nack", "Dr. No", "Goldfinger", "Blofeld",
-	"Tee Hee", "Moneypenny", "Q", "Stromberg", "Drax", "Zorin", "Kananga",
-	/* Perfect Dark */
-	"Joanna Dark", "Joanna", "Velvet Dark", "Elvis", "Carrington", "Cassandra", "Trent",
-	"Mr. Blonde", "Jonathan", "Dr. Caroll", "Skedar", "Maian", "Grimshaw", "Foster",
-	/* Banjo-Kazooie, Banjo-Tooie */
-	"Banjo", "Kazooie", "Mumbo Jumbo", "Mumbo", "Gruntilda", "Bottles", "Tooty", "Klungo",
-	"Jamjars", "Jinjo", "Brentilda", "Mingella", "Blobbelda", "Humba Wumba", "Mr. Vile",
-	"Boggy", "Wozza", "Gobi", "Clanker", "Blubber", "Chimpy", "Conga", "Nipper", "Tiptup",
-	"Mr. Patch", "Loggo", "Terry", "Jingaling", "Gnawty", "Tanktup", "Mr. Fit", "Dingpot",
-	"Grublin", "Jolly Roger", "Canary Mary", "Lord Woo", "Salty Joe", "Weldar",
-	/* Donkey Kong 64, Donkey Kong Country */
-	"Diddy Kong", "Diddy", "Lanky Kong", "Tiny Kong", "Chunky Kong", "Cranky Kong",
-	"Funky Kong", "Candy Kong", "Wrinkly", "Dixie Kong", "Kiddy Kong", "K. Rool",
-	"King K Rool", "Squawks", "Snide", "Troff", "Scoff", "Klaptrap", "Kasplat", "Kritter",
-	"Krusha", "Kosha", "Army Dillo", "Dogadon", "Mad Jack", "Puftoss", "Kremling", "Klump",
-	"Necky", "Rambi", "Enguarde", "Squitter", "Expresso", "Krow", "Kudgel", "K. Lumsy",
-	"Rattly",
-	/* Conker's Bad Fur Day */
-	"Conker", "Berri", "Panther", "Rodent", "Franky", "Birdy", "Gregg", "Batula", "Don Weaso",
-	"Kriplespac", "Haybot", "Tediz", "Buga", "Marvin", "Fire Imp",
-	/* Jet Force Gemini */
-	"Juno", "Vela", "Lupus", "Mizar", "Floyd", "King Jeff",
-	/* Diddy Kong Racing */
-	"Timber", "Pipsy", "Bumper", "Krunch", "Drumstick", "T.T.", "Wizpig", "Taj", "Bubbler",
-	"Smokey", "Tricky", "Bluey",
-	/* Killer Instinct */
-	"Jago", "Fulgore", "Orchid", "Spinal", "Sabrewulf", "Glacius", "Cinder", "Riptor",
-	"T.J. Combo", "Thunder", "Kim Wu", "Tusk", "Maya", "Gargos", "Eyedol",
-	/* more of Rare's */
-	"Sabreman", "Battletoad", "Rash", "Zitz", "Pimple", "Dark Queen", "Kameo", "Cooper",
-	"Rattle", "Roll", "Jetman", "Mr. Pants",
-};
-#define NUMBER_OF_BOT_NAMES ((short)(sizeof(bot_names) / sizeof(bot_names[0])))
-
 /* ---------- state */
 
 struct bot
@@ -215,7 +159,7 @@ struct bot
 	struct path_result path;
 	real_point3d path_goal;
 	short direct_wait; /* > 0: no straight walk tested (plan_path) */
-	short name_index; /* its name, of bot_names */
+	short ghost_profile; /* preserved across native respawns */
 	/* when it last thought and thinks next (game ticks: its own rate,
 	bot_think_interval) */
 	long last_think, next_think;
@@ -226,6 +170,10 @@ struct bot
 	the count's rate (n64_bot_pose_interval) */
 	boolean firing;
 };
+
+/* New LOD fields extend the old prefix; read diagnostic stride from DWARF. */
+typedef char n64_bot_observer_stride[sizeof(struct bot) == 268 ? 1 : -1];
+typedef char n64_bot_observer_ghost_offset[offsetof(struct bot, ghost_profile) == 246 ? 1 : -1];
 
 static struct
 {
@@ -250,6 +198,97 @@ static struct
 
 /* the pathfinder's working state (47 KB, only while there are bots) */
 static struct path_state *bots_path_state;
+
+/* A lobby plan survives bots' per-map reset. Moving between teams never
+rerolls names. The same seed and count produce the preview and real roster. */
+static uint32_t bot_lobby_seed, bot_ghost_spawn_seed, bot_lobby_serial;
+static boolean bot_lobby_prepared;
+/* A life identifier is independent of cadence/paused thought-state resets. */
+static long bot_ghost_spawn_units[MAXIMUM_BOTS];
+
+void n64_bots_prepare_lobby(void)
+{
+	char value[32];
+	bot_lobby_seed = (uint32_t)n64_ticks() ^ (++bot_lobby_serial * UINT32_C(0x9e3779b9));
+	/* Explicit private fixture; ordinary flags[] never pins the roster. */
+	if (n64_debug_text("debug_bot_seed", value, sizeof(value)))
+		bot_lobby_seed = (uint32_t)strtoul(value, NULL, 0);
+	bot_ghost_spawn_seed = bot_lobby_seed ^ UINT32_C(0xa341316c);
+	bot_lobby_prepared = TRUE;
+}
+
+const char *n64_bot_lobby_name(int index, int bot_count)
+{
+	int profile;
+	const char *name;
+	if (index < 0 || index >= bot_count || bot_count > MAXIMUM_BOTS) return "";
+	if (!bot_lobby_prepared) n64_bots_prepare_lobby();
+	profile = n64_ghost_profile(bot_lobby_seed ^ UINT32_C(0xc8013ea4), index, bot_count);
+	name = n64_ghost_name(profile);
+	return name ? name : n64_bot_profile_name(bot_lobby_seed, index);
+}
+
+int n64_bot_lobby_team(int index, const int *human_teams, int human_count)
+{
+	return n64_ghost_lobby_team(index, human_teams, human_count);
+}
+
+const char *n64_bots_display_name(long player_index)
+{
+	int i;
+	for (i = 0; bots.active && i < bots.created; i++)
+		if (bots.bots[i].player_index == player_index)
+			return n64_ghost_name(bots.bots[i].ghost_profile);
+	return NULL;
+}
+
+/* Private diagnostic only. Disabled in production; the A/B distance gate
+skips an expensive shortcut attempt, then keeps the native path search. */
+static int bot_profile_enabled = -1, bot_direct_limit = 0;
+static unsigned long bot_profile_calls[4], bot_profile_worst[4];
+static unsigned long long bot_profile_ticks[4];
+static unsigned long bot_profile_actions;
+
+static unsigned long bot_profile_start(void)
+{
+    if (bot_profile_enabled < 0)
+    {
+        char limit[12];
+        bot_profile_enabled = n64_debug_flag("debug_bot_profile");
+        if (n64_debug_text("debug_bot_direct_limit", limit, sizeof(limit)))
+            bot_direct_limit = atoi(limit);
+    }
+    return bot_profile_enabled ? n64_ticks() : 0;
+}
+
+static void bot_profile_end(int part, unsigned long start)
+{
+    unsigned long elapsed;
+    if (!bot_profile_enabled) return;
+    elapsed = n64_ticks() - start;
+    bot_profile_calls[part]++;
+    bot_profile_ticks[part] += elapsed;
+    if (elapsed > bot_profile_worst[part]) bot_profile_worst[part] = elapsed;
+}
+
+static void bot_profile_poll(void)
+{
+    int part;
+    char line[160];
+    static char const *const names[4] = { "LOS", "direct", "search", "build/smooth" };
+    if (!bot_profile_enabled || ++bot_profile_actions < 150) return;
+    for (part = 0; part < 4; part++)
+    {
+        snprintf(line, sizeof(line), "bot profile %s: %lu calls, %llu us total/150 actions, %llu us worst",
+            names[part], bot_profile_calls[part],
+            bot_profile_ticks[part] * 1000000 / N64_TICKS_PER_SECOND,
+            (unsigned long long)bot_profile_worst[part] * 1000000 / N64_TICKS_PER_SECOND);
+        n64_log(line);
+        bot_profile_calls[part] = bot_profile_worst[part] = 0;
+        bot_profile_ticks[part] = 0;
+    }
+    bot_profile_actions = 0;
+}
 
 /* ---------- small things */
 
@@ -387,6 +426,7 @@ static boolean line_of_sight(
 	struct collision_result collision;
 	real_vector3d vector;
 	boolean blocked;
+	unsigned long profile_start = bot_profile_start();
 
 	vector.i = to->x - from->x;
 	vector.j = to->y - from->y;
@@ -399,6 +439,7 @@ static boolean line_of_sight(
 			FLAG(_collision_test_objects_bit) | _collision_test_objects_sight_blocking_flags,
 		from, &vector, ignore_object_index, &collision);
 	n64_collision_any_hit = 0;
+	bot_profile_end(0, profile_start);
 	return !blocked;
 }
 
@@ -436,10 +477,12 @@ boolean n64_ai_direct_path(
 	struct path_result *path)
 {
 	struct path_collision_result collision;
-
-	if (structure_test_pill2d(global_structure_bsp_get(), FALSE,
+	unsigned long profile_start = bot_profile_start();
+	boolean blocked = structure_test_pill2d(global_structure_bsp_get(), FALSE,
 		(real_point2d const *)start, start_surface, (real_point2d const *)goal, goal_surface,
-		0.3f, 1 /* the end near a wall is all right */, &collision))
+		0.3f, 1 /* the end near a wall is all right */, &collision);
+	bot_profile_end(1, profile_start);
+	if (blocked)
 	{
 		return FALSE;
 	}
@@ -488,14 +531,16 @@ void n64_bots_begin(
 	int skill,
 	int teams)
 {
+	/* Release the previous map's path scratch before the map arena grows. */
+	if (bots_path_state) free(bots_path_state);
+	bots_path_state = NULL;
 	csmemset(&bots, 0, sizeof(bots));
 	bots.teams = teams != 0;
 	bots.count = (short)PIN(count, 0, MAXIMUM_BOTS);
 	bots.skill = (short)PIN(skill, 0, 3);
 	bots.active = bots.count > 0;
 	bots.random = n64_ticks() | 1;
-	if (bots.active && !bots_path_state)
-		bots_path_state = (struct path_state *)malloc(sizeof(struct path_state));
+	if (!bot_lobby_prepared) n64_bots_prepare_lobby();
 	if (bots.active)
 	{
 		/* (the paths' last stage steers around nearby objects from the
@@ -630,42 +675,40 @@ void n64_bots_create_players(
 {
 	struct data_iterator iterator;
 	struct player_datum *player;
-	short team_count[2] = { 0, 0 };
+	int human_teams[4], human_count = 0;
 	short i;
 
 	bots.created = 0;
+	for (i = 0; i < MAXIMUM_BOTS; i++) bot_ghost_spawn_units[i] = NONE;
+	/* The native map has loaded now; keep this 32 KiB scratch outside the
+	arena, rather than pinning its released tail before a larger map loads. */
+	if (bots.active && !bots_path_state)
+		bots_path_state = (struct path_state *)malloc(sizeof(struct path_state));
 	if (!bots.active)
 		return;
 	data_iterator_new(&iterator, player_data);
-	while ((player = data_iterator_next(&iterator)) != NULL)
-		team_count[player->network_player_data.team_index & 1]++;
+	while ((player = data_iterator_next(&iterator)) != NULL && human_count < 4)
+		human_teams[human_count++] = player->network_player_data.team_index & 1;
+	if (!bot_lobby_prepared) n64_bots_prepare_lobby();
 	for (i = 0; i < bots.count; i++)
 	{
 		struct network_player network_player;
 		struct bot *bot = &bots.bots[bots.created];
 		char name[12];
-		short c, name_index = 0, team = team_count[0] <= team_count[1] ? 0 : 1;
+		short c, team = (short)n64_bot_lobby_team(i, human_teams, human_count);
+		short ghost_profile = (short)n64_ghost_profile(bot_lobby_seed ^ UINT32_C(0xc8013ea4), i, bots.count);
 		long player_index;
 
 		csmemset(&network_player, 0, sizeof(network_player));
-		/* (a name none of the bots made so far has) */
-		for (;;)
-		{
-			short pick = (short)(bot_random() % (unsigned long)NUMBER_OF_BOT_NAMES), j;
-
-			for (j = 0; j < bots.created && bots.bots[j].name_index != pick; j++)
-				;
-			if (j == bots.created)
-			{
-				name_index = pick;
-				break;
-			}
-		}
-		snprintf(name, sizeof(name), "%s", bot_names[name_index]);
+		/* The native profile is bounded to eleven characters; the scoreboard
+		uses the complete Ghost name through n64_bots_display_name. */
+		snprintf(name, sizeof(name), "%s", ghost_profile == N64_GHOST_CHAOTIC ? "ChaoticSP1" :
+			ghost_profile == N64_GHOST_KODE ? "KodeBrkr16" : n64_bot_lobby_name(i, bots.count));
 		for (c = 0; name[c] && c < 11; c++)
 			network_player.name[c] = (wchar_t)name[c];
 		/* (in a team game the team's colour, as the menu gives the players) */
-		network_player.primary_color_index = bots.teams ? (team ? 3 : 2) : bot_colors[i];
+		network_player.primary_color_index = bots.teams ? (team ? 3 : 2) :
+			ghost_profile == N64_GHOST_CHAOTIC ? 6 : ghost_profile == N64_GHOST_KODE ? 12 : bot_colors[i];
 		/* (a machine holds four players: the bots on machines 1 to 3) */
 		network_player.machine_index = (char)(1 + i / 4);
 		network_player.controller_index = (char)(i % 4);
@@ -674,9 +717,8 @@ void n64_bots_create_players(
 		player_index = player_new(1 + i / 4, NONE, NONE, &network_player);
 		if (player_index == NONE)
 			break;
-		team_count[team]++;
 		csmemset(bot, 0, sizeof(*bot));
-		bot->name_index = name_index;
+		bot->ghost_profile = ghost_profile;
 		bot->player_index = player_index;
 		bot->unit_index = NONE;
 		bot->target_unit = NONE;
@@ -749,7 +791,8 @@ static void bots_search_step(
 	void)
 {
 	struct bot *bot;
-	boolean found;
+	boolean found, complete, built;
+	unsigned long profile_start;
 
 	if (!bots.search_owner || !bots_path_state)
 		return;
@@ -760,11 +803,16 @@ static void bots_search_step(
 		bots.path_cooldown = TICKS_BETWEEN_PATHS;
 		return;
 	}
-	if (!path_state_find_continue(bots_path_state, SEARCH_SURFACES_PER_TICK, &found))
-		return;
+	profile_start = bot_profile_start();
+	complete = path_state_find_continue(bots_path_state, SEARCH_SURFACES_PER_TICK, &found);
+	bot_profile_end(2, profile_start);
+	if (!complete) return;
 	bots.search_owner = 0;
 	bots.path_cooldown = TICKS_BETWEEN_PATHS;
-	if (path_state_build_path(bots_path_state, &bot->path) && bot->path.step_count > 0)
+	profile_start = bot_profile_start();
+	built = path_state_build_path(bots_path_state, &bot->path);
+	bot_profile_end(3, profile_start);
+	if (built && bot->path.step_count > 0)
 	{
 		bot->path_valid = TRUE;
 		bot->path.step_index = 0;
@@ -800,6 +848,15 @@ static void plan_path(
 			bot->path_valid = FALSE;
 		}
 		return;
+	}
+	/* Diagnostic A/B gate: keep search fallback, never return a cached
+	geometry result. No limit is active unless the private flag is set. */
+	(void)bot_profile_start();
+	if (direct && bot_direct_limit > 0)
+	{
+		real dx = goal.x - start.x, dy = goal.y - start.y;
+		if (dx * dx + dy * dy > (real)bot_direct_limit * bot_direct_limit)
+			direct = FALSE;
 	}
 	/* a straight walk there first: one test and no search where it's clear
 	(most of the open maps; the search's smoothing would make the same one
@@ -940,6 +997,55 @@ static long find_better_weapon(
 
 /* the bot's action for a tick: it thinks every step ticks (its timers
 count by it) */
+/* Reset exactly once for a new native unit, keeping its match profile. */
+static void bot_begin_life(
+	struct bot *bot,
+	struct player_datum *player,
+	struct unit_datum *unit)
+{
+	/* a new life: a fresh state */
+	if (bot->unit_index != player->unit_index)
+	{
+		long player_index = bot->player_index;
+		short ghost_profile = bot->ghost_profile;
+
+		csmemset(bot, 0, sizeof(*bot));
+		bot->ghost_profile = ghost_profile;
+		bot->player_index = player_index;
+		bot->unit_index = player->unit_index;
+		bot->target_unit = NONE;
+		bot->goal_weapon = NONE;
+		bot->given_up_weapon = NONE;
+		bot->aim = unit->object.forward;
+		bot->last_position = unit->object.position;
+		/* One independent roll per native unit life. Native powerup expiry,
+		firing and damage still control how much camouflage remains. */
+		/* The action gate may clear a thought state while a game is paused.
+		A remembered native datum prevents that from granting a second roll. */
+		int number = (int)(bot - bots.bots);
+		if (number >= 0 && number < MAXIMUM_BOTS && bot_ghost_spawn_units[number] != player->unit_index)
+		{
+			bot_ghost_spawn_units[number] = player->unit_index;
+			boolean cloaked = n64_ghost_camo_roll(ghost_profile, &bot_ghost_spawn_seed);
+			if (cloaked)
+			{
+				player_handle_powerup_minor(player_index, _player_powerup_active_camouflage,
+					60 * TICKS_PER_SECOND);
+				unit->unit.active_camouflage = 1.f;
+			}
+			if (ghost_profile && n64_debug_flag("debug_bot_ghosts"))
+			{
+				char line[160];
+				snprintf(line, sizeof(line), "n64: ghost %s slot %d unit %08lx camo roll %lu granted %d ticks %d",
+					n64_ghost_name(ghost_profile), number, (unsigned long)player->unit_index,
+					(unsigned long)(bot_ghost_spawn_seed % 100), cloaked,
+					player->powerup_durations[_player_powerup_active_camouflage]);
+				n64_log(line);
+			}
+		}
+	}
+}
+
 static void think(
 	struct bot *bot,
 	struct player_datum *player,
@@ -954,27 +1060,15 @@ static void think(
 	real distance = 1e9f;
 	long current_weapon;
 	short entry;
+	/* Chaotic's 3DS accuracy advantage uses the N64's native Legendary
+	combat parameters, without fake damage, speed or health changes. */
+	short combat_skill = bot->ghost_profile == N64_GHOST_CHAOTIC ? 3 : bots.skill;
 	boolean moving = FALSE, along_path = FALSE, in_range = FALSE;
 	unsigned long flags = 0;
 	struct bot_weapon const *weapon;
 	static struct bot_weapon const unarmed = { "", 0, _style_semi, 0.f, 1.5f };
 
-	/* a new life: a fresh state */
-	if (bot->unit_index != player->unit_index)
-	{
-		long player_index = bot->player_index;
-		short name_index = bot->name_index;
-
-		csmemset(bot, 0, sizeof(*bot));
-		bot->name_index = name_index;
-		bot->player_index = player_index;
-		bot->unit_index = player->unit_index;
-		bot->target_unit = NONE;
-		bot->goal_weapon = NONE;
-		bot->given_up_weapon = NONE;
-		bot->aim = unit->object.forward;
-		bot->last_position = unit->object.position;
-	}
+	bot_begin_life(bot, player, unit);
 	unit_get_camera_position(player->unit_index, &eye);
 
 	/* in a vehicle: out (the action button) */
@@ -1132,7 +1226,7 @@ static void think(
 		normalize(&desired);
 		if (bot->target_visible)
 		{
-			real error = aim_error[bots.skill];
+			real error = aim_error[combat_skill];
 
 			desired.i += error * bot_random_real();
 			desired.j += error * bot_random_real();
@@ -1284,7 +1378,7 @@ static void think(
 
 				if (bot_detail(bot) == _bot_detail_least)
 					halves += halves / 2;
-				bot->fire_timer = -(short)((pause_ticks[bots.skill] + bot_random() % 10) * halves / 2);
+				bot->fire_timer = -(short)((pause_ticks[combat_skill] + bot_random() % 10) * halves / 2);
 			}
 		}
 		else
@@ -1293,7 +1387,7 @@ static void think(
 			bot->trigger_down = FALSE;
 			/* (a quarter shorter with more than eight bots) */
 			if (bot->fire_timer >= 0)
-				bot->fire_timer = (short)((burst_ticks[bots.skill] + bot_random() % 8) *
+				bot->fire_timer = (short)((burst_ticks[combat_skill] + bot_random() % 8) *
 					(bots.created > 8 ? 3 : 4) / 4);
 		}
 	}
@@ -1346,6 +1440,7 @@ void n64_bots_actions(
 
 	if (!bots.active || !bots.created)
 		return;
+	(void)bot_profile_start();
 	resolve_weapons();
 	bots.paths_this_tick = 0;
 	bots.direct_tests_this_tick = 0;
@@ -1400,4 +1495,5 @@ void n64_bots_actions(
 		bot->firing = (action->control_flags & (FLAG(_unit_control_weapon_primary_trigger_bit) |
 			FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_use_equipment_bit))) != 0;
 	}
+	bot_profile_poll();
 }

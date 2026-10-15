@@ -191,7 +191,7 @@ class SoundConverter:
             kept = sound_class in KEPT_CLASSES and self._has_samples(tag)
             # (not the Covenant's animations' foley, 1.4 MB: their voices,
             # weapons and impacts)
-            if getattr(tag, "source", None) is not None and sound_class == OBJECT_IMPACTS:
+            if getattr(getattr(tag, "source", None), "name", None) == "a30" and sound_class == OBJECT_IMPACTS:
                 kept = False
         elif tag.group_name == "lsnd":
             self._keep[tag.index] = False  # (a loop through itself)
