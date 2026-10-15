@@ -45,7 +45,7 @@ It carries:
 - libdragon's mksprite, audioconv64, mkdfs, n64tool and ed64romconfig
   (https://github.com/DragonMinded/libdragon), built for Windows
   (libdragon-LICENSE.md);
-- Invader's Halo tag definitions (https://github.com/SnowyMouse/invader,
+- Invader's Halo tag definitions and fixed P8 palette (https://github.com/SnowyMouse/invader,
   GPL-3.0: invader-LICENSE.md; the source is at that address);
 - Python (PSF licence), Pillow (MIT-CMU), tkinterdnd2 and tkdnd (MIT),
   sv-ttk (MIT), packaged with PyInstaller.
@@ -84,6 +84,9 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
+    palette = args.invader / "src" / "bitmap" / "p8" / "p8_palette"
+    if not palette.is_file() or palette.stat().st_size != 1024:
+        parser.error("Invader src/bitmap/p8/p8_palette must contain exactly 1024 bytes")
     selected = (args.pc_expansion_elf, args.pc_tools, args.pc_tool_notices)
     if any(selected) and not all(selected):
         parser.error("PC expansion packaging requires --pc-expansion-elf, --pc-tools and --pc-tool-notices together")
@@ -117,6 +120,10 @@ def main():
                 shutil.copy2(folder / name, target / name)
         definitions = payload / "invader" / "src" / "tag" / "hek" / "definition"
         shutil.copytree(args.invader / "src" / "tag" / "hek" / "definition", definitions)
+        # bitmaps._p8_palette resolves this relative to the definitions tree.
+        palette_target = payload / "invader" / "src" / "bitmap" / "p8" / "p8_palette"
+        palette_target.parent.mkdir(parents=True)
+        shutil.copy2(palette, palette_target)
         fourcc = payload / "invader" / "include" / "invader" / "hek"
         fourcc.mkdir(parents=True)
         shutil.copy2(args.invader / "include" / "invader" / "hek" / "fourcc.hpp", fourcc / "fourcc.hpp")
