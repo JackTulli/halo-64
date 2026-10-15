@@ -180,7 +180,7 @@ class BuilderTests(unittest.TestCase):
     def test_real_tk_source_gui_constructs_and_toggles_optional_panel(self):
         import tkinter as tk
         from tools.n64 import rombuilder_gui as gui
-        root = tk.Tk()
+        root = gui.TkinterDnD.Tk() if gui.TkinterDnD is not None else tk.Tk()
         root.withdraw()
         try:
             with patch.object(gui, "load_settings", return_value={}), patch.object(gui, "payload_root", return_value=None):
