@@ -41,9 +41,12 @@ The expansion uses Multiplayer's existing Content screen and menu style.
 - On Blood Gulch, VEHICLES **ALL MAP** and **ALL + ROCKET** enable two additional
   Rocket Hogs. MAP DEFAULT and ROCKET HOGS retain their previous populations and
   replacement behavior. Original vehicles are not moved or removed.
-- Sidewinder vehicle additions and new flyers on original maps remain deferred.
-  Compact maps receive no forced vehicles. The six PC maps retain their authored
-  placements, including Banshees where authored and allowed for the game type.
+- Blood Gulch, Sidewinder and Ice Fields gain a Banshee near each team's base
+  under ALL MAP and ALL + ROCKET. Missing vertical aircraft limits are derived
+  from the supplied BSP and pads; these are native soft height limits. See
+  [Banshee details](docs/pc-expansion/banshees.md) for limitations and device checks.
+  Sidewinder ground-vehicle additions remain deferred. Compact maps get no forced
+  vehicles; Death Island, Gephyrophobia and Infinity keep their authored aircraft.
 
 The carried expansion also contains optional controls, bots, team setup,
 modifiers and effects. Read the in-game options rather than assuming a new mode

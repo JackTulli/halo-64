@@ -166,10 +166,10 @@ AIRCRAFT_PLACEMENTS = {
         {'kind': 'Banshee', 'anchor_row': 0,
          'offset_xy': [-5.668624015804862, 8.238124893896691], 'team_base': 1}],
     'icefields': [
-        {'kind': 'Banshee', 'anchor_row': 8,
-         'offset_xy': [-4.389264793037177, -4.090764546708146], 'team_base': 0},
-        {'kind': 'Banshee', 'anchor_row': 6,
-         'offset_xy': [12.557969067437906, 6.188490357209319], 'team_base': 1}],
+        {'kind': 'Banshee', 'anchor_row': 12,
+         'offset_xy': [1.4706072719272203, 7.8636705330115895], 'team_base': 0},
+        {'kind': 'Banshee', 'anchor_row': 5,
+         'offset_xy': [6.6942836995213995, -4.380247224794748], 'team_base': 1}],
 }
 
 def map_placements(name):

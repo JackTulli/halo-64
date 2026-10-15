@@ -23,9 +23,12 @@ retain their previous populations; ROCKET HOGS continues its existing
 replacement behavior. Native scenario vehicle lifetime is retained, without
 adding a periodic vehicle spawn manager.
 
-Sidewinder vehicle additions remain deferred for route/access balance. Flyers on
-original maps remain deferred because their zero vehicle floor/ceiling does
-not provide flight containment. Compact maps receive no forced vehicles.
+Blood Gulch, Sidewinder and Ice Fields also gain an optional Banshee near each
+base under ALL MAP and ALL + ROCKET. Their previously unset vertical aircraft
+limits are derived conservatively from the supplied map bounds and spawn pads.
+See [Banshee placement and device checks](banshees.md). These are native soft
+height limits, not an absolute containment or flight-quality guarantee.
+Sidewinder ground-vehicle additions remain deferred. Compact maps receive no forced vehicles.
 The six PC maps retain their own authored placements, including Banshees where
 authored and allowed for the selected game type.
 
