@@ -151,3 +151,31 @@ PLACEMENTS = {'wizard': {'weapons': [{'kind': 'Flamethrower',
                              'game_types': [12, 0, 0, 0],
                              'respawn_seconds': 60}],
                 'vehicles': []}}
+
+# Optional aircraft pads, relative to existing authored vehicle anchors. Each
+# pair faces the two bases' midpoint. Retail positions are resolved locally.
+AIRCRAFT_PLACEMENTS = {
+    'bloodgulch': [
+        {'kind': 'Banshee', 'anchor_row': 4,
+         'offset_xy': [-7.659281336876736, 2.3098505152004343], 'team_base': 0},
+        {'kind': 'Banshee', 'anchor_row': 7,
+         'offset_xy': [7.346717951617519, -9.488189255036014], 'team_base': 1}],
+    'sidewinder': [
+        {'kind': 'Banshee', 'anchor_row': 1,
+         'offset_xy': [6.079832816396246, -5.199580071954973], 'team_base': 0},
+        {'kind': 'Banshee', 'anchor_row': 0,
+         'offset_xy': [-5.668624015804862, 8.238124893896691], 'team_base': 1}],
+    'icefields': [
+        {'kind': 'Banshee', 'anchor_row': 8,
+         'offset_xy': [-4.389264793037177, -4.090764546708146], 'team_base': 0},
+        {'kind': 'Banshee', 'anchor_row': 6,
+         'offset_xy': [12.557969067437906, 6.188490357209319], 'team_base': 1}],
+}
+
+def map_placements(name):
+    base = PLACEMENTS.get(name)
+    aircraft = AIRCRAFT_PLACEMENTS.get(name, [])
+    if base is None and not aircraft:
+        return None
+    return {'weapons': list(base['weapons']) if base else [],
+            'vehicles': (list(base['vehicles']) if base else []) + list(aircraft)}

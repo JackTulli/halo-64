@@ -106,7 +106,7 @@ def ground_candidate(bs,anchor,offset,local,yaw,vehicle=False):
     if not empty_aabb(bs,bounds):return None
     return {'position':origin,'yaw':yaw,'BSP_AABB':bounds,'ground_height_range':[min(zs),max(zs)],'ground_surface_indices':sorted(set(surfaces)),'full_BSP_box_empty':True}
 
-def resolve_placements(m, donor, defs, plan):
+def resolve_placements(m, donor, defs, plan, *, aircraft_donor=None):
     """Resolve authored anchor recipes before any scenario row is appended.
 
     Incompatible geometry fails the conversion; never silently omit an item or
@@ -121,14 +121,15 @@ def resolve_placements(m, donor, defs, plan):
     vehicles=rows('vehicles','ScenarioVehicle')
     tags={'Flamethrower':r'weapons\flamethrower\flamethrower',
           'Fuel Rod':r'weapons\plasma_cannon\plasma_cannon',
-          'Rocket Hog':r'vehicles\rwarthog\rwarthog'}
+          'Rocket Hog':r'vehicles\rwarthog\rwarthog',
+          'Banshee':r'vehicles\banshee\banshee_mp'}
     bsp_tag=m.bsps[0][0]
     _,pointer=struct.unpack('<iI',m.read(bsp_tag.address+fields('ScenarioStructureBSP')['collision bsp'],8))
     bsp=CollisionBSP.read(m,pointer)
     result={'weapons':[],'vehicles':[]}
     for category in result:
         for row in plan[category]:
-            vehicle=category=='vehicles';kind='Rocket Hog' if vehicle else row['kind']
+            vehicle=category=='vehicles';kind=row.get('kind','Rocket Hog') if vehicle else row['kind']
             raw=(vehicles if vehicle else equipment)[row['anchor_row']]
             anchor=struct.unpack_from('<3f',raw,8 if vehicle else 64)
             yaw=0.
@@ -140,8 +141,10 @@ def resolve_placements(m, donor, defs, plan):
                 if len(flags)!=2:raise ValueError('paired CTF anchors required for vehicle heading')
                 center=[sum(flags[t][k] for t in (0,1))/2 for k in range(3)]
                 yaw=math.atan2(center[1]-anchor[1],center[0]-anchor[0])
-            tag=next(t for t in donor.tags if t.name==tags[kind] and t.group_name in ('weap','vehi'))
-            bounds=object_bounds(donor,tag,defs)['bounds']
+            source=aircraft_donor if kind=='Banshee' else donor
+            if source is None:raise ValueError('Banshee placements require an explicit aircraft donor')
+            tag=next(t for t in source.tags if t.name==tags[kind] and t.group_name in ('weap','vehi'))
+            bounds=object_bounds(source,tag,defs)['bounds']
             placed=ground_candidate(bsp,anchor,row['offset_xy'],bounds,yaw,vehicle)
             if placed is None:raise ValueError(f'{m.name}: no clear supported {kind} placement at anchor {row["anchor_row"]}')
             # Verify the actual serialized coordinates/heading, not only the

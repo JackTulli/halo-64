@@ -367,7 +367,10 @@ def main(argv=None):
                             posix(fsdir / "levels" / f"{name}-low.mdl")]
             sources = ["build/xbox/disc/maps/a30.map"] if not campaign else []
             if pc_expansion:
-                sources += [posix(pc_maps / "timberland.map")]
+                # Both explicit donors can contribute tag dependencies. Track
+                # aircraft donor changes just like the weapon/ground donor.
+                sources += [posix(pc_maps / "timberland.map"),
+                            posix(pc_maps / "deathisland.map")]
             n.build(outputs, "convert_map", posix(map_source(name)), implicit=tool_sources + converter_tools + sources,
                     variables={"fsdir": q(fsdir), "map": q(out_map),
                                "map_backup": q(variant_dir / "maps-uncompressed" / f"{name}.map"),

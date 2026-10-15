@@ -337,9 +337,14 @@ def open_map(path, *, campaign=False, pc_expansion=False, pc_maps=None):
         from .merge import merge_tags
         imported = merge_tags(xmap, XboxMap(source), FIREFIGHT_ROOTS)
         print(f"{xmap.name}: {len(imported)} Covenant tags from {FIREFIGHT_SOURCE}")
-    if pc_folder is not None and xmap.name not in PC_MAPS:
-        from .pc_additions import add_original_map_content
-        add_original_map_content(xmap, XboxMap(pc_folder / "timberland.map"))
+    if pc_folder is not None:
+        from .pc_placements import AIRCRAFT_PLACEMENTS, map_placements
+        if map_placements(xmap.name) is not None:
+            from .pc_additions import add_original_map_content
+            donor = XboxMap(pc_folder / "timberland.map")
+            aircraft = (XboxMap(pc_folder / "deathisland.map")
+                        if xmap.name in AIRCRAFT_PLACEMENTS else None)
+            add_original_map_content(xmap, donor, aircraft)
     return xmap
 
 
