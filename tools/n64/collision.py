@@ -151,13 +151,16 @@ class CollisionBSP:
     def test_point(self, p):
         """the leaf a point is in, or NONE (solid): bsp3d_test_point"""
         node = 0
-        while True:
+        for _ in range(len(self.nodes)):
+            if not 0 <= node < len(self.nodes):
+                raise ValueError("BSP3D node index outside the node table")
             plane, back, front = self.nodes[node]
             i, j, k, d = self.planes[plane]
             node = front if p[0] * i + p[1] * j + p[2] * k - d >= 0 else back
             node = signed(node)
             if node < 0:
                 return NONE if node == NONE else node & 0x7FFFFFFF
+        raise ValueError("BSP3D node cycle or missing termination")
 
     def surface_test_point(self, s, axis, sign, p2):
         """collision_surface_test_point (no breakables)"""
@@ -181,7 +184,11 @@ class CollisionBSP:
 
     def bsp2d_test_point(self, root, p2):
         node = signed(root)
+        remaining = len(self.nodes2d)
         while node >= 0:
+            if node >= len(self.nodes2d) or not remaining:
+                raise ValueError("BSP2D node index outside the table or node cycle")
+            remaining -= 1
             i, j, d, c0, c1 = self.nodes2d[node]
             node = signed(c1 if i * p2[0] + j * p2[1] - d >= 0 else c0)
         return NONE if node == NONE else node & 0x7FFFFFFF
@@ -210,26 +217,36 @@ class CollisionBSP:
         state = {"last_leaf": NONE, "last_contents": 0, "last_plane": NONE, "result": None,
                  "t": maximum_t}
 
+        # A DAG may share descendants between branches, but a node cannot
+        # recur on its own active path. Reject cycles before recursion grows.
+        active = set()
+
         def recurse(node, t0, t1):
             node = signed(node)
             if node >= 0:
-                plane, back, front = self.nodes[node]
-                i, j, k, d = self.planes[plane]
-                distance = point[0] * i + point[1] * j + point[2] * k - d
-                dot = vector[0] * i + vector[1] * j + vector[2] * k
-                d0, d1 = dot * t0 + distance, dot * t1 + distance
-                reaches_back = d0 < 0.0 or d1 < 0.0
-                reaches_front = d0 >= 0.0 or d1 >= 0.0
-                if reaches_back and reaches_front:
-                    is_front = dot > 0.0
-                    t = -(distance / dot)
-                    if recurse(front if not is_front else back, t0, t):
-                        return True
-                    if state["t"] <= t:
-                        return False
-                    state["last_plane"] = plane
-                    return recurse(front if is_front else back, t, t1)
-                return recurse(front if reaches_front else back, t0, t1)
+                if node >= len(self.nodes) or node in active:
+                    raise ValueError("BSP3D node index outside the table or node cycle")
+                active.add(node)
+                try:
+                    plane, back, front = self.nodes[node]
+                    i, j, k, d = self.planes[plane]
+                    distance = point[0] * i + point[1] * j + point[2] * k - d
+                    dot = vector[0] * i + vector[1] * j + vector[2] * k
+                    d0, d1 = dot * t0 + distance, dot * t1 + distance
+                    reaches_back = d0 < 0.0 or d1 < 0.0
+                    reaches_front = d0 >= 0.0 or d1 >= 0.0
+                    if reaches_back and reaches_front:
+                        is_front = dot > 0.0
+                        t = -(distance / dot)
+                        if recurse(front if not is_front else back, t0, t):
+                            return True
+                        if state["t"] <= t:
+                            return False
+                        state["last_plane"] = plane
+                        return recurse(front if is_front else back, t, t1)
+                    return recurse(front if reaches_front else back, t0, t1)
+                finally:
+                    active.remove(node)
             leaf = NONE
             contents = 3  # solid
             if node != NONE:
