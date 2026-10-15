@@ -5,6 +5,43 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+15 October, night, later: a bot's movement every other tick with four
+bots or more (the user's ask, after the profile of the 14th: with 2
+players and 4 bots on Blood Gulch the tick was 22 ms against 6.4 alone,
+~10% of the frame collision and physics, ~13% posing, ~20% Halo's object
+bookkeeping, ~3% the bots' own thinking, 0.6% projectiles -- so no hitscan
+for their shots). bipeds.c biped_update runs a bot's biped_update_moving
+(its physics with it) on every other tick, staggered by the biped's index,
+with n64_biped_step 2: collision_move_pill sweeps the pill the whole two
+ticks' way (so it stops at walls as before), the acceleration limits and
+gravity count both ticks, the velocity it keeps is a tick's; between, the
+last animation state is held (by the biped's absolute index, one each; an
+off tick with none held moves a tick's way, so the distance is always
+right). In the air or landing, and dead, every tick. n64_bots.c
+n64_bot_move_interval says which bipeds (bots, four or more).
+
+15 October, night: bots by their level of detail (the user: optimise the
+bots, large counts especially). A bot's own thinking was already cheap
+(staggered, its rays and searches rationed); each biped's tick (~2.7 ms,
+its pose the dearest part) is what grows with the count, and a bot's pose
+rate came from the count alone (every tick, every other with 4 to 6, every
+third past) whether any view showed it. n64_bots.c bot_detail now works
+out each bot's level once a tick: full in a view lately
+(n64_object_recently_seen) and within 15 units of a player, least out of
+view and 30 or more from every player, reduced between. Its pose
+(objects.c n64_far_ai_biped -> n64_bot_pose_interval): the count's rate at
+full, one tick more at reduced (every other at least), twice it at least
+(every fourth at least) -- Firefight's AI rule, now for bots of any count
+-- and the count's rate whatever the level while it fires (a trigger, a
+grenade, a melee: its shots come from its weapon's markers). Its thoughts:
+each bot on a clock of its own (last_think, next_think; its timers count
+the ticks since its last thought), twice as far apart at least
+(n64_bots_examine_turn asks that clock). Its shots: the pauses between
+bursts by the count (x1 up to 3 bots, x1.5 to 6, x2 to 8, x2.5 to 10, x3
+past; half again at least detail) rather than by the think step, and
+bursts a quarter shorter past 8 bots -- each shot is an object with a ray
+a tick.
+
 15 October, evening: the Halo 64 ROM Builder, a Windows program for
 players (the user: drag and drop the Halo ISO or the maps folder, build
 the ROM, no build process). tools/n64/rombuilder.py runs what

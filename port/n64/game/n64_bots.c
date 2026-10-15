@@ -31,6 +31,7 @@ a clear line (objects included) to the enemy.
 #include "game/game.h"
 #include "game/game_engine.h"
 #include "game/players.h"
+#include "game/local_players.h"
 #include "items/weapons.h"
 #include "math/real_math.h"
 #include "memory/data.h"
@@ -74,6 +75,12 @@ is the dearest thing a bot does) */
 #define WEAPON_SEARCH_TICKS 45
 /* a weapon it could not reach is left alone this long */
 #define WEAPON_GIVE_UP_TICKS (4 * TICKS_PER_SECOND)
+/* a bot's level of detail (bot_detail): near a player within this, far
+past that (world units) */
+#define BOT_NEAR 15.f
+#define BOT_FAR 30.f
+/* the longest a bot's thought counts for (its timers' step) */
+#define MAXIMUM_THINK_STEP 12
 
 enum
 {
@@ -209,6 +216,15 @@ struct bot
 	real_point3d path_goal;
 	short direct_wait; /* > 0: no straight walk tested (plan_path) */
 	short name_index; /* its name, of bot_names */
+	/* when it last thought and thinks next (game ticks: its own rate,
+	bot_think_interval) */
+	long last_think, next_think;
+	/* its level of detail (bot_detail) and the tick it was worked out */
+	short detail;
+	long detail_time;
+	/* its action fires (a trigger, a grenade, a melee): its pose is kept at
+	the count's rate (n64_bot_pose_interval) */
+	boolean firing;
 };
 
 static struct
@@ -289,6 +305,75 @@ static boolean unit_alive(
 	object = object_try_and_get(unit_index);
 	return object && TEST_FLAG(_object_mask_unit, object->object.type) &&
 		!TEST_FLAG(object->object.damage_flags, _object_dead_bit);
+}
+
+/* ---------- a bot's level of detail
+
+Each biped costs ~2.7 ms of a tick, its pose (node matrices) the dearest
+part, and with 8 to 12 bots most of them are at any moment behind a wall
+or across the map: a bot drawn in a view lately and near a player is posed
+and thinks at the count's rate (n64_bots_pose_interval); one far from every
+player or in no view is posed less often; one far and in no view is posed
+least and thinks half as often (objects.c's AI rule, n64_far_ai_biped, as
+Firefight's Covenant have it). A bot firing is posed at the count's rate
+whatever it is: its shots come from its weapon's markers, its pose */
+enum
+{
+	_bot_detail_full,
+	_bot_detail_reduced,
+	_bot_detail_least
+};
+
+boolean n64_object_recently_seen(long object_index);
+
+static short bot_detail(
+	struct bot *bot)
+{
+	long now = game_time_get();
+	real nearest = 1e30f;
+	short local_player_index;
+	boolean seen;
+
+	if (bot->detail_time == now)
+		return bot->detail;
+	bot->detail_time = now;
+	if (!unit_alive(bot->unit_index))
+		return bot->detail = _bot_detail_full;
+	seen = n64_object_recently_seen(bot->unit_index);
+	for (local_player_index = 0; local_player_index < MAXIMUM_LOCAL_PLAYERS; local_player_index++)
+	{
+		long player_index = local_player_get_player_index(local_player_index);
+		long unit_index = player_index != NONE ? player_get(player_index)->unit_index : NONE;
+
+		if (unit_index != NONE && object_try_and_get(unit_index))
+		{
+			real d = distance_squared3d(&object_get(unit_index)->object.position,
+				&object_get(bot->unit_index)->object.position);
+
+			if (d < nearest)
+				nearest = d;
+		}
+	}
+	if (seen && nearest < BOT_NEAR * BOT_NEAR)
+		bot->detail = _bot_detail_full;
+	else if (!seen && nearest >= BOT_FAR * BOT_FAR)
+		bot->detail = _bot_detail_least;
+	else
+		bot->detail = _bot_detail_reduced;
+	return bot->detail;
+}
+
+static struct bot *bot_of_unit(
+	long unit_index)
+{
+	short i;
+
+	for (i = 0; bots.active && i < bots.created; i++)
+	{
+		if (bots.bots[i].unit_index == unit_index)
+			return &bots.bots[i];
+	}
+	return NULL;
 }
 
 /* a clear line from one point to another: nothing of the level and no
@@ -450,15 +535,63 @@ int n64_bots_pose_interval(
 	return count >= 7 ? 3 : count >= 4 ? 2 : 1;
 }
 
-/* how often a bot thinks: as its pose, or every fourth tick with
+/* a bot's own (objects.c, n64_far_ai_biped): the count's rate near and in
+view, or firing; less often far or out of view, least both (bot_detail).
+With three or four views, every other tick at most */
+int n64_bot_pose_interval(
+	long unit_index)
+{
+	extern int n64_view_total;
+	struct bot *bot = bot_of_unit(unit_index);
+	int interval = n64_bots_pose_interval();
+
+	if (bot && !bot->firing)
+	{
+		short detail = bot_detail(bot);
+
+		if (detail == _bot_detail_reduced)
+			interval = MAX(interval + 1, 2);
+		else if (detail == _bot_detail_least)
+			interval = MAX(interval * 2, 4);
+	}
+	if (n64_view_total >= 3 && interval < 2)
+		interval = 2;
+	return interval;
+}
+
+/* how often bots think: as their pose, or every fourth tick with
 ANIMATIONS HALF RATE (n64_menu.c; the user's ask) -- its timers, turning
-and chances count by the interval, so it plays the same, slower to react */
+and chances count by the ticks since its last thought, so it plays the
+same, slower to react */
 int n64_bots_update_interval(
 	void)
 {
 	extern int n64_half_animation_rate;
 
 	return n64_half_animation_rate ? 4 : n64_bots_pose_interval();
+}
+
+/* bipeds.c's (biped_update): a bot's movement and its physics every other
+tick, twice as far, with four bots or more (the user's ask: its physics was
+the dearest part of a biped's tick after its pose); else every tick */
+int n64_bot_move_interval(
+	long unit_index)
+{
+	if (!bots.active || bots.created < 4)
+		return 1;
+	return bot_of_unit(unit_index) ? 2 : 1;
+}
+
+/* one bot's: twice that far from every player and in no view (it fights
+the other bots out there; near or seen it stays as quick) */
+static short bot_think_interval(
+	struct bot *bot)
+{
+	short interval = (short)n64_bots_update_interval();
+
+	if (bot_detail(bot) == _bot_detail_least)
+		interval = (short)MAX(interval * 2, 4);
+	return interval;
 }
 
 /* the bot a player is (its number, 0 on), or -1 */
@@ -479,18 +612,15 @@ int n64_bot_number(
 nearby objects are looked over this tick (what its action button would
 do, the items walked over): a bot's only before a tick it thinks -- it
 presses its buttons then -- the rest every tick. A tick's actions come at
-its start, so the tick before n64_bots_actions' (time + i) % interval */
+its start, so the tick before n64_bots_actions' next thought */
 boolean n64_bots_examine_turn(
 	long player_index)
 {
-	int interval, number;
+	int number;
 
-	if (!bots.active || (interval = n64_bots_update_interval()) <= 1 ||
-		(number = n64_bot_number(player_index)) < 0)
-	{
+	if (!bots.active || (number = n64_bot_number(player_index)) < 0)
 		return TRUE;
-	}
-	return (game_time_get() + 1 + number) % interval == 0;
+	return game_time_get() + 1 >= bots.bots[number].next_think;
 }
 
 /* main.c's create_local_players, after the players on the controllers:
@@ -1143,17 +1273,28 @@ static void think(
 				flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
 			}
 			/* (longer pauses with many bots: fewer shots in the air, each one
-			an object of its own a tick) */
+			an object of its own a tick, its ray every tick -- the count's
+			share of a pause: 1 up to 3 bots, 1.5 to 6, 2 to 8, 2.5 to 10, 3
+			past; half again for a bot far and in no view, which fights the
+			other bots out there) */
 			if (bot->fire_timer <= 0)
-				bot->fire_timer = -(short)((pause_ticks[bots.skill] + bot_random() % 10) *
-					(step >= 3 ? 4 : step == 2 ? 3 : 2) / 2);
+			{
+				short halves = bots.created <= 3 ? 2 : bots.created <= 6 ? 3 : bots.created <= 8 ? 4 :
+					bots.created <= 10 ? 5 : 6;
+
+				if (bot_detail(bot) == _bot_detail_least)
+					halves += halves / 2;
+				bot->fire_timer = -(short)((pause_ticks[bots.skill] + bot_random() % 10) * halves / 2);
+			}
 		}
 		else
 		{
 			bot->fire_timer += step;
 			bot->trigger_down = FALSE;
+			/* (a quarter shorter with more than eight bots) */
 			if (bot->fire_timer >= 0)
-				bot->fire_timer = (short)(burst_ticks[bots.skill] + bot_random() % 8);
+				bot->fire_timer = (short)((burst_ticks[bots.skill] + bot_random() % 8) *
+					(bots.created > 8 ? 3 : 4) / 4);
 		}
 	}
 	else
@@ -1200,7 +1341,7 @@ void n64_bots_actions(
 		FLAG(_unit_control_use_equipment_bit) | FLAG(_unit_control_throw_grenade_bit) |
 		FLAG(_unit_control_weapon_secondary_trigger_bit) | FLAG(_unit_control_weapon_reload_bit) |
 		FLAG(_unit_control_swap_weapons_bit);
-	short interval = (short)n64_bots_update_interval();
+	long now = game_time_get();
 	short i;
 
 	if (!bots.active || !bots.created)
@@ -1232,17 +1373,31 @@ void n64_bots_actions(
 			bot->unit_index = NONE;
 			continue;
 		}
-		/* its own tick to think (staggered between the bots), or a new
-		life: a thought; else its last action held, presses not again */
-		if (bot->unit_index != player->unit_index || (game_time_get() + i) % interval == 0)
+		/* its own tick to think (bot_think_interval, staggered between
+		the bots), or a new life: a thought, its timers counting the ticks
+		since the last; else its last action held, presses not again */
+		if (bot->unit_index != player->unit_index)
 		{
+			short interval = (short)n64_bots_update_interval();
+
 			think(bot, player, action, interval);
 			bot->last_action = *action;
+			bot->last_think = now;
+			bot->next_think = now + interval + i % interval;
+		}
+		else if (now >= bot->next_think)
+		{
+			think(bot, player, action, (short)PIN(now - bot->last_think, 1, MAXIMUM_THINK_STEP));
+			bot->last_action = *action;
+			bot->last_think = now;
+			bot->next_think = now + bot_think_interval(bot);
 		}
 		else
 		{
 			*action = bot->last_action;
 			action->control_flags &= ~pressed;
 		}
+		bot->firing = (action->control_flags & (FLAG(_unit_control_weapon_primary_trigger_bit) |
+			FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_use_equipment_bit))) != 0;
 	}
 }

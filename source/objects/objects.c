@@ -3850,16 +3850,18 @@ static boolean n64_far_ai_biped(
 	short local_player_index;
 	extern int n64_view_total;
 
-	/* a bot's pose as often as it thinks (port/n64/game/n64_bots.c: every
-	other tick with 4 to 6 bots, every third with 7 or 8), staggered */
+	/* a bot's pose at its own rate (port/n64/game/n64_bots.c
+	n64_bot_pose_interval: the count's -- every other tick with 4 to 6 bots,
+	every third past -- near and in view or firing, less often far or in no
+	view), staggered */
 	if (unit->unit.player_index != NONE && player_get(unit->unit.player_index)->local_player_index == NONE &&
 		object->object.parent_object_index == NONE)
 	{
-		extern int n64_bots_pose_interval(void);
-		int interval = n64_bots_pose_interval();
+		extern int n64_bot_pose_interval(long unit_index);
+		int interval = n64_bot_pose_interval(object_index);
 
-		if (interval > 1)
-			return ((n64_pose_clock(object_index) + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) % interval) != 0;
+		return interval > 1 &&
+			((n64_pose_clock(object_index) + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) % interval) != 0;
 	}
 	/* with three or four views, every biped's pose (the players' too) every
 	other tick, staggered: a quarter-screen view hides it, and the bipeds were

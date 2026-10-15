@@ -519,6 +519,18 @@ static void biped_update_physics(
 static void biped_snap_facing(
 	long biped_index);
 
+#ifdef HALO_N64
+/* the ticks a biped's movement stands for (biped_update): 1, or 2 for a
+bot moved every other tick with four bots or more (port/n64/game/
+n64_bots.c n64_bot_move_interval, the user's ask) -- its physics' sweep of
+the pill (collision_move_pill) goes the whole way, its acceleration and
+gravity count both ticks, its velocity stays a tick's */
+static real n64_biped_step = 1.f;
+#define BIPED_STEP n64_biped_step
+#else
+#define BIPED_STEP 1.f
+#endif
+
 /* ---------- globals */
 
 boolean debug_biped_physics = FALSE;
@@ -2453,7 +2465,7 @@ static void biped_update_physics(
 			velocity_change = acceleration;
 		physics->new_velocity.i = velocity_change.i + physics->velocity.i;
 		physics->new_velocity.j = velocity_change.j + physics->velocity.j;
-		physics->new_velocity.k = physics->velocity.k - global_gravity;
+		physics->new_velocity.k = physics->velocity.k - global_gravity * BIPED_STEP;
 		physics->out_flags = TEST_FLAG(in_flags, _biped_physics_in_slipping_bit) ?
 			FLAG(_biped_physics_out_slipping_bit) : 0;
 	}
@@ -2589,7 +2601,7 @@ static void biped_update_physics(
 			physics->out_flags = slipping ? FLAG(_biped_physics_out_slipping_bit) : 0;
 			add_vectors3d(&velocity_change, &physics->velocity, &physics->new_velocity);
 			if (TEST_FLAG(physics->out_flags, _biped_physics_out_slipping_bit))
-				physics->new_velocity.k -= global_gravity;
+				physics->new_velocity.k -= global_gravity * BIPED_STEP;
 		}
 	}
 
@@ -2631,6 +2643,12 @@ static void biped_update_physics(
 	}
 	else
 	{
+#ifdef HALO_N64
+		/* (a step of more than a tick: the pill swept the whole way, its
+		velocity a tick's again after) */
+		if (BIPED_STEP != 1.f)
+			scale_vector3d(&velocity, BIPED_STEP, &velocity);
+#endif
 		collision_count = collision_move_pill(
 			collision_flags,
 			&position,
@@ -2642,6 +2660,13 @@ static void biped_update_physics(
 			&clipped_velocity,
 			16,
 			collisions);
+#ifdef HALO_N64
+		if (BIPED_STEP != 1.f)
+		{
+			scale_vector3d(&velocity, 1.f / BIPED_STEP, &velocity);
+			scale_vector3d(&clipped_velocity, 1.f / BIPED_STEP, &clipped_velocity);
+		}
+#endif
 	}
 
 	if (debug_biped_physics &&
@@ -3964,6 +3989,16 @@ static void biped_update_moving(
 	}
 	physics.in_flags = in_flags;
 
+#ifdef HALO_N64
+	/* (a step of more than a tick: as much speed gained as in both) */
+	if (BIPED_STEP != 1.f)
+	{
+		if (physics.acceleration_maximum < REAL_MAX / 4.f)
+			physics.acceleration_maximum *= BIPED_STEP;
+		if (physics.airborne_acceleration_maximum < REAL_MAX / 4.f)
+			physics.airborne_acceleration_maximum *= BIPED_STEP;
+	}
+#endif
 	biped_update_physics(&physics);
 
 	if (physics.elevator_object_index == NONE)
@@ -4303,10 +4338,44 @@ boolean biped_update(
 		{
 			extern unsigned long n64_part_time[8];
 			extern unsigned long n64_ticks(void);
-			unsigned long n64_start = n64_ticks();
+			extern int n64_bot_move_interval(long unit_index);
+			/* A bot's movement -- its physics, the dearest part of a
+			biped's tick after its pose -- every other tick with four bots
+			or more, staggered, twice as far (n64_biped_step); between, its
+			last animation state (else it would stand still a tick of two).
+			In the air or landing, every tick: its jumps and falls exact */
+			/* (by the biped's absolute index: one each; a tick off with no
+			move of its own held -- its first -- moves a tick's way) */
+			static struct
+			{
+				long biped_index;
+				struct unit_animation_update_data animation;
+			} held[HALO_PORT_MAXIMUM_OBJECTS_PER_MAP];
+			short slot = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(biped_index) & (HALO_PORT_MAXIMUM_OBJECTS_PER_MAP - 1));
+			int interval = 1;
+			boolean on;
 
-			biped_update_moving(biped_index, &animation);
-			n64_part_time[4] += n64_ticks() - n64_start;
+			if (!TEST_FLAG(biped->object.damage_flags, _object_dead_bit) &&
+				!TEST_FLAG(biped->biped.flags, _biped_airborne_bit) && biped->biped.landing == NONE)
+			{
+				interval = n64_bot_move_interval(biped_index);
+			}
+			on = interval <= 1 || (game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(biped_index)) % interval == 0;
+			if (!on && held[slot].biped_index == biped_index)
+			{
+				animation = held[slot].animation;
+			}
+			else
+			{
+				unsigned long n64_start = n64_ticks();
+
+				n64_biped_step = on ? (real)interval : 1.f;
+				biped_update_moving(biped_index, &animation);
+				n64_biped_step = 1.f;
+				n64_part_time[4] += n64_ticks() - n64_start;
+				held[slot].biped_index = interval > 1 ? biped_index : NONE;
+				held[slot].animation = animation;
+			}
 		}
 #else
 		biped_update_moving(biped_index, &animation);
