@@ -4303,6 +4303,14 @@ long object_new_from_scenario(
 
 			if (definition_index!=NONE)
 			{
+#if defined(HALO_N64_PC_EXPANSION) && !defined(HALO_N64_CAMPAIGN)
+                extern boolean n64_game_scenario_vehicle_allowed(void const *placement);
+                if (object_globals->initial_placement &&
+                    palette == &global_scenario_get()->vehicle_palette &&
+                    !n64_game_scenario_vehicle_allowed(scenario_object))
+                    return NONE;
+#endif
+
 #ifdef HALO_N64_PC_EXPANSION
                 /* Only converter-marked vehicle rows are optional additions. */
                 if (palette == &global_scenario_get()->vehicle_palette &&

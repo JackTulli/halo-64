@@ -1129,6 +1129,47 @@ char const *n64_loaded_map_name(
 	return n64_map.name;
 }
 
+
+#if defined(HALO_N64_PC_EXPANSION) && !defined(HALO_N64_CAMPAIGN)
+/* PC scenario vehicles store per-game-type allowed bits at bytes 90..91.
+ * Xbox maps use zero here; keep their existing placement behavior. */
+static boolean n64_pc_vehicle_spawn_allowed(
+    char const *map_name,
+    short engine,
+    unsigned int spawn_flags)
+{
+    unsigned int allowed_bit;
+    if (strcmp(map_name, "dangercanyon") &&
+        strcmp(map_name, "deathisland") &&
+        strcmp(map_name, "gephyrophobia") &&
+        strcmp(map_name, "icefields") &&
+        strcmp(map_name, "infinity") &&
+        strcmp(map_name, "timberland"))
+        return TRUE;
+
+    switch (engine)
+    {
+    case game_engine_ctf: allowed_bit = 9; break;
+    case game_engine_slayer: allowed_bit = 8; break;
+    case game_engine_oddball: allowed_bit = 11; break;
+    case game_engine_king: allowed_bit = 10; break;
+    default: return TRUE; /* No allowed bit is defined for Race. */
+    }
+    return (spawn_flags & (1u << allowed_bit)) != 0;
+}
+
+boolean n64_game_scenario_vehicle_allowed(
+    void const *placement)
+{
+    byte const *row = placement;
+    if (!game_engine_running() || n64_choice.firefight)
+        return TRUE;
+    return n64_pc_vehicle_spawn_allowed(n64_map.name,
+        game_engine_get_variant()->game_engine_index,
+        ((unsigned int)row[90] << 8) | row[91]);
+}
+#endif
+
 /* cache_files.c (HALO_N64): the loaded map's tag header */
 void *n64_cache_file_tag_header(
 	char const *scenario_name)
