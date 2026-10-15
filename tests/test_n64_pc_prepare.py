@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
+import wave
 from unittest.mock import patch
 import zlib
 
@@ -128,7 +129,7 @@ class PrepareTests(unittest.TestCase):
             self.assertIn(["invader-bludgeon.exe", "-t", str(tags), "-T", kind, "-b", "*"], commands)
         self.assertIn(["invader-edit.exe", "-t", str(tags), "vehicles\\scorpion\\headlights scorpion.lens_flare", "-S", "reflections[0].bitmap_index", "0"], commands)
         self.assertIn(["invader-edit.exe", "-t", str(tags), "hud.unit_hud_interface", "-S", "scaling_flags.use_high_res_scale", "0", "-S", "width_scale", "0.5", "-S", "height_scale", "1.0"], commands)
-        self.assertIn(["invader-sound.exe", "-t", str(tags), "-d", str(audio), "-F", "xbox_adpcm", "-j", "2", "audio"], commands)
+        self.assertIn(["invader-sound.exe", "-t", str(tags), "-d", str(audio), "-F", "16-bit_pcm", "-j", "2", "audio"], commands)
         self.assertEqual(fake.ffmpeg_inputs, [ogg_page()])
         ffmpeg = next(c for c in commands if c[0] == "ffmpeg.exe")
         self.assertEqual(ffmpeg[1:-1], ["-hide_banner", "-loglevel", "error", "-y", "-i", "pipe:0", "-acodec", "pcm_s16le"])
@@ -144,6 +145,56 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(manifest["commands"], fake.commands)
         self.assertTrue((output.parent / "ui-tags" / prepare.UI_BITMAP).is_file())
         self.assertEqual(len(list((output.parent / "logs").glob("*.log"))), len(commands))
+
+    def test_vorbis_stage_keeps_non_block_aligned_pcm_lossless(self):
+        tags, audio = self.root / "tags", self.root / "sound-source"
+        tags.mkdir()
+        original = b"sound tag" + ogg_page()
+        (tags / "audio.sound").write_bytes(original)
+        # 65 frames must stay 65; this fixture would expose ADPCM block truncation.
+        pcm = b"".join(struct.pack("<h", value) for value in ([0x1234, -2000, 0, 32767, -32768] * 13))
+        calls = []
+
+        def ffmpeg(stream, target):
+            self.assertEqual(stream, ogg_page())
+            with wave.open(str(target), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(22050)
+                wav.writeframes(pcm)
+
+        def invoke(tool, *arguments):
+            calls.append((tool, arguments))
+            if tool == "edit":
+                if "-C" in arguments:
+                    return "1"
+                return "permutation" if arguments[-1].endswith("permutations[0].name") else "pitch"
+            self.assertEqual(tool, "sound")
+            self.assertEqual(arguments[arguments.index("-F") + 1], "16-bit_pcm")
+            with wave.open(str(audio / "audio" / "pitch" / "permutation.wav"), "rb") as wav:
+                self.assertEqual((wav.getnchannels(), wav.getsampwidth(), wav.getframerate(), wav.getnframes()),
+                                 (1, 2, 22050, 65))
+                self.assertEqual(wav.readframes(65), pcm)
+            return ""
+
+        self.assertEqual(prepare._normalize_vorbis(tags, audio, invoke, ffmpeg), ["audio.sound"])
+        self.assertEqual((tags / "audio.sound").read_bytes(), original)
+        sound_calls = [arguments for tool, arguments in calls if tool == "sound"]
+        self.assertEqual(len(sound_calls), 1)
+        self.assertFalse(any("xbox_adpcm" in arguments for _, arguments in calls))
+
+    def test_existing_non_vorbis_sound_is_not_reencoded(self):
+        tags, audio = self.root / "tags", self.root / "sound-source"
+        tags.mkdir()
+        source = tags / "already-native.sound"
+        source.write_bytes(b"native sound without a Vorbis stream")
+        with patch("builtins.print"), patch.object(prepare, "_ogg_streams") as ogg:
+            invoke, ffmpeg = unittest.mock.Mock(), unittest.mock.Mock()
+            self.assertEqual(prepare._normalize_vorbis(tags, audio, invoke, ffmpeg), [])
+            invoke.assert_not_called()
+            ffmpeg.assert_not_called()
+            ogg.assert_not_called()
+        self.assertEqual(source.read_bytes(), b"native sound without a Vorbis stream")
 
     def test_every_build_uses_new_work_and_hashes_same_size_source_changes(self):
         first = self.run_prepare()
@@ -184,12 +235,13 @@ class PrepareTests(unittest.TestCase):
 
     def test_tool_failure_and_wrong_output_version_leave_failed_manifest(self):
         for fake, message in ((FakeTools(fail="invader-convert.exe"), "conversion detail"),
+                              (FakeTools(fail="invader-sound.exe"), "conversion detail"),
                               (FakeTools(version=7), "expected Xbox cache version 5"),
                               (FakeTools(thumbnail=False), "required multiplayer thumbnail")):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 self.run_prepare(fake)
         manifests = [json.loads(path.read_text()) for path in self.work.glob("*/manifest.json")]
-        self.assertEqual(len(manifests), 3)
+        self.assertEqual(len(manifests), 4)
         self.assertTrue(all(item["status"] == "failed" for item in manifests))
 
     def test_reject_source_and_tool_work_roots(self):

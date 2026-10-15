@@ -24,13 +24,13 @@ TOOL_NAMES = tuple(f"invader-{name}.exe" for name in
                    ("extract", "convert", "refactor", "bludgeon", "edit", "sound", "build")) + ("ffmpeg.exe",)
 UI_BITMAP = Path("ui/shell/bitmaps/mp_map_grafix.bitmap")
 RECIPE = {
-    "id": "halo-retail-pc-to-xbox-intermediate-v1",
+    "id": "halo-retail-pc-to-xbox-intermediate-v2",
     "input_version": 7, "output_version": 5, "maps": EXTRAS,
     "conversions": [["gbxmodel", "model"],
                     ["shader_transparent_chicago_extended", "shader_transparent_chicago"]],
     "repairs": ["invalid-indices", "invalid-enums", "scorpion-headlight-index-0"],
     "hud": "clear use_high_res_scale and halve explicit width/height (zero defaults to one)",
-    "audio": "embedded complete Vorbis streams -> ffmpeg pcm_s16le -> Invader xbox_adpcm, jobs=2",
+    "audio": "embedded complete Vorbis streams -> ffmpeg pcm_s16le -> lossless Invader 16-bit_pcm, jobs=2",
     "build": ["-g", "xbox-ntsc", "-E", "-H"],
     "ui": str(UI_BITMAP).replace("\\", "/"),
 }
@@ -213,7 +213,9 @@ def _normalize_vorbis(tags, audio, invoke, run_ffmpeg):
                 raise PCPrepareError("Sound output escapes the work directory.")
             destination.parent.mkdir(parents=True, exist_ok=True)
             run_ffmpeg(ogg, destination)
-        invoke("sound", "-t", tags, "-d", audio, "-F", "xbox_adpcm", "-j", "2", tag[:-6])
+        # These are converter intermediates: keep the decoded samples lossless
+        # and bypass the external Xbox ADPCM encoder entirely.
+        invoke("sound", "-t", tags, "-d", audio, "-F", "16-bit_pcm", "-j", "2", tag[:-6])
         changed.append(tag)
     return changed
 
