@@ -41,7 +41,7 @@ TINY3D = Path(os.environ.get("TINY3D", Path.home() / "n64" / "tiny3d"))
 # The installer and archive/PC normalization tools produce the explicit input
 # files before conversion. They are not imported by the converter dependency
 # closure and must not invalidate every converted level when their UI changes.
-NON_CONVERTER_TOOLS = frozenset({"package_rombuilder.py", "pc_input.py", "pc_prepare.py", "xiso.py"})
+NON_CONVERTER_TOOLS = frozenset({"package_rombuilder.py", "pc_input.py", "pc_prepare.py", "xiso.py", "fx_pool.py"})
 
 
 def converter_source(path):
@@ -258,6 +258,15 @@ def main(argv=None):
     n.rule("touch", command="cd $root && mkdir -p $$(dirname $out) && : > $out", description="N64 FLAG $out")
     n.rule("mkdfs", command="cd $root && $python -m tools.n64.prune $fsdir $maps && $bin/mkdfs $out $fsdir > /dev/null && : $in $flags",
            description="N64 DFS $out")
+    # Shared packing records the complete copied tree. Never mutate that owned
+    # inventory afterward: default/campaign retain their historical pruning rule.
+    n.rule("mkdfs_packed", command="cd $root && $bin/mkdfs $out $fsdir > /dev/null && : $in $flags",
+           description="N64 PC DFS $out")
+    # Packing is an independent, serialized PC-only step after raw assets exist.
+    # Its helper must not invalidate the expensive per-map conversions.
+    n.pool("pack", 1)
+    n.rule("fx_pool", command="cd $root && $python -m tools.n64.fx_pool --filesystem $source_fs --output $packed_fs --maps $maps --stamp $stamp",
+           pool="pack", description="N64 PC SHARED FX $packed_fs", restat=True)
     n.rule("paint_masks", command="cd $root && export INVADER_DEFINITIONS=$definitions && $python -m tools.n64.paint_masks --map $source_map --output $out", description="N64 PAINT $out")
     n.rule("decal_bank", command="cd $root && export INVADER_DEFINITIONS=$definitions && $python -m tools.n64.decal_bank --maps $sources --output $out $convert_flags", pool="convert", description="N64 DECALS $out")
     n.rule("pc_thumbnails", command="cd $root && export N64_INST=$n64inst INVADER_DEFINITIONS=$definitions && $python -m tools.n64.pc_thumbnails --bitmap $bitmap --output $outputdir", description="N64 PC MAP PICTURES")
@@ -419,7 +428,31 @@ def main(argv=None):
                 n.build(posix(out_flag), "touch")
             fs_files.append(posix(out_flag))
         dfs = variant_dir / "halo.dfs"
-        n.build(posix(dfs), "mkdfs", fs_files, variables={"fsdir": q(fsdir), "flags": " ".join(flags),
+        dfsdir = fsdir
+        dfs_files = fs_files
+        if pc_expansion:
+            # Preserve the complete raw conversion tree. The helper creates a
+            # distinct owned tree; pruning and DragonFS packing use only that tree.
+            dfsdir = variant_dir / "filesystem-packed"
+            stamp = variant_dir / "filesystem-packed.fx-pool.stamp"
+            manifest = variant_dir / "filesystem-packed.fx-pool.json"
+            # The helper's durable sibling .owner.json is deliberately not a
+            # Ninja output: `ninja -t clean` must leave ownership proof intact.
+            raw_fx = [posix(fsdir / "fx" / f"{name}.fx") for name in maps]
+            copies = [posix(dfsdir / Path(path).relative_to(fsdir)) for path in fs_files]
+            packed_fx = [posix(dfsdir / "fx" / f"{name}.fx") for name in maps]
+            dfs_files = list(dict.fromkeys([*copies, *packed_fx, posix(dfsdir / "fx/records.bank"),
+                                            posix(stamp), posix(manifest)]))
+            # Validate the dynamic copied asset tree on every invocation. On
+            # identical bytes the helper preserves output mtimes, so restat
+            # prevents an otherwise unnecessary DragonFS/ROM rebuild.
+            validate = variant_dir / "fx-pool-validate"
+            n.build(posix(validate), "phony")
+            n.build(dfs_files, "fx_pool", list(dict.fromkeys([*fs_files, *raw_fx, posix(validate)])),
+                    implicit=["tools/n64/fx_pool.py"],
+                    variables={"source_fs": q(fsdir), "packed_fs": q(dfsdir),
+                               "maps": " ".join(maps), "stamp": q(stamp)})
+        n.build(posix(dfs), "mkdfs_packed" if pc_expansion else "mkdfs", dfs_files, variables={"fsdir": q(dfsdir), "flags": " ".join(flags),
                                                            "maps": " ".join(maps + ["ui"])})
         target = BUILD_DIR / rom
         n.build(posix(target), "z64", posix(elf), implicit=[posix(dfs)] + [posix(N64_INST / "bin" / (name + (".exe" if sys.platform == "win32" else ""))) for name in ("n64sym", "mips64-elf-strip", "n64elfcompress", "n64tool", "ed64romconfig")],

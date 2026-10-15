@@ -80,7 +80,7 @@ class BuildGraphTests(unittest.TestCase):
         s = self.text(out)
         edge = next(line for line in s.splitlines() if ': convert_map ' in line)
         for name in ('rombuilder.py', 'rombuilder_gui.py', 'rombuilder_main.py',
-                     'package_rombuilder.py', 'pc_input.py', 'pc_prepare.py', 'xiso.py',
+                     'package_rombuilder.py', 'pc_input.py', 'pc_prepare.py', 'xiso.py', 'fx_pool.py',
                      'test_buildgraph.py', 'test_portable_assets.py'):
             self.assertNotIn('tools/n64/' + name, edge)
         for name in ('convert.py', 'bitmaps.py', 'tagdefs.py', 'toolpaths.py',
@@ -163,6 +163,36 @@ class BuildGraphTests(unittest.TestCase):
             self.assertIn("'", result.stdout)
             self.assertIn('sdk with spaces', result.stdout)
             self.assertNotIn('\\', result.stdout)
+
+    def test_pc_shared_fx_stage_preserves_raw_assets_and_converter_cache(self):
+        maps, bitmap = self.pc_inputs()
+        out, _ = self.generate('--pc-expansion', '--pc-maps', maps, '--pc-ui-bitmap', bitmap)
+        text = self.text(out)
+        edges = [line for line in text.splitlines() if line.startswith('build ')]
+        pool = [line for line in edges if ': fx_pool ' in line]
+        self.assertEqual(len(pool), 1)
+        outputs, inputs = pool[0].split(': fx_pool ', 1)
+        self.assertIn('tools/n64/fx_pool.py', inputs)
+        self.assertIn('/fx-pool-validate', inputs)
+        self.assertEqual(inputs.count('/filesystem/fx/'), 19)
+        self.assertEqual(outputs.count('/filesystem-packed/fx/'), 20)
+        self.assertIn('filesystem-packed.fx-pool.stamp', outputs)
+        self.assertIn('filesystem-packed.fx-pool.json', outputs)
+        self.assertNotIn('.owner.json', outputs)
+        self.assertNotIn('/filesystem-packed/', inputs)
+        self.assertTrue(any('/fx-pool-validate: phony' in line for line in edges))
+        self.assertIn('restat = 1', text.split('rule fx_pool', 1)[1].split('rule paint_masks', 1)[0])
+        converters = [line for line in edges if ': convert_map ' in line]
+        self.assertTrue(all('fx_pool.py' not in line for line in converters))
+        dfs = [line for line in edges if ': mkdfs' in line]
+        self.assertEqual(len(dfs), 3)
+        pc = next(line for line in dfs if '/pc-expansion/halo.dfs:' in line)
+        self.assertIn(': mkdfs_packed ', pc)
+        self.assertIn('/filesystem-packed/', pc)
+        readonly_rule = text.split('rule mkdfs_packed', 1)[1].split('rule fx_pool', 1)[0]
+        self.assertNotIn('tools.n64.prune', readonly_rule)
+        self.assertNotIn('/filesystem/', pc)
+        self.assertTrue(all('/filesystem-packed/' not in line for line in dfs if line != pc))
 
     def test_pc_header_mismatch_rejected(self):
         maps, bitmap = self.pc_inputs()
