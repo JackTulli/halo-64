@@ -37,6 +37,7 @@ the two colours by the texel), all drawn like the particles.
 
 #include "n64.h"
 #include "n64_sniper_ribbon.h"
+#include "n64_fx_format.h"
 
 #define MAXIMUM_PARTICLES 128
 #define CELL 16
@@ -120,6 +121,8 @@ static struct
 	struct fx_index *index;
 	int index_count;
 	uint32_t rom;
+	/* Inclusive lower / exclusive upper record-file bounds; no bank heap copy. */
+	uint32_t record_min, record_max;
 	surface_t atlas;
 	uint8_t cell_colours[CELLS][4];
 	struct
@@ -198,6 +201,9 @@ static void fx_free(void)
 	if (fx.atlas.buffer)
 		surface_free(&fx.atlas);
 	fx.rom = 0;
+	fx.record_min = fx.record_max = 0;
+	fx.explosion_effect_count = 0;
+	memset(fx.cell_colours, 0, sizeof(fx.cell_colours));
 }
 
 /* the map's effects given back (the fireball stays): at the end of a game
@@ -275,71 +281,142 @@ static void make_fireball(void)
 	data_cache_hit_writeback(fx.fireball.buffer, fx.fireball.stride * FIREBALL);
 }
 
+/* A failed load publishes no index, atlas, bank address or explosion list. */
+static int fx_file_bytes(FILE *file, uint32_t *bytes)
+{
+    long end;
+    if (fseek(file, 0, SEEK_END) || (end = ftell(file)) < 0 || (uint64_t)end > 0x7fffffffu) return 0;
+    *bytes = (uint32_t)end;
+    return !fseek(file, 0, SEEK_SET);
+}
+
+static int fx_read_at(FILE *file, uint32_t offset, void *out, size_t bytes)
+{
+    return !fseek(file, (long)offset, SEEK_SET) && fread(out, 1, bytes, file) == bytes;
+}
+
+static int fx_rom_span(uint32_t rom, uint32_t offset, uint32_t size)
+{
+    uint32_t padded = (size + 15u) & ~15u;
+    if (!rom || size > 65535u || offset > UINT32_MAX - rom) return 0;
+    return padded && padded - 1u <= UINT32_MAX - (rom + offset);
+}
+
+static int fx_bank_validate(FILE *file, uint32_t identity, uint32_t *minimum, uint32_t *maximum)
+{
+    uint8_t header[32], scratch[256];
+    uint32_t bytes, crc = 0xffffffffu;
+    if (!fx_file_bytes(file, &bytes) || !fx_read_at(file, 0, header, sizeof(header)) ||
+        !n64_fx_bank_header(header, bytes, identity, minimum, maximum)) return 0;
+    for (uint32_t offset = *minimum; offset < *maximum;) {
+        uint32_t count = *maximum - offset;
+        if (count > sizeof(scratch)) count = sizeof(scratch);
+        if (fread(scratch, 1, count, file) != count) return 0;
+        crc = n64_fx_crc32_update(crc, scratch, count);
+        offset += count;
+    }
+    return (crc ^ 0xffffffffu) == identity;
+}
+
+/* Record shape/table checks stream through bounded stack storage. No record
+   allocation is added to map loading, even for the largest bank record. */
+static int fx_file_record(FILE *file, uint32_t offset, uint32_t bytes)
+{
+    uint8_t head[4], scratch[256];
+    uint32_t events, emitters, first, previous = 0, seen = 0;
+    if (!fx_read_at(file, offset, head, sizeof(head))) return 0;
+    events = n64_fx_be16(head); emitters = n64_fx_be16(head + 2);
+    first = (4u + 2u * (events + 1u) + 3u) & ~3u;
+    if (bytes < 8 || first > bytes || bytes - first != emitters * N64_FX_EMITTER_BYTES) return 0;
+    for (uint32_t remaining = 2u * (events + 1u); remaining;) {
+        uint32_t count = remaining > sizeof(scratch) ? sizeof(scratch) : remaining;
+        if (fread(scratch, 1, count, file) != count) return 0;
+        for (uint32_t i = 0; i < count; i += 2) {
+            uint32_t current = n64_fx_be16(scratch + i);
+            if ((!seen && current) || current < previous || current > emitters) return 0;
+            previous = current; seen++;
+        }
+        remaining -= count;
+    }
+    return previous == emitters;
+}
+
 void n64_particles_load(const char *map_name)
 {
-	reset_sniper_ribbons();
-	n64_paint_reset(map_name);
-	char path[48];
-	uint8_t header[32];
-	FILE *file;
+    char path[48];
+    uint8_t header[32], colours[CELLS][4], explosions[MAXIMUM_EXPLOSION_EFFECTS][4];
+    struct n64_fx_layout layout;
+    struct fx_index *index = NULL;
+    surface_t atlas = {0};
+    FILE *file = NULL, *bank = NULL, *records;
+    uint32_t map_bytes, rom, record_min, record_max;
+    int ok = 0;
 
-	fx_free();
-	memset(fx.particles, 0, sizeof(fx.particles));
-	fx.live = 0;
-	memset(fx.explosions, 0, sizeof(fx.explosions));
-	fx.explosion_effect_count = 0;
-	fx.paint_splash_budget = 4;
-	if (!fx.fireball.buffer)
-		make_fireball();
-	snprintf(path, sizeof(path), "fx/%s.fx", map_name);
-	fx.rom = dfs_rom_addr(path);
-	snprintf(path, sizeof(path), "rom:/fx/%s.fx", map_name);
-	file = fopen(path, "rb");
-	if (!file || !fx.rom)
-	{
-		if (file)
-			fclose(file);
-		debugf("n64: no particles for %s\n", map_name);
-		fx.rom = 0;
-		return;
-	}
-	if (fread(header, 1, sizeof(header), file) == sizeof(header) && !memcmp(header, "N64F", 4))
-	{
-		int count = header[8] << 8 | header[9];
-		flame_cell = header[26] < CELLS ? header[26] : 0;
-		uint32_t index_offset = (uint32_t)header[12] << 24 | header[13] << 16 | header[14] << 8 | header[15];
-		uint32_t atlas_offset = (uint32_t)header[16] << 24 | header[17] << 16 | header[18] << 8 | header[19];
+    reset_sniper_ribbons();
+    n64_paint_reset(map_name);
+    fx_free();
+    flame_cell = 0;
+    memset(fx.particles, 0, sizeof(fx.particles)); fx.live = 0;
+    memset(fx.explosions, 0, sizeof(fx.explosions)); fx.paint_splash_budget = 4;
+    if (!fx.fireball.buffer) make_fireball();
 
-		fx.index = malloc(sizeof(struct fx_index) * (count ? count : 1));
-		fseek(file, index_offset, SEEK_SET);
-		if (fx.index && (int)fread(fx.index, sizeof(struct fx_index), count, file) == count)
-			fx.index_count = count;
-		fx.atlas = surface_alloc(FMT_I4, ATLAS_COLUMNS * CELL, ATLAS_BYTES * 2 / (ATLAS_COLUMNS * CELL));
-		fseek(file, atlas_offset, SEEK_SET);
-		if (fx.atlas.buffer)
-		{
-			fread(fx.atlas.buffer, 1, ATLAS_BYTES, file);
-			data_cache_hit_writeback(fx.atlas.buffer, ATLAS_BYTES);
-		}
-		/* each cell's colour, after the atlas */
-		fread(fx.cell_colours, 4, CELLS, file);
-		/* the explosions' list (version 2: bytes 20-25 of the header) */
-		{
-			uint32_t explosions_offset = (uint32_t)header[20] << 24 | header[21] << 16 | header[22] << 8 | header[23];
-			int explosions = header[24] << 8 | header[25];
+    if (!map_name || snprintf(path, sizeof(path), "fx/%s.fx", map_name) >= (int)sizeof(path)) goto done;
+    rom = dfs_rom_addr(path);
+    if (snprintf(path, sizeof(path), "rom:/fx/%s.fx", map_name) >= (int)sizeof(path)) goto done;
+    file = fopen(path, "rb");
+    if (!file || !rom || !fx_file_bytes(file, &map_bytes) ||
+        !fx_read_at(file, 0, header, sizeof(header)) || !n64_fx_map_header(header, map_bytes, &layout)) goto done;
 
-			if (explosions_offset && explosions > 0)
-			{
-				if (explosions > MAXIMUM_EXPLOSION_EFFECTS)
-					explosions = MAXIMUM_EXPLOSION_EFFECTS;
-				fseek(file, explosions_offset, SEEK_SET);
-				fx.explosion_effect_count = (int)fread(fx.explosion_effects, 4, explosions, file);
-			}
-		}
-	}
-	fclose(file);
-	debugf("n64: particles for %d effects of %s, %d explosions\n", fx.index_count, map_name,
-		fx.explosion_effect_count);
+    records = file; record_min = layout.record_min; record_max = layout.record_max;
+    if (layout.version == 3) {
+        rom = dfs_rom_addr("fx/records.bank");
+        bank = fopen("rom:/fx/records.bank", "rb");
+        if (!bank || !rom || !fx_bank_validate(bank, layout.identity, &record_min, &record_max)) goto done;
+        records = bank;
+    }
+    index = malloc(sizeof(struct fx_index) * (layout.count ? layout.count : 1));
+    if (!index) goto done;
+    for (int i = 0; i < layout.count; i++) {
+        uint8_t entry[8];
+        if (!fx_read_at(file, layout.index_offset + (uint32_t)i * 8, entry, sizeof(entry))) goto done;
+        index[i].tag_index = n64_fx_be16(entry); index[i].size = n64_fx_be16(entry + 2);
+        index[i].offset = n64_fx_be32(entry + 4);
+        if ((i && index[i].tag_index <= index[i - 1].tag_index) ||
+            !n64_fx_record_span(record_min, record_max, index[i].offset, index[i].size) ||
+            !fx_rom_span(rom, index[i].offset, index[i].size) ||
+            !fx_file_record(records, index[i].offset, index[i].size)) goto done;
+    }
+    atlas = surface_alloc(FMT_I4, ATLAS_COLUMNS * CELL, ATLAS_BYTES * 2 / (ATLAS_COLUMNS * CELL));
+    if (!atlas.buffer || !fx_read_at(file, layout.atlas_offset, atlas.buffer, ATLAS_BYTES) ||
+        !fx_read_at(file, layout.atlas_offset + ATLAS_BYTES, colours, sizeof(colours))) goto done;
+    if (layout.explosions && !fx_read_at(file, layout.explosions_offset, explosions, (size_t)layout.explosions * 4)) goto done;
+    for (int i = 0; i < layout.explosions; i++)
+        if (explosions[i][2] >= N64_EXPLOSION_KINDS || explosions[i][3] ||
+            (i && n64_fx_be16(explosions[i]) <= n64_fx_be16(explosions[i - 1]))) goto done;
+
+    /* No persistent bank allocation and no visible half-loaded map state. */
+    data_cache_hit_writeback(atlas.buffer, ATLAS_BYTES);
+    fx.index = index; index = NULL;
+    fx.atlas = atlas; memset(&atlas, 0, sizeof(atlas));
+    memcpy(fx.cell_colours, colours, sizeof(colours));
+    for (int i = 0; i < layout.explosions; i++) {
+        fx.explosion_effects[i].tag_index = n64_fx_be16(explosions[i]);
+        fx.explosion_effects[i].kind = explosions[i][2]; fx.explosion_effects[i].pad = 0;
+    }
+    fx.explosion_effect_count = layout.explosions;
+    fx.record_min = record_min; fx.record_max = record_max;
+    flame_cell = layout.flame_cell;
+    fx.rom = rom;
+    fx.index_count = layout.count;
+    ok = 1;
+done:
+    if (bank) fclose(bank);
+    if (file) fclose(file);
+    free(index);
+    if (atlas.buffer) surface_free(&atlas);
+    if (!ok) fx_free();
+    debugf("n64: particles for %d effects of %s, %d explosions%s\n", fx.index_count,
+        map_name ? map_name : "(invalid)", fx.explosion_effect_count, ok ? "" : " (invalid or missing FX data)");
 }
 
 int n64_explosion_kind(int effect_tag_index)
@@ -457,12 +534,19 @@ static const uint8_t *fx_record(int tag_index)
 		{
 			int size = (entry->size + 15) & ~15;
 
+			if (!n64_fx_record_span(fx.record_min, fx.record_max, entry->offset, entry->size) ||
+				!fx_rom_span(fx.rom, entry->offset, entry->size)) return NULL;
 			free(fx.cache[slot].data);
+			fx.cache[slot].tag_index = -1;
 			fx.cache[slot].data = memalign(16, size);
 			if (!fx.cache[slot].data)
 				return NULL;
 			data_cache_hit_writeback_invalidate(fx.cache[slot].data, size);
 			dma_read(fx.cache[slot].data, fx.rom + entry->offset, size);
+			if (!n64_fx_record_memory(fx.cache[slot].data, entry->size)) {
+				free(fx.cache[slot].data); fx.cache[slot].data = NULL;
+				return NULL;
+			}
 			fx.cache[slot].tag_index = tag_index;
 			fx.cache[slot].used = fx.clock;
 			fx.reads++;
