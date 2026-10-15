@@ -71,6 +71,10 @@ enum
 	/* a model glow of one emitted colour (a teleporter's energy), drawn
 	translucent at GLOW_ALPHA (tools/n64/models.py glow_texture) */
 	MATERIAL_BLEND = 2048,
+	/* natural terrain whose colour map is in tiles, a batch's own with the
+	light baked in (tools/n64/terrain_tiles.py): drawn tile x (0.5 +
+	detail), with MATERIAL_DETAIL's texture its detail map */
+	MATERIAL_TILED = 4096,
 };
 
 /* the water's opacity (MATERIAL_WATER) */
@@ -93,7 +97,37 @@ struct level_header
 	/* the clusters' owners: BSP cluster indices (level_cluster) */
 	uint32_t owners_offset;
 	uint16_t owner_total, pad;
+	/* (version 5, a streamed level: its chunks, level_chunk) */
+	uint32_t stream_offset;
 };
+
+/* A streamed level (version 5: a campaign level, too big to keep in memory
+whole -- tools/n64/level.py) keeps its clusters' batches in chunks of near
+ones, ~16 KB each: a chunk's bounds, its batches, and where their vertices
+and indices are in the file (from vertices_offset and indices_offset). A
+chunk is read when it comes into view and dropped, least recently drawn
+first, past LEVEL_CACHE_BYTES (stream_chunk). At stream_offset: the chunk
+count, each cluster's first chunk and chunk count, the chunks */
+struct level_cluster_chunks
+{
+	uint16_t first, count;
+};
+
+struct level_chunk
+{
+	float minimum[3], maximum[3];
+	uint16_t first_batch, batch_count;
+	uint32_t vertex_offset, vertex_size;
+	uint32_t index_offset, index_size;
+};
+
+/* a streamed level's chunks in memory at most (its slots, made when it
+loads), and read in one frame at most (the rest the frames after: ~2 ms an
+8 KB chunk); the heap the slots leave free (the HUD's recordings, the
+game's own) */
+#define LEVEL_CACHE_BYTES (320 * 1024)
+#define LEVEL_READS_PER_FRAME 3
+#define LEVEL_HEAP_MARGIN (128 * 1024)
 
 struct level_texture
 {
@@ -152,6 +186,28 @@ static struct
 	struct level_group *groups;
 	uint16_t *group_batches;
 	uint16_t *cluster_first_group, *cluster_group_count;
+	/* a streamed level (version 5): the file, its chunks, each chunk's data
+	in memory (NULL: not read) and the frame it was last drawn in, each
+	batch's chunk, the bytes in memory and read */
+	FILE *stream;
+	int chunk_count;
+	struct level_cluster_chunks *cluster_chunks;
+	struct level_chunk *chunks;
+	uint8_t **resident;
+	unsigned long *resident_drawn;
+	uint16_t *batch_chunk;
+	unsigned long resident_bytes, stream_reads;
+	int stream_reads_this_frame;
+	/* the chunks' memory: slots of the largest chunk's size, made when the
+	level loads (stream_chunk), and each slot's chunk (-1: free) */
+	uint8_t *slots;
+	unsigned long slot_size;
+	int slot_count;
+	/* chunks in view but not in memory, this frame and the last (the FPS
+	counter's) */
+	int stream_waiting, stream_waited;
+	int16_t *slot_chunk;
+	int16_t *chunk_slot;
 } level;
 
 struct level_group
@@ -159,6 +215,73 @@ struct level_group
 	float minimum[3], maximum[3];
 	uint16_t first, count; /* in level.group_batches */
 };
+
+/* ---------- natural terrain's colour map in tiles */
+
+/* Halo's natural ground is one big colour map (Blood Gulch's spans the
+map) under detail maps repeating every metre or two. The RDP takes two
+textures a pixel, so the colour map had been sampled onto the vertices,
+seven units apart -- the grass, dirt and paths blurred into beige. Now each
+terrain batch has a tile of the map of its own, its light baked in
+(tools/n64/terrain_tiles.py, rom:/levels/<map>.tiles), drawn under one
+level of its detail map (record_material, bind_tile). Small tiles, and the
+big ones a quarter a side, stay in memory; a big tile is read into a slot
+when the eye comes within TILE_NEAR_UNITS of its batch, TILE_READS_PER_FRAME
+a frame at most (2 KB, ~0.5 ms), the one drawn longest ago giving its slot
+up */
+struct tiles_header
+{
+	char magic[4];
+	uint32_t version;
+	uint16_t entry_count, detail_level;
+	uint32_t entries_offset;
+	uint32_t resident_offset, resident_size;
+	uint32_t big_offset, big_largest;
+};
+
+struct tile_entry
+{
+	uint16_t batch;
+	/* the resident tile's shifts (a tile texel is 1 << shift detail
+	texels) and size (log2 width << 4 | log2 height), then the big one's
+	(size 0: none) */
+	uint8_t shift_s, shift_t, size;
+	uint8_t big_shift_s, big_shift_t, big_size;
+	uint32_t offset, big_offset;
+};
+
+#define TILE_SLOTS 24
+#define TILE_NEAR_UNITS 18.0f
+#define TILE_READS_PER_FRAME 2
+/* the heap the slots leave free at least (else fewer slots, or none: the
+small tiles alone) */
+#define TILE_HEAP_MARGIN (160 * 1024)
+
+static struct
+{
+	/* the header and entries; the resident tiles; each level batch's entry
+	(-1: none) */
+	uint8_t *data;
+	struct tiles_header *header;
+	struct tile_entry *entries;
+	uint8_t *resident;
+	int16_t *batch_entry;
+	/* the tile's place in TMEM: past the detail map's level */
+	int tmem;
+	float near_squared;
+	/* the big tiles: the file, the slots (each slot's entry, each entry's
+	slot, -1: none) and the frame each was last drawn in */
+	FILE *file;
+	uint8_t *slots;
+	unsigned long slot_size;
+	int slot_count;
+	int16_t *slot_entry, *entry_slot;
+	unsigned long *entry_drawn;
+	int reads_this_frame;
+	/* big tiles drawn, and near batches still waiting for theirs: this
+	frame's and the last's (the FPS counter's) */
+	int big_drawn, waiting, big_drawn_last, waiting_last;
+} tiles;
 
 /* ---------- the models file (tools/n64/models.py) */
 
@@ -238,6 +361,9 @@ static struct
 	unsigned short *texture_users;
 	unsigned long *texture_size;
 	unsigned long texture_bytes;
+	/* models that found no room, this frame and the last (drawn as nothing:
+	the FPS counter's) */
+	int missing, missing_last;
 	/* tag index -> model record, or NULL */
 	struct model_record **by_tag;
 	int tag_count;
@@ -393,6 +519,90 @@ void n64_render_set_fog(unsigned long rgb, float start, float end)
 	renderer.fog_color = RGBA32((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, 0xFF);
 	renderer.fog_start = start;
 	renderer.fog_end = end;
+}
+
+/* ---------- the sky behind a view (n64_render_set_sky) */
+
+static const float sky_stop_degrees[N64_SKY_STOPS] = {0.f, 15.f, 30.f, 50.f, 90.f};
+static float sky_colors[N64_SKY_STOPS][3];
+static int sky_set;
+
+void n64_render_set_sky(const unsigned long *colors)
+{
+	sky_set = colors != NULL;
+	for (int i = 0; colors && i < N64_SKY_STOPS; i++)
+	{
+		sky_colors[i][0] = ((colors[i] >> 16) & 0xFF) / 255.f;
+		sky_colors[i][1] = ((colors[i] >> 8) & 0xFF) / 255.f;
+		sky_colors[i][2] = (colors[i] & 0xFF) / 255.f;
+	}
+}
+
+/* the sky's colour at a height above the horizon (degrees) */
+static void sky_color_at(float degrees, float *rgb)
+{
+	int i = 0;
+	float f;
+
+	if (degrees <= sky_stop_degrees[0])
+		degrees = sky_stop_degrees[0];
+	while (i < N64_SKY_STOPS - 2 && degrees > sky_stop_degrees[i + 1])
+		i++;
+	f = (degrees - sky_stop_degrees[i]) / (sky_stop_degrees[i + 1] - sky_stop_degrees[i]);
+	if (f > 1.f)
+		f = 1.f;
+	for (int k = 0; k < 3; k++)
+		rgb[k] = sky_colors[i][k] + (sky_colors[i + 1][k] - sky_colors[i][k]) * f;
+}
+
+/* The sky from the horizon up, in strips of the view whose rows take the
+sky's colour at their height (the eye's up is the world's, but for a
+vehicle's tilt). Below the horizon the frame is cleared to the fog's
+colour, the sky's at the horizon (the game's table: n64_render_game.c),
+so the level fades into it where it ends */
+#define SKY_STRIPS 12
+
+static int chunky_width(int width);
+
+static void draw_sky(const struct n64_view *view)
+{
+	float x0 = (float)view->x0, x1 = (float)(view->x0 + chunky_width(view->x1 - view->x0));
+	float y0 = (float)view->y0, y1 = (float)view->y1;
+	float middle = (y0 + y1) * 0.5f;
+	float rows[SKY_STRIPS + 1], degrees[SKY_STRIPS + 1], colors[SKY_STRIPS + 1][3];
+
+	if (!sky_set || !renderer.fog || renderer.pixels_per_unit <= 0.f)
+		return;
+	for (int k = 0; k <= SKY_STRIPS; k++)
+	{
+		/* the row's direction: forward, and up by its distance from the
+		view's middle over the pixels a unit away */
+		float t = (middle - (y0 + (y1 - y0) * k / SKY_STRIPS)) / renderer.pixels_per_unit;
+		float sine = (renderer.forward[2] + renderer.up[2] * t) / sqrtf(1.f + t * t);
+
+		rows[k] = y0 + (y1 - y0) * k / SKY_STRIPS;
+		degrees[k] = asinf(sine > 1.f ? 1.f : sine < -1.f ? -1.f : sine) * (180.f / (float)M_PI);
+		sky_color_at(degrees[k], colors[k]);
+	}
+	rdpq_mode_push();
+	rdpq_set_mode_standard();
+	rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
+	rdpq_mode_dithering(DITHER_SQUARE_SQUARE);
+	for (int k = 0; k < SKY_STRIPS; k++)
+	{
+		float *a = colors[k], *b = colors[k + 1];
+		float v0[6] = {x0, rows[k], a[0], a[1], a[2], 1.f};
+		float v1[6] = {x1, rows[k], a[0], a[1], a[2], 1.f};
+		float v2[6] = {x0, rows[k + 1], b[0], b[1], b[2], 1.f};
+		float v3[6] = {x1, rows[k + 1], b[0], b[1], b[2], 1.f};
+
+		/* (all below the horizon: the clear colour is the sky there) */
+		if (degrees[k] <= 0.f && degrees[k + 1] <= 0.f)
+			continue;
+		rdpq_triangle(&TRIFMT_SHADE, v0, v1, v2);
+		rdpq_triangle(&TRIFMT_SHADE, v1, v3, v2);
+	}
+	rdpq_mode_pop();
 }
 
 /* the view's fog for its current projection (tiny3d measures it in the
@@ -1103,7 +1313,10 @@ static int load_model(int index)
 		if (oldest < 0)
 		{
 			if (short_of_heap)
+			{
+				models.missing++;
 				return 0;
+			}
 			break;
 		}
 		drop_model(oldest);
@@ -1127,6 +1340,7 @@ static int load_model(int index)
 		loaded->data = NULL;
 		loaded->setups = NULL;
 		loaded->blocks = NULL;
+		models.missing++;
 		return 0;
 	}
 	fclose(file);
@@ -1327,6 +1541,29 @@ void n64_render_unload_level(void)
 				sprite_free(level.sprites[i]);
 		}
 		free(level.sprites);
+		if (level.stream)
+		{
+			free(level.slots);
+			free(level.slot_chunk);
+			free(level.chunk_slot);
+			free(level.resident);
+			free(level.resident_drawn);
+			free(level.batch_chunk);
+			fclose(level.stream);
+		}
+		if (tiles.data)
+		{
+			free(tiles.data);
+			free(tiles.resident);
+			free(tiles.batch_entry);
+			free(tiles.entry_slot);
+			free(tiles.entry_drawn);
+			free(tiles.slots);
+			free(tiles.slot_entry);
+			if (tiles.file)
+				fclose(tiles.file);
+		}
+		memset(&tiles, 0, sizeof(tiles));
 		free(level.data);
 		memset(&level, 0, sizeof(level));
 	}
@@ -1345,6 +1582,87 @@ the same (and their order comes from the material sort after). */
 #define GROUP_BATCHES 16
 
 static int group_axis;
+
+/* the level's terrain tiles (rom:/levels/<map>.tiles beside its .lvl), if
+it has any: their table and the resident tiles, and slots for the big ones
+as the heap allows */
+static void load_tiles(const char *level_path)
+{
+	char path[64];
+	struct tiles_header header;
+	size_t length = strlen(level_path);
+	size_t table;
+	FILE *file;
+
+	if (length < 4 || length + 3 > sizeof(path))
+		return;
+	memcpy(path, level_path, length - 4);
+	strcpy(path + length - 4, ".tiles");
+	file = fopen(path, "rb");
+	if (!file)
+		return;
+	if (fread(&header, 1, sizeof(header), file) != sizeof(header) || memcmp(header.magic, "H64T", 4) ||
+		header.version != 1 || !header.entry_count)
+	{
+		fclose(file);
+		return;
+	}
+	table = header.entries_offset + header.entry_count * sizeof(struct tile_entry);
+	tiles.data = malloc(table);
+	tiles.resident = memalign(16, header.resident_size ? header.resident_size : 16);
+	tiles.batch_entry = malloc((level.header->batch_count ? level.header->batch_count : 1) * sizeof(int16_t));
+	tiles.entry_slot = malloc(header.entry_count * sizeof(int16_t));
+	tiles.entry_drawn = calloc(header.entry_count, sizeof(unsigned long));
+	if (!tiles.data || !tiles.resident || !tiles.batch_entry || !tiles.entry_slot || !tiles.entry_drawn)
+	{
+		debugf("n64: no memory for the terrain tiles\n");
+		free(tiles.data);
+		free(tiles.resident);
+		free(tiles.batch_entry);
+		free(tiles.entry_slot);
+		free(tiles.entry_drawn);
+		memset(&tiles, 0, sizeof(tiles));
+		fclose(file);
+		return;
+	}
+	fseek(file, 0, SEEK_SET);
+	fread(tiles.data, 1, table, file);
+	fseek(file, header.resident_offset, SEEK_SET);
+	fread(tiles.resident, 1, header.resident_size, file);
+	/* (the RDP reads them) */
+	data_cache_hit_writeback(tiles.resident, header.resident_size);
+	tiles.header = (struct tiles_header *)tiles.data;
+	tiles.entries = (struct tile_entry *)(tiles.data + header.entries_offset);
+	for (int b = 0; b < level.header->batch_count; b++)
+		tiles.batch_entry[b] = -1;
+	for (int e = 0; e < header.entry_count; e++)
+	{
+		if (tiles.entries[e].batch < level.header->batch_count)
+			tiles.batch_entry[tiles.entries[e].batch] = (int16_t)e;
+		tiles.entry_slot[e] = -1;
+	}
+	/* (the detail map's level: 64x64 I4 halved that many times) */
+	tiles.tmem = ((64 >> header.detail_level) * (64 >> header.detail_level) / 2 + 7) & ~7;
+	tiles.near_squared = TILE_NEAR_UNITS * WORLD_SCALE * TILE_NEAR_UNITS * WORLD_SCALE;
+	tiles.slot_size = (header.big_largest + 15) & ~15UL;
+	for (tiles.slot_count = header.big_largest ? TILE_SLOTS : 0; tiles.slot_count >= 6; tiles.slot_count -= 6)
+	{
+		if (n64_heap_has(tiles.slot_count * tiles.slot_size + TILE_HEAP_MARGIN) &&
+			(tiles.slots = memalign(16, tiles.slot_count * tiles.slot_size)) != NULL)
+			break;
+	}
+	if (!tiles.slots)
+		tiles.slot_count = 0;
+	tiles.slot_entry = malloc((tiles.slot_count ? tiles.slot_count : 1) * sizeof(int16_t));
+	for (int i = 0; i < tiles.slot_count; i++)
+		tiles.slot_entry[i] = -1;
+	if (tiles.slot_count)
+		tiles.file = file;
+	else
+		fclose(file);
+	debugf("n64: terrain tiles: %d (%lu KB in memory), %d slots of %lu bytes for the near ones\n",
+		header.entry_count, (unsigned long)header.resident_size / 1024, tiles.slot_count, tiles.slot_size);
+}
 
 static int compare_batch_centers(const void *a, const void *b)
 {
@@ -1464,15 +1782,68 @@ int n64_render_load_level(const char *map_name, int low)
 	fseek(file, 0, SEEK_END);
 	size = ftell(file);
 	fseek(file, 0, SEEK_SET);
+	{
+		struct level_header header;
+
+		fread(&header, 1, sizeof(header), file);
+		fseek(file, 0, SEEK_SET);
+		assertf(!memcmp(header.magic, "H64L", 4) && (header.version == 4 || header.version == 5),
+			"%s was converted for another build", path);
+		/* (a streamed level: its tables alone, the clusters read as they
+		are drawn -- stream_chunk) */
+		if (header.version == 5)
+			size = header.vertices_offset;
+	}
 	level.data = memalign(16, size);
 	fread(level.data, 1, size, file);
-	fclose(file);
 	/* the RSP reads the vertices by DMA */
 	data_cache_hit_writeback_invalidate(level.data, size);
 
 	level.header = (struct level_header *)level.data;
-	assertf(!memcmp(level.header->magic, "H64L", 4) && level.header->version == 4,
-		"%s was converted for another build", path);
+	if (level.header->version == 5)
+	{
+		uint8_t *stream = level.data + level.header->stream_offset;
+
+		level.stream = file;
+		level.chunk_count = (int)*(uint32_t *)stream;
+		level.cluster_chunks = (struct level_cluster_chunks *)(stream + 4);
+		level.chunks = (struct level_chunk *)(stream + 4 + level.header->cluster_count * sizeof(struct level_cluster_chunks));
+		level.resident = calloc(level.chunk_count ? level.chunk_count : 1, sizeof(uint8_t *));
+		level.resident_drawn = calloc(level.chunk_count ? level.chunk_count : 1, sizeof(unsigned long));
+		level.batch_chunk = malloc((level.header->batch_count ? level.header->batch_count : 1) * sizeof(uint16_t));
+		level.chunk_slot = malloc((level.chunk_count ? level.chunk_count : 1) * sizeof(int16_t));
+		for (int k = 0; k < level.chunk_count; k++)
+		{
+			unsigned long chunk_size = level.chunks[k].vertex_size + level.chunks[k].index_size;
+
+			if (chunk_size > level.slot_size)
+				level.slot_size = chunk_size;
+			level.chunk_slot[k] = -1;
+		}
+		/* the chunks' memory, before the models' cache can have it: as many
+		slots as LEVEL_CACHE_BYTES holds, fewer if the heap has not got them
+		(the model cache took what was free past its margin, and the chunks
+		that found no room were never drawn: whole parts of a30 missing) */
+		level.slot_size = (level.slot_size + 15) & ~15UL;
+		for (level.slot_count = level.slot_size ? (int)(LEVEL_CACHE_BYTES / level.slot_size) : 0;
+			level.slot_count >= 8; level.slot_count -= 4)
+		{
+			if (n64_heap_has(level.slot_count * level.slot_size + LEVEL_HEAP_MARGIN) &&
+				(level.slots = memalign(16, level.slot_count * level.slot_size)) != NULL)
+				break;
+		}
+		if (!level.slots)
+			level.slot_count = 0;
+		level.slot_chunk = malloc((level.slot_count ? level.slot_count : 1) * sizeof(int16_t));
+		for (int i = 0; i < level.slot_count; i++)
+			level.slot_chunk[i] = -1;
+		debugf("n64: level streamed: %d chunks, %d slots of %lu bytes\n", level.chunk_count, level.slot_count,
+			level.slot_size);
+	}
+	else
+		fclose(file);
+	/* (its terrain's tiles: before the models' cache takes the heap) */
+	load_tiles(path);
 	level.textures = (struct level_texture *)(level.data + level.header->textures_offset);
 	level.materials = (struct level_material *)(level.data + level.header->materials_offset);
 	level.clusters = (struct level_cluster *)(level.data + level.header->clusters_offset);
@@ -1480,14 +1851,24 @@ int n64_render_load_level(const char *map_name, int low)
 	level.batches = (struct level_batch *)(level.data + level.header->batches_offset);
 	level.vertices = (T3DVertPacked *)(level.data + level.header->vertices_offset);
 	level.indices = level.data + level.header->indices_offset;
+	if (level.stream)
+	{
+		for (int k = 0; k < level.chunk_count; k++)
+		{
+			for (int b = level.chunks[k].first_batch; b < level.chunks[k].first_batch + level.chunks[k].batch_count; b++)
+				level.batch_chunk[b] = (uint16_t)k;
+		}
+	}
 	level.visible = malloc(level.header->batch_count * sizeof(uint16_t));
 	level.sorted = malloc(level.header->batch_count * sizeof(uint16_t));
 	level.material_starts = malloc((level.header->material_count + 1) * sizeof(uint16_t));
-	build_level_groups();
+	/* (a streamed level is culled by its chunks instead) */
+	if (!level.stream)
+		build_level_groups();
 	/* the strips' indices made into tiny3d's vertex cache addresses, once
 	(the RSP reads them by DMA: written back after) -- recorded blocks of
 	the triangles cost Sidewinder 275 KB, the indices ~40 */
-	for (int b = 0; b < level.header->batch_count; b++)
+	for (int b = 0; b < level.header->batch_count && !level.stream; b++)
 	{
 		uint8_t *chunk = level.indices + level.batches[b].index_offset;
 
@@ -1501,7 +1882,8 @@ int n64_render_load_level(const char *map_name, int low)
 			chunk += 8 + ((count * 2 + 7) & ~7);
 		}
 	}
-	data_cache_hit_writeback(level.indices, level.header->indices_size);
+	if (!level.stream)
+		data_cache_hit_writeback(level.indices, level.header->indices_size);
 	debugf("n64: level strips ready, %lu KB of heap left\n", n64_heap_free() / 1024);
 	level.sprites = calloc(level.header->texture_count, sizeof(sprite_t *));
 	for (int i = 0; i < level.header->texture_count; i++)
@@ -1603,6 +1985,15 @@ void n64_render_frame_begin(void)
 	clear_depth();
 	renderer.view_count = 0;
 	renderer.frame_index++;
+	level.stream_reads_this_frame = 0;
+	level.stream_waited = level.stream_waiting;
+	level.stream_waiting = 0;
+	tiles.reads_this_frame = 0;
+	models.missing_last = models.missing;
+	models.missing = 0;
+	tiles.big_drawn_last = tiles.big_drawn;
+	tiles.waiting_last = tiles.waiting;
+	tiles.big_drawn = tiles.waiting = 0;
 	renderer.matrix_count = 0;
 	palette_count = 0;
 }
@@ -1630,20 +2021,22 @@ static void set_material(int index)
 brightened by the overlay's mean, tools/n64/level.py): the framebuffer
 darkened by the texel, its mipmaps interpolated; on the same triangles,
 compared as decals; with the fog it fades to nothing with distance */
-/* TERRAIN DETAIL (the SETTINGS page): how the natural terrain's detail is
-drawn -- 0 full, 1 without the overlays (rock and earth's second pass), 2
-all of the detail maps' mipmaps (as before), 3 none, 4 no mipmaps. Black
-smudges on detailed terrain away from the eye were seen on real consoles
-only: without the overlays the cliffs had none, the ground still had them,
-and with no detail at all there were none -- the detail maps, sampled far
-away. Full now leaves out their smallest levels (detail_upload); the others
-are there to tell, on a console, whether that was it */
-enum { TERRAIN_FULL, TERRAIN_NO_OVERLAY, TERRAIN_ALL_MIPS, TERRAIN_OFF, TERRAIN_NO_MIPS };
+/* TERRAIN DETAIL (the SETTINGS page): how much of the natural terrain's
+detail is drawn -- 0 full: the tiled ground's detail at every distance
+(MATERIAL_TILED), the other detail maps' mipmaps down to 16x16
+(detail_upload), and rock and earth's detail drawn over them
+(record_overlay); 1 high: the tiled ground's detail faded out a few units
+away, before it would shimmer; 2 medium: high without the overlays (a
+second pass of every rock and earth batch); 3 low: no detail maps, the
+ground's colour alone. (The modes kept for tracking down the black smudges
+consoles showed on distant detailed ground -- every mipmap, no mipmaps --
+went with the user's choice of these four: HISTORY.md, 13-15 October) */
+enum { TERRAIN_FULL, TERRAIN_HIGH, TERRAIN_MEDIUM, TERRAIN_LOW };
 static int terrain_detail;
 
 void n64_render_set_terrain_detail(int mode)
 {
-	terrain_detail = mode >= 0 && mode <= TERRAIN_NO_MIPS ? mode : 0;
+	terrain_detail = mode >= 0 && mode <= TERRAIN_LOW ? mode : 0;
 }
 
 /* The detail maps are I4, 64x64, with mipmaps down to 4x4 (mksprite's BOX);
@@ -1676,16 +2069,6 @@ static int detail_upload(sprite_t *sprite, int smallest)
 	}
 	rdpq_tex_multi_end();
 	return levels;
-}
-
-/* a sprite's mipmaps (rdpq_sprite_upload's count) */
-static int sprite_mipmap_count(sprite_t *sprite)
-{
-	int count = 0;
-
-	while (count < 7 && sprite_get_lod_pixels(sprite, count + 1).buffer)
-		count++;
-	return count;
 }
 
 static void record_overlay(struct level_material *material)
@@ -1723,35 +2106,27 @@ static void record_overlay(struct level_material *material)
 	}
 	rdpq_mode_end();
 	rdpq_set_env_color(RGBA32(0, 0, 0, 255));
-	if (terrain_detail == TERRAIN_ALL_MIPS)
-	{
-		/* (as before: every level, chosen, not blended) */
-		rdpq_sprite_upload(TILE0, level.sprites[material->texture], &(rdpq_texparms_t){
-			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
-		});
-		rdpq_mode_mipmap(MIPMAP_NEAREST, sprite_mipmap_count(level.sprites[material->texture]));
-	}
-	else if (terrain_detail == TERRAIN_NO_MIPS)
-	{
-		detail_upload(level.sprites[material->texture], 1 << 16);
-		rdpq_mode_mipmap(MIPMAP_NONE, 0);
-	}
-	else
-	{
-		/* the levels down to 16x16, blended (two cycles, as rdpq does
-		with a sprite's mipmaps) */
-		rdpq_mode_mipmap(MIPMAP_INTERPOLATE, detail_upload(level.sprites[material->texture], DETAIL_SMALLEST));
-	}
+	/* the levels down to 16x16, blended (two cycles, as rdpq does with a
+	sprite's mipmaps) */
+	rdpq_mode_mipmap(MIPMAP_INTERPOLATE, detail_upload(level.sprites[material->texture], DETAIL_SMALLEST));
 	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | T3D_FLAG_TEXTURED |
 		(debug_cull_front ? T3D_FLAG_CULL_FRONT : T3D_FLAG_CULL_BACK));
+}
+
+/* a material drawn with its batches' terrain tiles (bind_tile) */
+static int material_tiled(const struct level_material *material)
+{
+	return (material->flags & MATERIAL_TILED) && tiles.data && material->texture >= 0 &&
+		level.sprites[material->texture] && !debug_untextured;
 }
 
 static void record_material(int index)
 {
 	struct level_material *material = &level.materials[index];
-	int textured = material->texture >= 0 && level.sprites[material->texture] && !debug_untextured &&
-		/* (TERRAIN DETAIL "off": the terrain's light alone) */
-		!(terrain_detail == TERRAIN_OFF && (material->flags & MATERIAL_DETAIL));
+	int tiled = material_tiled(material);
+	int textured = tiled || (material->texture >= 0 && level.sprites[material->texture] && !debug_untextured &&
+		/* (TERRAIN DETAIL low: the terrain's colour alone) */
+		!(terrain_detail == TERRAIN_LOW && (material->flags & MATERIAL_DETAIL)));
 
 	if (material->flags & MATERIAL_OVERLAY)
 	{
@@ -1777,6 +2152,28 @@ static void record_material(int index)
 		/* water: the vertices' colour at a constant opacity (the shade's
 		alpha is the fog) */
 		rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, SHADE), (0, 0, 0, ENV)));
+	}
+	else if (tiled)
+	{
+		/* tiled terrain: the batch's tile (TILE1, bind_tile: colour x
+		light) x (0.5 + detail), the detail's texel (TILE0) faded to grey,
+		0.5, by the LOD fraction: 0 where a detail texel covers a pixel or
+		more, 1 where two share one. There are no mipmaps -- the RDP works
+		the fraction out for a combiner that asks for it all the same, and
+		with the triangles' max level 1 it rises once, over that octave
+		(further on the detail would only shimmer): TERRAIN DETAIL high and
+		medium. Full: the detail at every distance; low: the tile alone */
+		if (terrain_detail == TERRAIN_LOW)
+			rdpq_mode_combiner(RDPQ_COMBINER2((0, 0, 0, 0), (0, 0, 0, 1), (0, 0, 0, TEX1), (0, 0, 0, 1)));
+		else if (terrain_detail == TERRAIN_FULL)
+			rdpq_mode_combiner(RDPQ_COMBINER2((0, 0, 0, TEX0), (0, 0, 0, 1),
+				(COMBINED, ENV, TEX1, TEX1), (0, 0, 0, 1)));
+		else
+			rdpq_mode_combiner(RDPQ_COMBINER2((ENV, TEX0, LOD_FRAC, TEX0), (0, 0, 0, 1),
+				(COMBINED, ENV, TEX1, TEX1), (0, 0, 0, 1)));
+		rdpq_mode_mipmap(MIPMAP_NONE, 0);
+		if (terrain_detail == TERRAIN_HIGH || terrain_detail == TERRAIN_MEDIUM)
+			__rdpq_mode_change_som(SOMX_NUMLODS_MASK, 1ULL << SOMX_NUMLODS_SHIFT);
 	}
 	else if (textured && (material->flags & MATERIAL_DETAIL))
 	{
@@ -1808,14 +2205,10 @@ static void record_material(int index)
 	materials real consoles smudged). With a second pass of its own -- the
 	colour as it comes, in x 0 + in x 1 (in x a + in x (1 - a) encodes as
 	all zeros, which rdpq_mode_blender takes for no blender) -- rdpq keeps the
-	fog in the first. (TERRAIN DETAIL
-	"all mips": as before, for the comparison) */
-	/* (only where it is two cycles anyway: fog and a blender together are
-	two cycles, and a one-cycle material -- a detail map without mipmaps,
-	TERRAIN DETAIL "no mips" -- has its fog in the first pass already) */
-	if (renderer.fog && textured && !(material->flags & MATERIAL_TRANSPARENT) && terrain_detail != TERRAIN_ALL_MIPS &&
-		((material->flags & MATERIAL_DOUBLE) ||
-			((material->flags & MATERIAL_DETAIL) && terrain_detail != TERRAIN_NO_MIPS)))
+	fog in the first. (Only where it is two cycles anyway: fog and a
+	blender together are two cycles) */
+	if (renderer.fog && textured && !(material->flags & MATERIAL_TRANSPARENT) &&
+		(material->flags & (MATERIAL_DOUBLE | MATERIAL_DETAIL)))
 		rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, ZERO, IN_RGB, ONE)));
 	rdpq_mode_end();
 	if (material->flags & MATERIAL_WATER)
@@ -1824,17 +2217,20 @@ static void record_material(int index)
 		rdpq_set_env_color(RGBA32(128, 128, 128, 255));
 	else if (textured && (material->flags & MATERIAL_DOUBLE))
 		rdpq_set_env_color(RGBA32(255, 255, 255, 255));
-	if (textured && (material->flags & MATERIAL_DETAIL) && terrain_detail != TERRAIN_ALL_MIPS)
+	if (tiled)
 	{
-		/* a detail map: its levels down to 16x16 (detail_upload), blended;
-		or none but the first (TERRAIN DETAIL "no mips") */
-		if (terrain_detail == TERRAIN_NO_MIPS)
-		{
-			detail_upload(level.sprites[material->texture], 1 << 16);
-			rdpq_mode_mipmap(MIPMAP_NONE, 0);
-		}
-		else
-			rdpq_mode_mipmap(MIPMAP_INTERPOLATE, detail_upload(level.sprites[material->texture], DETAIL_SMALLEST));
+		/* the detail map's level the tiles are drawn under, in TMEM before
+		them (bind_tile) */
+		surface_t pixels = sprite_get_lod_pixels(level.sprites[material->texture], tiles.header->detail_level);
+
+		rdpq_tex_upload(TILE0, &pixels, &(rdpq_texparms_t){
+			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
+		});
+	}
+	else if (textured && (material->flags & MATERIAL_DETAIL))
+	{
+		/* a detail map: its levels down to 16x16 (detail_upload), blended */
+		rdpq_mode_mipmap(MIPMAP_INTERPOLATE, detail_upload(level.sprites[material->texture], DETAIL_SMALLEST));
 	}
 	else if (textured)
 	{
@@ -1863,11 +2259,209 @@ static int beyond_fog(float x0, float y0, float z0, float x1, float y1, float z1
 
 /* a level batch: its vertices, then its strips (tiny3d reads their indices
 by DMA into the vertex cache's free end: the converter leaves six slots) */
-static void draw_batch(const struct level_batch *batch)
+/* a streamed level's chunk made ready to draw: in memory already, or read
+now (its strips converted for tiny3d) into a free slot if this frame may
+still read one -- the chunk drawn longest ago gives its slot up when none is
+free, unless it was drawn in the frames still in flight. 0: not this frame */
+static int stream_chunk(int k)
 {
+	struct level_chunk *chunk = &level.chunks[k];
+	unsigned long size = chunk->vertex_size + chunk->index_size;
+	uint8_t *block;
+	int slot = -1;
+
+	if (level.resident[k])
+	{
+		level.resident_drawn[k] = renderer.frame_index;
+		return 1;
+	}
+	if (!size || size > level.slot_size || level.stream_reads_this_frame >= LEVEL_READS_PER_FRAME)
+		return 0;
+	for (int i = 0; i < level.slot_count && slot < 0; i++)
+	{
+		if (level.slot_chunk[i] < 0)
+			slot = i;
+	}
+	if (slot < 0)
+	{
+		int oldest = -1;
+
+		for (int i = 0; i < level.slot_count; i++)
+		{
+			int other = level.slot_chunk[i];
+
+			if (level.resident_drawn[other] + FRAMES_IN_FLIGHT < renderer.frame_index &&
+				(oldest < 0 || level.resident_drawn[other] < level.resident_drawn[level.slot_chunk[oldest]]))
+				oldest = i;
+		}
+		if (oldest < 0)
+			return 0;
+		slot = oldest;
+		level.resident[level.slot_chunk[slot]] = NULL;
+		level.chunk_slot[level.slot_chunk[slot]] = -1;
+		level.resident_bytes -= level.slot_size;
+		level.slot_chunk[slot] = -1;
+	}
+	block = level.slots + slot * level.slot_size;
+	fseek(level.stream, level.header->vertices_offset + chunk->vertex_offset, SEEK_SET);
+	fread(block, 1, chunk->vertex_size, level.stream);
+	fseek(level.stream, level.header->indices_offset + chunk->index_offset, SEEK_SET);
+	fread(block + chunk->vertex_size, 1, chunk->index_size, level.stream);
+	for (int b = chunk->first_batch; b < chunk->first_batch + chunk->batch_count; b++)
+	{
+		uint8_t *strip = block + chunk->vertex_size + (level.batches[b].index_offset - chunk->index_offset);
+
+		for (;;)
+		{
+			uint16_t count = ((uint16_t *)strip)[0], more = ((uint16_t *)strip)[1];
+
+			t3d_indexbuffer_convert((int16_t *)(strip + 8), count);
+			if (!more)
+				break;
+			strip += 8 + ((count * 2 + 7) & ~7);
+		}
+	}
+	/* (the RSP reads them by DMA) */
+	data_cache_hit_writeback(block, size);
+	level.resident[k] = block;
+	level.resident_drawn[k] = renderer.frame_index;
+	level.slot_chunk[slot] = (int16_t)k;
+	level.chunk_slot[k] = (int16_t)slot;
+	level.resident_bytes += level.slot_size;
+	level.stream_reads++;
+	level.stream_reads_this_frame++;
+	return 1;
+}
+
+/* a terrain batch's big tile made ready: in a slot already, or read into
+one now if this frame may (the one drawn longest ago gives its slot up,
+unless it was drawn in the frames still in flight). NULL: not this frame */
+static uint8_t *stream_tile(int e)
+{
+	const struct tile_entry *entry = &tiles.entries[e];
+	unsigned long bytes = 2UL << ((entry->big_size >> 4) + (entry->big_size & 15));
+	int slot = tiles.entry_slot[e];
+	uint8_t *block;
+
+	if (slot >= 0)
+	{
+		tiles.entry_drawn[e] = renderer.frame_index;
+		return tiles.slots + slot * tiles.slot_size;
+	}
+	if (!tiles.slot_count || bytes > tiles.slot_size || tiles.reads_this_frame >= TILE_READS_PER_FRAME)
+		return NULL;
+	for (int i = 0; i < tiles.slot_count && slot < 0; i++)
+	{
+		if (tiles.slot_entry[i] < 0)
+			slot = i;
+	}
+	if (slot < 0)
+	{
+		int oldest = -1;
+
+		for (int i = 0; i < tiles.slot_count; i++)
+		{
+			int other = tiles.slot_entry[i];
+
+			if (tiles.entry_drawn[other] + FRAMES_IN_FLIGHT < renderer.frame_index &&
+				(oldest < 0 || tiles.entry_drawn[other] < tiles.entry_drawn[tiles.slot_entry[oldest]]))
+				oldest = i;
+		}
+		if (oldest < 0)
+			return NULL;
+		slot = oldest;
+		tiles.entry_slot[tiles.slot_entry[slot]] = -1;
+		tiles.slot_entry[slot] = -1;
+	}
+	block = tiles.slots + slot * tiles.slot_size;
+	fseek(tiles.file, tiles.header->big_offset + entry->big_offset, SEEK_SET);
+	tiles.reads_this_frame++;
+	if (fread(block, 1, bytes, tiles.file) != bytes)
+		return NULL;
+	/* (the RDP reads it) */
+	data_cache_hit_writeback(block, bytes);
+	tiles.slot_entry[slot] = (int16_t)e;
+	tiles.entry_slot[e] = (int16_t)slot;
+	tiles.entry_drawn[e] = renderer.frame_index;
+	return block;
+}
+
+/* a batch's box within TILE_NEAR_UNITS of the eye (the view's, in the
+batch's own units: draw_level's fog_eye) */
+static int fog_eye[3];
+
+static inline int batch_near(const struct level_batch *batch)
+{
+	float d2 = 0.f;
+
+	for (int k = 0; k < 3; k++)
+	{
+		int d = fog_eye[k] < batch->minimum[k] ? batch->minimum[k] - fog_eye[k] :
+			fog_eye[k] > batch->maximum[k] ? fog_eye[k] - batch->maximum[k] : 0;
+
+		d2 += (float)d * (float)d;
+	}
+	return d2 < tiles.near_squared;
+}
+
+/* a tiled terrain batch's tile into TMEM (TILE1, after the detail map's
+level): its big one near the eye if it is in memory or can be read now,
+else the small one -- each addressed by the batch's detail coordinates
+shifted right, wrapping (tools/n64/terrain_tiles.py) */
+static void bind_tile(int b)
+{
+	int e = tiles.batch_entry[b];
+	const struct tile_entry *entry;
+	uint8_t *pixels;
+	int shift_s, shift_t, size;
+	surface_t surface;
+
+	if (e < 0)
+		return;
+	entry = &tiles.entries[e];
+	pixels = tiles.resident + entry->offset;
+	shift_s = entry->shift_s;
+	shift_t = entry->shift_t;
+	size = entry->size;
+	if (entry->big_size && batch_near(&level.batches[b]))
+	{
+		uint8_t *big = stream_tile(e);
+
+		if (big)
+		{
+			pixels = big;
+			shift_s = entry->big_shift_s;
+			shift_t = entry->big_shift_t;
+			size = entry->big_size;
+			tiles.big_drawn++;
+		}
+		else
+			tiles.waiting++;
+	}
+	surface = surface_make(pixels, FMT_RGBA16, 1 << (size >> 4), 1 << (size & 15), 2 << (size >> 4));
+	rdpq_tex_upload(TILE1, &surface, &(rdpq_texparms_t){
+		.tmem_addr = tiles.tmem,
+		.s = {.scale_log = shift_s, .repeats = REPEAT_INFINITE},
+		.t = {.scale_log = shift_t, .repeats = REPEAT_INFINITE},
+	});
+}
+
+static void draw_batch(int b)
+{
+	const struct level_batch *batch = &level.batches[b];
+	T3DVertPacked *vertices = level.vertices + batch->vertex_pair_offset;
 	uint8_t *chunk = level.indices + batch->index_offset;
 
-	t3d_vert_load(level.vertices + batch->vertex_pair_offset, 0, batch->vertex_count);
+	if (level.stream)
+	{
+		int k = level.batch_chunk[b];
+		struct level_chunk *data = &level.chunks[k];
+
+		vertices = (T3DVertPacked *)(level.resident[k] + batch->vertex_pair_offset * sizeof(T3DVertPacked) -
+			data->vertex_offset);
+		chunk = level.resident[k] + data->vertex_size + (batch->index_offset - data->index_offset);
+	}
+	t3d_vert_load(vertices, 0, batch->vertex_count);
 	/* (measuring, "debug_level_parts=1": the vertices alone) */
 	while (debug_level_parts != 1)
 	{
@@ -1913,9 +2507,8 @@ static int within_fog(float x0, float y0, float z0, float x1, float y1, float z1
 
 /* beyond_fog for a batch, in the batch's own units (world units x
 WORLD_SCALE, 16 bits): the eye's position in them made once a view
-(draw_level). The six conversions and products a batch took to world units
-were 2% of a 4-player frame */
-static int fog_eye[3];
+(draw_level; fog_eye, by bind_tile). The six conversions and products a
+batch took to world units were 2% of a 4-player frame */
 static float fog_end_squared_units;
 
 static inline int batch_beyond_fog(const int16_t *minimum, const int16_t *maximum)
@@ -1937,6 +2530,7 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 {
 	int visible_count = 0;
 	int material_count;
+	int tiled;
 	static int no_level = -1;
 
 	/* (a debug flag looked up once) */
@@ -1979,6 +2573,42 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 				cluster->maximum[0], cluster->maximum[1], cluster->maximum[2]))
 			continue;
 		renderer.clusters++;
+		/* a streamed level's cluster: its chunks in view (each in memory, or
+		read now if it may be), their batches as a group's */
+		if (level.stream)
+		{
+			struct level_cluster_chunks *own = &level.cluster_chunks[c];
+
+			for (int k = own->first; k < own->first + own->count; k++)
+			{
+				struct level_chunk *chunk = &level.chunks[k];
+				T3DVec3 chunk_minimum = {{chunk->minimum[0] * WORLD_SCALE, chunk->minimum[1] * WORLD_SCALE, chunk->minimum[2] * WORLD_SCALE}};
+				T3DVec3 chunk_maximum = {{chunk->maximum[0] * WORLD_SCALE, chunk->maximum[1] * WORLD_SCALE, chunk->maximum[2] * WORLD_SCALE}};
+				int inside;
+
+				if (!t3d_frustum_vs_aabb(&viewport->viewFrustum, &chunk_minimum, &chunk_maximum) ||
+					beyond_fog(chunk->minimum[0], chunk->minimum[1], chunk->minimum[2],
+						chunk->maximum[0], chunk->maximum[1], chunk->maximum[2]))
+					continue;
+				if (!stream_chunk(k))
+				{
+					level.stream_waiting++;
+					continue;
+				}
+				inside = frustum_contains(&viewport->viewFrustum, &chunk_minimum, &chunk_maximum) &&
+					within_fog(chunk->minimum[0], chunk->minimum[1], chunk->minimum[2],
+						chunk->maximum[0], chunk->maximum[1], chunk->maximum[2]);
+				for (int b = chunk->first_batch; b < chunk->first_batch + chunk->batch_count; b++)
+				{
+					struct level_batch *batch = &level.batches[b];
+
+					if (inside || (t3d_frustum_vs_aabb_s16(&viewport->viewFrustum, batch->minimum, batch->maximum) &&
+						!batch_beyond_fog(batch->minimum, batch->maximum)))
+						level.visible[visible_count++] = (uint16_t)b;
+				}
+			}
+			continue;
+		}
 		/* a cluster wholly in view and in the fog's reach: its batches
 		without a test each (those were 4% of a 4-player frame) */
 		if (frustum_contains(&viewport->viewFrustum, &minimum, &maximum) &&
@@ -2060,16 +2690,19 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 				continue;
 			if (pass == 1 && (debug_untextured || level.materials[m].texture < 0 ||
 				!level.sprites[level.materials[m].texture] || n64_debug_flag("debug_no_overlay") ||
-				terrain_detail == TERRAIN_NO_OVERLAY || terrain_detail == TERRAIN_OFF))
+				terrain_detail == TERRAIN_MEDIUM || terrain_detail == TERRAIN_LOW))
 				continue;
 			set_material(m);
+			tiled = material_tiled(&level.materials[m]);
 			for (int i = first; i < level.material_starts[m]; i++)
 			{
 				int b = level.sorted[i];
 
+				if (tiled)
+					bind_tile(b);
 				/* (measuring, "debug_level_parts=2": the materials alone) */
 				if (debug_level_parts != 2)
-					draw_batch(&level.batches[b]);
+					draw_batch(b);
 				renderer.triangles += level.batches[b].triangle_count;
 				renderer.batches++;
 			}
@@ -2159,6 +2792,7 @@ void n64_render_view(const struct n64_view *view)
 	}
 	t3d_viewport_attach(viewport);
 	apply_fog();
+	draw_sky(view);
 
 	/* the vertex colours are the lighting: no lights, a white ambient */
 	rdpq_set_env_color(RGBA32(0xFF, 0xFF, 0xFF, 0xFF));
@@ -2722,6 +3356,36 @@ static void draw_counter(void)
 	else
 		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 22, "3D %dx%d%s", SCREEN_WIDTH, SCREEN_HEIGHT,
 			SCREEN_HEIGHT > 240 ? " INTERLACED" : "");
+	int line = 32;
+	char text[80];
+
+	/* a streamed level: its chunks in memory (of its slots), those in view
+	but not in memory yet, the heap, the models' cache and the models that
+	found no room (drawn as nothing) */
+	if (level.stream)
+	{
+		int used = 0;
+
+		for (int i = 0; i < level.slot_count; i++)
+			used += level.slot_chunk[i] >= 0;
+		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, line, "LEVEL %d/%d WAITING %d HEAP %lu KB", used,
+			level.slot_count, level.stream_waited, n64_heap_free() / 1024);
+		line += 10;
+		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, line, "MODELS %lu KB MISSING %d",
+			(models.loaded_bytes + models.texture_bytes) / 1024, models.missing_last);
+		line += 10;
+	}
+	/* the terrain's tiles: big ones drawn (of the slots), near batches
+	still waiting for theirs */
+	if (tiles.data)
+	{
+		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, line, "GROUND TILES NEAR %d/%d WAITING %d",
+			tiles.big_drawn_last, tiles.slot_count, tiles.waiting_last);
+		line += 10;
+	}
+	/* the game's (a campaign's objects: n64_campaign.c) */
+	if (n64_game_debug_line(text, sizeof(text)))
+		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, line, "%s", text);
 }
 
 void n64_profile_poll(void);
@@ -2783,6 +3447,9 @@ void n64_render_frame_end(void)
 				renderer.triangles / 120, heap.free / 1024, n64_stack_used() / 1024,
 				models.loaded_bytes / 1024, models.reads, models.texture_bytes / 1024, models.texture_reads,
 				n64_exceptions_emulated - exceptions_before);
+			if (level.stream)
+				debugf("render: level clusters %lu KB in memory, %lu read\n", level.resident_bytes / 1024,
+					level.stream_reads);
 			exceptions_before = n64_exceptions_emulated;
 		}
 		renderer.clusters = renderer.batches = renderer.triangles = renderer.objects = 0;

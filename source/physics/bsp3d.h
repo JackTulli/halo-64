@@ -18,6 +18,22 @@ header included in hcex build.
 
 /* ---------- macros */
 
+#ifdef HALO_N64_CAMPAIGN
+/* The campaign cartridge's collision is half the size (tools/n64/
+collision.py): 16-bit indices. A BSP's child (a node, a leaf, NONE: solid),
+a 2D root (a node or a surface) and a reference's plane designator (flipped
+or not) keep their flag in bit 15 and NONE is 0xFFFF; BSP_FLAGGED_INDEX
+gives the 32-bit form the rest of the code reads (the flag in bit 31) */
+typedef unsigned short bsp_flagged_index;
+#define BSP_FLAGGED_INDEX(value) \
+	((unsigned short)(value) == 0xFFFF ? (long)NONE : \
+	((unsigned short)(value) & 0x8000) ? (long)(LONG_MIN | (long)((unsigned short)(value) & 0x7FFF)) : \
+	(long)(unsigned short)(value))
+#else
+typedef long bsp_flagged_index;
+#define BSP_FLAGGED_INDEX(value) ((long)(value))
+#endif
+
 /* ---------- structures */
 
 struct bsp3d
@@ -26,6 +42,16 @@ struct bsp3d
 	struct tag_block planes;
 };
 
+#ifdef HALO_N64_CAMPAIGN
+struct bsp3d_node
+{
+	short plane_designator;
+	bsp_flagged_index children[2];
+};
+
+typedef char bsp3d_node_size_check[
+	sizeof(struct bsp3d_node) == 0x6 ? 1 : -1];
+#else
 struct bsp3d_node
 {
 	long plane_designator;
@@ -34,6 +60,7 @@ struct bsp3d_node
 
 typedef char bsp3d_node_size_check[
 	sizeof(struct bsp3d_node) == 0xC ? 1 : -1];
+#endif
 
 /* ---------- prototypes/BSP3D.C */
 

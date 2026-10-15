@@ -1171,6 +1171,11 @@ static short structure_visibility_build_surfaces_traverse_leaf(
 	real_plane3d const *cull_planes,
 	short intersection)
 {
+#ifdef HALO_N64_CAMPAIGN
+	/* (the Xbox renderer's: the campaign cartridge's leaves hold their
+	cluster alone -- structure_bsp_definitions.h) */
+	return 0;
+#else
 	short found_count = 0;
 	struct structure_bsp *structure = global_structure_bsp_get();
 	struct structure_leaf *leaf = TAG_BLOCK_GET_ELEMENT(
@@ -1242,6 +1247,7 @@ static short structure_visibility_build_surfaces_traverse_leaf(
 
 	(void)cull_sphere_radius;
 	return found_count;
+#endif
 }
 
 static short structure_visibility_build_surfaces_traverse_node(
@@ -1323,10 +1329,10 @@ static short structure_visibility_build_surfaces_traverse_node(
 		{
 			if (descend_side[side])
 			{
-				if (!(node->children[side] & LONG_MIN))
+				if (!(BSP_FLAGGED_INDEX(node->children[side]) & LONG_MIN))
 				{
 					found_count += structure_visibility_build_surfaces_traverse_node(
-						node->children[side],
+						BSP_FLAGGED_INDEX(node->children[side]),
 						&node_bounds,
 						surface_flags,
 						&surface_indices[found_count],
@@ -1338,10 +1344,10 @@ static short structure_visibility_build_surfaces_traverse_node(
 						cull_planes,
 						intersection);
 				}
-				else if (node->children[side] != NONE)
+				else if (BSP_FLAGGED_INDEX(node->children[side]) != NONE)
 				{
 					found_count += structure_visibility_build_surfaces_traverse_leaf(
-						node->children[side],
+						BSP_FLAGGED_INDEX(node->children[side]),
 						&node_bounds,
 						surface_flags,
 						&surface_indices[found_count],

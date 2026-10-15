@@ -3801,6 +3801,13 @@ static void biped_update_moving(
 					sideways_speed = 0.f;
 				}
 
+#ifdef HALO_N64_CAMPAIGN
+				/* (the campaign cartridge's quick look round, D-pad right:
+				port/n64/game/n64_campaign.c -- faster, and as quickly up to
+				speed) */
+				if (body_stun_scale > 1.f)
+					acceleration *= body_stun_scale;
+#endif
 				physics.acceleration_maximum = acceleration / TICKS_PER_SECOND;
 				physics.movement_desired.i =
 					biped->unit.throttle.i * stun_scale * forward_speed /

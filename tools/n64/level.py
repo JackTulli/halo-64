@@ -36,6 +36,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from . import toolpaths
 from .bitmaps import bitmap_images, decode
 
 POSITION_SCALE = 64.0
@@ -54,6 +55,9 @@ GREYSCALE_TEXELS = 8192
 # batch's first triangle is taken whatever its extent: up to ~2000 texels)
 GREYSCALE_UV_EXTENT = 832.0
 VERSION = 4
+# a streamed level's chunks hold this much at most (the N64 reads one in
+# ~2 ms; a view needs ~90 KB of them, 230 KB at most in nine places of ten)
+CHUNK_BYTES = 8 * 1024
 
 MATERIAL_ALPHA_TEST = 1
 MATERIAL_TWO_SIDED = 2
@@ -89,6 +93,9 @@ MATERIAL_WATER = 1024
 # a model glow of one emitted colour (models.py glow_texture: a teleporter's
 # energy), drawn translucent (the renderer's GLOW_ALPHA)
 MATERIAL_BLEND = 2048
+# natural terrain whose colour map is in tiles of its own (terrain_tiles.py:
+# a tile a batch, the lightmap baked in), the detail map drawn over them
+MATERIAL_TILED = 4096
 # the water's colour: its perpendicular and parallel tints' mean (by their
 # brightness), dimmed about as far as its reflection map darkens it
 WATER_SHADE = 0.7
@@ -130,7 +137,9 @@ DETAIL_SIZE = 64
 COLOUR_SATURATION = 38
 COLOUR_TINT = 25
 
-MKSPRITE = str(Path(os.environ.get("N64_INST", Path.home() / "n64/toolchain")) / "bin/mksprite")
+from .toolpaths import tool  # noqa: E402
+
+MKSPRITE = tool("mksprite")
 
 
 def unpack_normal(value):
@@ -287,8 +296,13 @@ class BaseSampler:
     0..1) at a texture coordinate, bilinear and repeating"""
 
     def __init__(self, img):
-        img = img.convert("RGBA").resize((TERRAIN_SAMPLES, TERRAIN_SAMPLES), Image.LANCZOS)
-        self.pixels = [tuple(c / 255.0 for c in p) for p in img.getdata()]
+        # (the colour and the alpha scaled apart: PIL scales RGBA
+        # premultiplied, and where the alpha is 0 the colour went black)
+        img = img.convert("RGBA")
+        size = (TERRAIN_SAMPLES, TERRAIN_SAMPLES)
+        small = img.convert("RGB").resize(size, Image.LANCZOS)
+        small.putalpha(img.getchannel("A").resize(size, Image.LANCZOS))
+        self.pixels = [tuple(c / 255.0 for c in p) for p in small.getdata()]
 
     def sample(self, uv):
         n = TERRAIN_SAMPLES
@@ -312,6 +326,19 @@ class Terrain:
     def __init__(self, sampler, variants):
         self.sampler = sampler
         self.variants = variants
+        # the base map whole (RGBA), for its tiles (LevelBuilder.colour_tiles),
+        # and its detail maps' effect on it on average (detail_tint)
+        self.image = None
+        self.tint = None
+
+    def tinted(self, colour):
+        """a base map colour (RGBA, 0..1) with its detail maps' average
+        (detail_tint): the primary's where its alpha is high, the
+        secondary's where low, then the micro detail's"""
+        (pm, pa), (sm, sa), (mm, ma) = self.tint
+        a = colour[3]
+        return [(c * (sm[k] + (pm[k] - sm[k]) * a) + sa[k] + (pa[k] - sa[k]) * a) * mm[k] + ma[k]
+                for k, c in enumerate(colour[:3])]
 
 
 def share_file(path, directory, suffix):
@@ -331,7 +358,9 @@ def share_file(path, directory, suffix):
 def write_list(path, names):
     """a map's list of the shared files it uses (tools/n64/prune.py)"""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text("".join(f"{n}\n" for n in names))
+    # (newlines alone, on Windows too: the game reads hud/<map>.list in
+    # 16-character records and maps/<map>.anims a name a line)
+    Path(path).write_text("".join(f"{n}\n" for n in names), newline="\n")
 
 
 def split_palette(img, mask, cutout=False):
@@ -462,6 +491,14 @@ class LevelBuilder:
         self.overlay_of = {}
         self.overlay_by_bitmap = {}
         self.split_terrain = None
+        # natural terrain's colour map in tiles, a tile a batch with the
+        # light baked in (terrain_tiles.py), not on its vertices
+        self.colour_tiles = False
+        # a campaign level's triangles simplified (decimate.py) within this
+        # many world units of where they were: a function of the position
+        # (campaign.py: closer where the game is played), or None
+        self.decimate_tolerance = None
+        self.decimated = [0, 0]
 
     def fields(self, struct_name):
         return {f.name: o for o, f in self.defs.fields(struct_name)}
@@ -569,7 +606,7 @@ class LevelBuilder:
         # (no mipmaps but on the detail maps: the renderer's doubling
         # combiner needs both RDP cycles, and interpolated mipmapping would
         # need one of them)
-        subprocess.run([MKSPRITE, "--format", fmt, "--mipmap", "BOX" if mipmaps else "NONE",
+        toolpaths.run([MKSPRITE, "--format", fmt, "--mipmap", "BOX" if mipmaps else "NONE",
                         "--compress", "1", "-o", str(png.parent), str(png)], check=True, capture_output=True)
         png.unlink()
         name = share_file(png.with_suffix(".sprite"), self.out_dir / "tex", ".sprite")
@@ -830,9 +867,54 @@ class LevelBuilder:
         if not available:
             return None
         terrain = Terrain(sampler, [])
+        flags = MATERIAL_DETAIL
+        terrain.tint = self.detail_tint(tag, blended)
+        if self.colour_tiles:
+            flags |= MATERIAL_TILED
+            terrain.image = decode(self.map, images[0], 1 << 16).convert("RGBA")
         for d in (details[0] or available[0], details[1] or available[0]):
-            terrain.variants.append(self.add_material(d[0], MATERIAL_DETAIL, terrain=terrain, uv_scale=d[1]))
+            terrain.variants.append(self.add_material(d[0], flags, terrain=terrain, uv_scale=d[1]))
         return terrain.variants[0]
+
+    def detail_tint(self, tag, blended):
+        """what a terrain shader's detail maps do to its base map's colour on
+        average, Halo's functions over each map's mean colour: (primary,
+        secondary, micro), each (multiplier, addend) per channel -- the
+        primary where the base map's alpha is high, the secondary where low
+        (the primary's where the shader is not blended). Blood Gulch's grass
+        detail is green, (0.22, 0.39, 0.16): twice it greens and darkens the
+        grass; its sand and micro details brighten by 0.93 and 1.21. The
+        tiles take this (terrain_tiles.py), the detail texture drawn over
+        them only its grain (detail_texture: about its own mean)"""
+        f = self.fields("ShaderEnvironment")
+        read = lambda field, fmt: struct.unpack(fmt, self.map.read(tag.address + f[field], struct.calcsize(fmt)))[0]
+
+        def effect(field, function):
+            datum = struct.unpack("<I", self.map.read(tag.address + f[field] + 12, 4))[0]
+            detail = self.map.tag(datum) if datum != 0xFFFFFFFF else None
+            images = bitmap_images(self.map, detail, self.defs) if detail is not None else []
+            try:
+                img = decode(self.map, images[0], 1 << 16).convert("RGB") if images else None
+            except ValueError:
+                img = None
+            if img is None:
+                return None
+            n = img.width * img.height
+            mean = [sum(channel.getdata()) / n / 255.0 for channel in img.split()]
+            # Halo's detail functions: double/biased multiply, multiply,
+            # double/biased add
+            if function == 0:
+                return [2.0 * m for m in mean], [0.0, 0.0, 0.0]
+            if function == 1:
+                return mean, [0.0, 0.0, 0.0]
+            return [1.0, 1.0, 1.0], [2.0 * m - 1.0 for m in mean]
+        identity = ([1.0, 1.0, 1.0], [0.0, 0.0, 0.0])
+        function = read("detail map function", "<H")
+        primary = effect("primary detail map", function)
+        secondary = effect("secondary detail map", function) if blended else None
+        micro = effect("micro detail map", read("micro detail map function", "<H"))
+        primary = primary or secondary or identity
+        return primary, secondary or primary, micro or identity
 
     def detail_texture(self, bitmap_datum):
         """a detail map as an I4 texture with mipmaps, DETAIL_SIZE a side,
@@ -1005,6 +1087,8 @@ class LevelBuilder:
                            tuple(round(c, 5) for c in lightmap[1:]) if lightmap else None)
                     verts.append(same_vertex.setdefault(key, vertex))
                 self.split_terrain = self.material_terrain[material]
+                if self.materials[material][1] & MATERIAL_TILED:
+                    self.split_terrain = None
                 for s in range(first, first + count):
                     a, b, c = surfaces[s]
                     # Halo's front faces wind clockwise (Direct3D), tiny3d's
@@ -1304,12 +1388,78 @@ class LevelBuilder:
             out.append((material, list(current_vertices), list(current_tris)))
         return out
 
+    def decimate_triangles(self, triangles):
+        """one material's triangles of a cluster, simplified within
+        decimate_tolerance (its edges with other materials and clusters
+        stay: decimate.py moves no vertex on an open edge)"""
+        from .decimate import decimate
+        index = {}
+        vertices = []
+        faces = []
+        for t in triangles:
+            face = []
+            for v in t[1:]:
+                key = id(v)
+                if key not in index:
+                    index[key] = len(vertices)
+                    vertices.append((0, v[0], v[2], v))
+                face.append(index[key])
+            faces.append(tuple(face))
+        kept = decimate(vertices, faces, 0, max_deviation=self.decimate_tolerance)
+        self.decimated[0] += len(faces)
+        self.decimated[1] += len(kept)
+        material = triangles[0][0]
+        return [(material,) + tuple(vertices[i][3] for i in face) for face in kept]
+
+    def chunk_batches(self, batches, limit=None):
+        """a streamed level cluster's batches in chunks of near ones (each
+        read when it comes into view): halved across their longest extent
+        until a chunk's vertices and indices are at most CHUNK_BYTES"""
+        limit = limit or CHUNK_BYTES
+        items = []
+        for b in batches:
+            verts, tris = b[1], b[2]
+            size = (len(verts) + 1) // 2 * 32 + len(strip_chunks(tris))
+            centre = [sum(v[0][k] for v in verts) / len(verts) for k in range(3)] if verts else [0.0, 0.0, 0.0]
+            items.append((b, size, centre))
+
+        def split(group):
+            total = sum(i[1] for i in group)
+            if total <= limit or len(group) <= 1:
+                return [[i[0] for i in group]]
+            extents = [max(i[2][k] for i in group) - min(i[2][k] for i in group) for k in range(3)]
+            axis = extents.index(max(extents))
+            group = sorted(group, key=lambda i: i[2][axis])
+            running, cut = 0, 1
+            for n, i in enumerate(group):
+                running += i[1]
+                if running >= total / 2:
+                    cut = max(1, min(len(group) - 1, n + 1))
+                    break
+            return split(group[:cut]) + split(group[cut:])
+        return split(items) if items else []
+
     def write(self, path, bsp_tag):
         clusters, surface_info = self.build(bsp_tag)
         self.fit_detail_scales(surface_info)
+        streamed = getattr(self, "streamed", False)
+        # natural terrain's tiles: every terrain triangle, for the light
+        # under each tile texel (the batches' own and their neighbours')
+        tiles = None
+        if self.colour_tiles:
+            from .terrain_tiles import TerrainTiles
+            tiles = TerrainTiles()
+            for triangles in surface_info:
+                for t in triangles or ():
+                    if self.materials[t[0]][1] & MATERIAL_TILED:
+                        tiles.light_of(self.material_terrain[t[0]]).add(t[1:])
         out_batches = []
         out_clusters = []
         out_owners = []
+        # a streamed level's chunks: (first batch, batch count), each
+        # cluster's in a row
+        chunks = []
+        cluster_chunks = []
         for indices, owned in clusters:
             first = len(out_batches)
             by_material = {}
@@ -1319,7 +1469,10 @@ class LevelBuilder:
             lo = [math.inf] * 3
             hi = [-math.inf] * 3
             for material in sorted(by_material):
-                for b in self.batches(by_material[material]):
+                triangles = by_material[material]
+                if self.decimate_tolerance is not None and len(triangles) > 2:
+                    triangles = self.decimate_triangles(triangles)
+                for b in self.batches(triangles):
                     out_batches.append(b)
                     # a natural material's detail drawn over it: the same
                     # batch (the same culling: drawn only where it is)
@@ -1331,6 +1484,15 @@ class LevelBuilder:
                             hi[k] = max(hi[k], v[0][k])
             if lo[0] == math.inf:
                 lo = hi = [0.0, 0.0, 0.0]
+            if streamed:
+                # (the cluster's batches in chunks of near ones: chunk_batches)
+                ordered = self.chunk_batches(out_batches[first:])
+                out_batches[first:] = [b for chunk in ordered for b in chunk]
+                cluster_chunks.append((len(chunks), len(ordered)))
+                start = first
+                for chunk in ordered:
+                    chunks.append((start, len(chunk)))
+                    start += len(chunk)
             out_clusters.append((lo, hi, first, len(out_batches) - first, len(out_owners), len(owned)))
             out_owners.extend(owned)
 
@@ -1346,12 +1508,20 @@ class LevelBuilder:
             top = DOUBLE_SHADE_LIMIT if flags & MATERIAL_DOUBLE else 255
             terrain = self.material_terrain[material]
             su, sv = self.material_uv_scale[material]
+            # a tiled terrain batch's coordinates in its detail map's texels
+            # at the level the renderer draws (terrain_tiles.py)
+            tiled = tiles is not None and flags & MATERIAL_TILED
+            if tiled:
+                from .terrain_tiles import TILE_DETAIL_LEVEL
+                tw, th = tw >> TILE_DETAIL_LEVEL, th >> TILE_DETAIL_LEVEL
             # the batch's coordinates about 0 (whole repeats off): s10.5 holds
             # +-1024 texels, so a triangle may span up to ~2000 (from its
             # lowest whole coordinate, 1024 at most: Sidewinder's long trims
             # were clamped there, their texture smeared)
             u0 = round((min(v[2][0] * su for v in verts) + max(v[2][0] * su for v in verts)) / 2)
             v0 = round((min(v[2][1] * sv for v in verts) + max(v[2][1] * sv for v in verts)) / 2)
+            if tiled:
+                tiles.make(len(batch_records), terrain, verts, su, sv, u0, v0, tw, shade)
             if len(verts) % 2:
                 verts = verts + [verts[-1]]
             pair_offset = len(vertex_data) // 32
@@ -1366,9 +1536,11 @@ class LevelBuilder:
                 def rgba(v):
                     light = v[3]
                     if terrain is not None:
-                        # the base map's colour, doubled as its textures are
-                        colour = terrain.sampler.sample(v[2])
-                        light = [l * min(1.0, c * self.texture_brightness) for l, c in zip(light, colour)]
+                        # the base map's colour with its detail maps' average
+                        # (detail_tint: not doubled as the other textures
+                        # are -- Halo's detail maps double), times the light
+                        colour = terrain.tinted(terrain.sampler.sample(v[2]))
+                        light = [min(1.0, max(0.0, l * c)) for l, c in zip(light, colour)]
                     r, g, b_, = (min(top, int(round(c * shade * 255))) for c in light)
                     return (r << 24) | (g << 16) | (b_ << 8) | 255
                 vertex_data += struct.pack(">3hH3hHII2h2h", *pos(a), pack_normal(a[1]), *pos(b), pack_normal(b[1]),
@@ -1379,6 +1551,29 @@ class LevelBuilder:
             hi = [max(-32768, min(32767, int(math.ceil(max(v[0][k] for v in verts) * POSITION_SCALE)))) for k in range(3)]
             batch_records.append((material, len(verts), len(tris), pair_offset, index_offset, lo, hi))
 
+        # a streamed level (version 5: a campaign level, too big to keep in
+        # memory -- n64_render.c reads a chunk's vertices and indices when it
+        # comes into view): after the batches, the chunk count, each
+        # cluster's (first chunk, chunk count), then each chunk's bounds
+        # (world units), (first batch, batch count) and (vertex bytes from,
+        # vertex bytes, index bytes from, index bytes). A chunk's batches are
+        # one run of each (written in order)
+        chunk_records = []
+        index_ends = []
+        for b, record in enumerate(batch_records):
+            following = batch_records[b + 1][4] if b + 1 < len(batch_records) else len(index_data)
+            index_ends.append(following)
+        for first, count in chunks:
+            last = first + count - 1
+            v_from = batch_records[first][3] * 32
+            v_to = (batch_records[last][3] + (batch_records[last][1] + 1) // 2) * 32
+            i_from = batch_records[first][4]
+            i_to = index_ends[last]
+            positions = [v[0] for b in out_batches[first:first + count] for v in b[1]]
+            lo = [min(p[k] for p in positions) for k in range(3)]
+            hi = [max(p[k] for p in positions) for k in range(3)]
+            chunk_records.append((lo, hi, first, count, v_from, v_to - v_from, i_from, i_to - i_from))
+        streamed = getattr(self, "streamed", False)
         header_size = 64
         textures_size = len(self.textures) * 28
         materials_size = len(self.materials) * 4
@@ -1391,16 +1586,21 @@ class LevelBuilder:
         clusters_offset = offset; offset += clusters_size
         owners_offset = offset; offset += owners_size
         batches_offset = offset; offset += batches_size
+        cluster_data_offset = 0
+        if streamed:
+            cluster_data_offset = offset
+            offset += 4 + len(cluster_chunks) * 4 + len(chunk_records) * 44
         offset = (offset + 7) & ~7
         vertices_offset = offset; offset += len(vertex_data)
         indices_offset = offset; offset += len(index_data)
 
         out = bytearray()
-        out += b"H64L" + struct.pack(">I f HHHH II II II II IHxx", VERSION, 1.0 / POSITION_SCALE,
+        out += b"H64L" + struct.pack(">I f HHHH II II II II IHxx", 5 if streamed else VERSION, 1.0 / POSITION_SCALE,
                                      len(self.textures), len(self.materials), len(out_clusters), len(batch_records),
                                      textures_offset, materials_offset, clusters_offset, batches_offset,
                                      vertices_offset, len(vertex_data), indices_offset, len(index_data),
                                      owners_offset, len(out_owners))
+        out += struct.pack(">I", cluster_data_offset)
         out += b"\0" * (header_size - len(out))
         for t in self.textures:
             name = t.name.encode()
@@ -1413,13 +1613,23 @@ class LevelBuilder:
         out += b"\0" * (batches_offset - len(out))
         for material, nv, nt, pair_offset, index_offset, lo, hi in batch_records:
             out += struct.pack(">HBBII3h3h", material, nv, nt, pair_offset, index_offset, *lo, *hi)
+        if streamed:
+            out += struct.pack(">I", len(chunk_records))
+            for record in cluster_chunks:
+                out += struct.pack(">HH", *record)
+            for lo, hi, first, count, v_from, v_size, i_from, i_size in chunk_records:
+                out += struct.pack(">3f3fHH4I", *lo, *hi, first, count, v_from, v_size, i_from, i_size)
         out += b"\0" * (vertices_offset - len(out))
         out += vertex_data
         out += index_data
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_bytes(out)
-        return {
+        stats = {
             "textures": len(self.textures), "materials": len(self.materials), "clusters": len(out_clusters),
             "batches": len(batch_records), "vertices": len(vertex_data) // 16,
             "triangles": len(index_data) // 3, "bytes": len(out),
         }
+        if tiles is not None:
+            for k, v in tiles.write(Path(path).with_suffix(".tiles")).items():
+                stats["terrain " + k] = v
+        return stats

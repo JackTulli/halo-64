@@ -1005,7 +1005,7 @@ static void leaf_map_build_leaf_faces(
 
 		node_stack_push(child_index != 0 ? node_index : (node_index | LONG_MIN));
 
-		child_node_index = node->children[child_index];
+		child_node_index = BSP_FLAGGED_INDEX(node->children[child_index]);
 
 		if (child_node_index & LONG_MIN)
 		{
@@ -1155,7 +1155,7 @@ static void leaf_map_build_portals(
 
 		node_stack_push(child_index != 0 ? node_index : (node_index | LONG_MIN));
 
-		child_node_index = node->children[child_index];
+		child_node_index = BSP_FLAGGED_INDEX(node->children[child_index]);
 
 		if (child_node_index & LONG_MIN)
 		{
@@ -1225,7 +1225,7 @@ static void leaf_map_build_portals_from_leaf(
 			continue;
 		}
 
-		child_node_index = node->children[child_index];
+		child_node_index = BSP_FLAGGED_INDEX(node->children[child_index]);
 
 		if (child_node_index & LONG_MIN)
 		{

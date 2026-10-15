@@ -42,6 +42,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from . import toolpaths
 from .music import AUDIOCONV, pcm_wav
 
 NONE = 0xFFFFFFFF
@@ -338,14 +339,14 @@ class SoundConverter:
                     flags = ["--wav-mono", "--wav-resample", str(RATE), "--wav-compress", "vadpcm,huffman=false"]
                     if looped:
                         flags += ["--wav-loop", "true"]
-                    subprocess.run([str(AUDIOCONV), *flags, "-o", str(out), str(source)], check=True,
+                    toolpaths.run([str(AUDIOCONV), *flags, "-o", str(out), str(source)], check=True,
                                    capture_output=True)
                     for key in names:
                         # (another map's conversion may make the same file:
                         # each replaces it whole)
                         os.replace(out / f"{key}.wav64", self.cache / f"{key}.wav64")
         Path(list_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(list_path).write_text("".join(f"{n}\n" for n in self.files))
+        Path(list_path).write_text("".join(f"{n}\n" for n in self.files), newline="\n")
         return len(self.files), len(self.pending)
 
 

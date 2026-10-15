@@ -146,13 +146,13 @@ def main():
            command=("cd $root && $cc -march=vr4300 -mtune=vr4300 -mabi=o64 -g -o $out @$out.rsp "
                     "-L$libdir $ldlibs -lc -Wl,-L$libdir -Wl,-Tn64.ld -Wl,--gc-sections "
                     "-Wl,--wrap,__do_global_ctors -Wl,-Map=$out.map $ldflags "
-                    "&& $python tools/n64_link_check.py $builddir/objects.txt --check"),
+                    "&& $python tools/n64_link_check.py $objlist --check"),
            description="N64 LINK $out", rspfile="$out.rsp", rspfile_content="$in_newline")
     n.rule("z64",
            command=("cd $root && export N64_INST=$n64inst && $bin/n64sym --all $in $in.sym && cp $in $in.stripped && "
                     "$bin/mips64-elf-strip -s $in.stripped && "
-                    "$bin/n64elfcompress -o $builddir -c 1 $in.stripped && "
-                    "$bin/n64tool --toc --title \"HALO N64\" --output $out.tmp --align 256 $in.stripped $in.sym $extra && "
+                    "$bin/n64elfcompress -o $outdir -c 1 $in.stripped && "
+                    "$bin/n64tool --toc --title \"$title\" --output $out.tmp --align 256 $in.stripped $in.sym $extra && "
                     "$bin/ed64romconfig --expansionpak required --savetype eeprom4k --regionfree $out.tmp && mv $out.tmp $out"),
            description="N64 ROM $out")
     n.newline()
@@ -163,8 +163,8 @@ def main():
             implicit=["tools/linux_msvc_semantics.py", *map(str, sorted(XDK_INCLUDE.glob("*.h"))), *game_headers],
             variables={"scan": f"--all-inlines --exclude-static --tags source --inlines source --inlines {XDK_INCLUDE}"})
 
-    defines = " ".join(f"-D{d}" for d in options.get("defines") or [] if d not in port.get("drop_defines", []))
-    defines += " " + " ".join(f"-D{d}" for d in port.get("defines", []))
+    base_defines = " ".join(f"-D{d}" for d in options.get("defines") or [] if d not in port.get("drop_defines", []))
+    base_defines += " " + " ".join(f"-D{d}" for d in port.get("defines", []))
     includes = " ".join(
         "-I" + shlex.quote(d) for d in options.get("include_dirs") or [] if Path(d) != Path("xbox/include"))
     # link-time optimisation of the game's units (port.json "lto"): the
@@ -172,95 +172,38 @@ def main():
     # (datum_get, tag_get, tag_block_get_element_with_size...); fat objects
     # keep the plain symbols tools/n64_link_check.py reads
     lto = ["-flto", "-ffat-lto-objects"] if port.get("lto") else []
-    game_cflags = " ".join([
-        *GAME_ABI, game_opt, *lto, *GAME_FLAGS,
-        f"-I{PORT_DIR}/include", "-Iport/linux/include", "-Iport/include",
-        f"-include {PORT_DIR}/include/halo_n64_prefix.h",
-        f"-include {semantics}",
-        defines, includes,
-        f"-idirafter {XDK_INCLUDE}",
-    ])
-
-    objects = []
-
     # extra flags by source: a path, or a pattern ("source/physics/*.c");
     # every matching entry's flags are added, in port.json's order (a later
     # -O wins over the unit's own)
     source_flags = port.get("source_flags", {})
 
-    def add(source, cflags):
+    def add(objects, obj_dir, source, cflags):
         name = str(source).replace(os.sep, "/")
         extra = " ".join(flags for pattern, flags in source_flags.items()
                          if pattern == name or fnmatch.fnmatchcase(name, pattern))
         if extra:
             cflags = f"{cflags} {extra}"
-        obj = BUILD_DIR / "obj" / Path(source).with_suffix(".o")
+        obj = obj_dir / Path(source).with_suffix(".o")
         objects.append(str(obj))
         n.build(str(obj), "cc", str(source), implicit=[str(semantics)],
                 variables={"cflags": cflags})
 
-    game_objects = []
-    for o in project["objects"]:
-        name = o["name"].replace(os.sep, "/")
-        if o["status"] == "MISSING" or not name.endswith(".c") or not Path(name).is_file():
-            continue
-        if name in exclude_sources or any(name.startswith(d) for d in exclude_dirs):
-            continue
-        add(name, game_cflags)
-        game_objects.append(name)
-    for source in sorted((PORT_DIR / "game").glob("*.c")):
-        add(source, game_cflags)
-    for extra in port.get("extra_game_sources", []):
-        add(extra, game_cflags)
-
-    # the XDK-facing half of the platform layer (port/n64/src/xdk_*.c) and
-    # the host-independent Linux units compiled again: the game's ABI and
-    # the SDK declarations, through platform.h
-    xdk_cflags = " ".join([
-        *GAME_ABI, game_opt, *lto,
-        "-std=gnu11", "-w", "-DHALO_LINUX_PLATFORM_LAYER",
-        f"-I{PORT_DIR}/src", f"-I{PORT_DIR}/include", "-Iport/linux/src",
-        "-Iport/linux/include", "-Iport/include", "-Isource", "-Isource/cseries",
-        f"-include {PORT_DIR}/include/halo_n64_prefix.h",
-        f"-include {semantics}",
-        f"-idirafter {XDK_INCLUDE}",
-    ])
-    for source in sorted((PORT_DIR / "src").glob("xdk_*.c")):
-        add(source, xdk_cflags)
-    for name in port.get("linux_platform_sources", []):
-        add(Path("port/linux/src") / name, xdk_cflags)
-
-    # the libdragon-facing half (port/n64/src/n64_*.c)
-    platform_cflags = " ".join([opt, *[f for f in PLATFORM_FLAGS if f], f"-I{PORT_DIR}/src", f"-I{PORT_DIR}/include",
-                                f"-I{TINY3D}/src"])
-    for source in sorted((PORT_DIR / "src").glob("n64_*.c")):
-        add(source, platform_cflags)
-
-    # the game's sin, pow and the rest (port/include/halo_math.h)
+    # the game's sin, pow and the rest (port/include/halo_math.h): the same
+    # objects for every cartridge
+    musl_objects = []
     musl = Path("port/third_party/musl-math")
     musl_cflags = " ".join([*GAME_ABI, "-O2", "-std=gnu11", "-w", f"-I{musl}/include",
                             f"-include {musl}/include/libm.h"])
     for source in sorted((musl / "src").glob("*.c")):
-        add(source, musl_cflags)
+        add(musl_objects, BUILD_DIR / "obj", source, musl_cflags)
 
-    n.build("objects", "phony", objects)
-    # the object list, for tools/n64_link_check.py
-    (BUILD_DIR / "objects.txt").write_text("\n".join(objects) + "\n", encoding="utf-8")
-    elf = BUILD_DIR / "halo.elf"
-    libdir = N64_INST / "mips64-elf" / "lib"
-    n.build(str(elf), "link", objects, variables={
-        "libdir": str(libdir),
-        "ldlibs": " ".join(port.get("libraries", [])) + f" {TINY3D}/build/libt3d.a -ldragon -lm -ldragonsys",
-        # (four link-time jobs: each lto1 takes hundreds of MB, and sixteen
-        # of them beside the map conversions froze a 15 GB machine)
-        "ldflags": " ".join(port.get("ldflags", []) + (["-flto=4", game_opt, small, *CODE_FLAGS] if lto else [])),
-    })
     # the cartridge's files (DragonFS): the converted maps, and the flags
     # port.json asks for (an "autotest" file drives the controllers by script)
     # the converters take ~800 MB each: three at a time (thirteen at once,
     # with the link, ran a 15 GB machine out of memory and froze it)
     n.pool("convert", 3)
-    n.rule("convert_map", command="cd $root && export N64_INST=$n64inst && $python -m tools.n64.convert $in -o $map --filesystem $fsdir",
+    n.rule("convert_map",
+           command="cd $root && export N64_INST=$n64inst && $python -m tools.n64.convert $in -o $map --filesystem $fsdir $convert_flags",
            pool="convert",
            description="N64 MAP $out")
     n.rule("convert_ui", command="cd $root && export N64_INST=$n64inst && $python -m tools.n64.ui $in --filesystem $fsdir",
@@ -269,66 +212,158 @@ def main():
     n.rule("convert_music", command="cd $root && $python -m tools.n64.music $in --filesystem $fsdir",
            pool="convert",
            description="N64 MUSIC $out")
-    n.rule("sound_bank", command="cd $root && $python -m tools.n64.soundbank $builddir $fsdir $maps",
+    n.rule("sound_bank", command="cd $root && $python -m tools.n64.soundbank $variantdir $fsdir $maps",
            description="N64 SOUNDS $out")
     n.rule("touch", command="cd $root && mkdir -p $$(dirname $out) && : > $out", description="N64 FLAG $out")
     n.rule("mkdfs", command="cd $root && $python -m tools.n64.prune $fsdir $maps && $bin/mkdfs $out $fsdir > /dev/null && : $in $flags",
            description="N64 DFS $out")
-    fsdir = BUILD_DIR / "filesystem"
-    fs_files = []
     tool_sources = sorted(str(p) for p in Path("tools/n64").glob("*.py"))
-    for name in port.get("maps", []):
-        out_map = fsdir / "maps" / f"{name}.map"
-        n.build([str(out_map), str(fsdir / "levels" / f"{name}.lvl"), str(fsdir / "levels" / f"{name}-low.lvl"),
-                 str(fsdir / "levels" / f"{name}-low.mdl"),
-                 str(fsdir / "maps" / f"{name}.anims"), str(BUILD_DIR / "sound" / f"{name}.slist"),
-                 str(fsdir / "fx" / f"{name}.fx")], "convert_map",
-                f"build/xbox/disc/maps/{name}.map", implicit=tool_sources + ["build/xbox/disc/maps/a30.map"],
-                variables={"fsdir": str(fsdir), "map": str(out_map)})
-        fs_files.append(str(out_map))
-    # the maps' gameplay sounds in one bank (tools/n64/soundbank.py)
-    maps = port.get("maps", [])
-    bank = fsdir / "snd" / "sounds.bank"
-    n.build([str(bank)] + [str(fsdir / "snd" / f"{name}.ofs") for name in maps], "sound_bank",
-            [str(BUILD_DIR / "sound" / f"{name}.slist") for name in maps], implicit=["tools/n64/soundbank.py"],
-            variables={"builddir": str(BUILD_DIR), "fsdir": str(fsdir), "maps": " ".join(maps)})
-    fs_files.append(str(bank))
-    # the menu (port/n64/src/n64_menu.c): ui.map's scene, fonts and pictures
-    ui_scene = fsdir / "ui" / "scene.bin"
-    n.build([str(ui_scene), str(fsdir / "levels" / "ui.mdl"), str(fsdir / "fonts" / "small.glyphs")], "convert_ui",
-            "build/xbox/disc/maps/ui.map", implicit=tool_sources, variables={"fsdir": str(fsdir)})
-    fs_files.append(str(ui_scene))
-    # the main menu's music (tools/n64/music.py, port/n64/src/n64_sound.c)
-    music = [str(fsdir / "music" / f"title_{name}.wav64") for name in ("in", "loop0", "loop1", "loop2")]
-    n.build(music, "convert_music", "build/xbox/disc/maps/ui.map", implicit=tool_sources,
-            variables={"fsdir": str(fsdir)})
-    fs_files.append(music[0])
-    # the debug switches the cartridge carries (n64_debug_flag) are the files
-    # at its root (everything else is in folders): the ones port.json does
-    # not ask for are removed, so none lingers in a build (a list of known
-    # switches missed the new ones)
-    flag_names = [flag.split("=", 1)[0] for flag in port.get("flags", [])]
-    if fsdir.exists():
-        for path in fsdir.iterdir():
-            if path.is_file() and path.name not in flag_names:
-                path.unlink()
-    for flag in port.get("flags", []):
-        name, _, value = flag.partition("=")
-        out_flag = fsdir / name
-        if value:
-            fsdir.mkdir(parents=True, exist_ok=True)
-            if not out_flag.exists() or out_flag.read_text() != value + "\n":
-                out_flag.write_text(value + "\n")
-        else:
-            n.build(str(out_flag), "touch")
-        fs_files.append(str(out_flag))
-    dfs = BUILD_DIR / "halo.dfs"
-    n.build(str(dfs), "mkdfs", fs_files, variables={"fsdir": str(fsdir), "flags": " ".join(port.get("flags", [])),
-                                                       "maps": " ".join(port.get("maps", []) + ["ui"])})
-    n.build(str(BUILD_DIR / "halo.z64"), "z64", str(elf), implicit=[str(dfs)], variables={"extra": str(dfs)})
-    n.default([str(BUILD_DIR / "halo.z64")])
+
+    def variant(variant_dir, extra_defines, maps, flags, rom, title, campaign):
+        """one cartridge: the game compiled with its defines, its files, its
+        ROM"""
+        defines = base_defines + " " + " ".join(f"-D{d}" for d in extra_defines)
+        game_cflags = " ".join([
+            *GAME_ABI, game_opt, *lto, *GAME_FLAGS,
+            f"-I{PORT_DIR}/include", "-Iport/linux/include", "-Iport/include",
+            f"-include {PORT_DIR}/include/halo_n64_prefix.h",
+            f"-include {semantics}",
+            defines, includes,
+            f"-idirafter {XDK_INCLUDE}",
+        ])
+        obj_dir = variant_dir / "obj"
+        objects = []
+        game_objects = []
+        for o in project["objects"]:
+            name = o["name"].replace(os.sep, "/")
+            if o["status"] == "MISSING" or not name.endswith(".c") or not Path(name).is_file():
+                continue
+            if name in exclude_sources or any(name.startswith(d) for d in exclude_dirs):
+                continue
+            add(objects, obj_dir, name, game_cflags)
+            game_objects.append(name)
+        for source in sorted((PORT_DIR / "game").glob("*.c")):
+            add(objects, obj_dir, source, game_cflags)
+        for extra in port.get("extra_game_sources", []):
+            add(objects, obj_dir, extra, game_cflags)
+
+        # the XDK-facing half of the platform layer (port/n64/src/xdk_*.c) and
+        # the host-independent Linux units compiled again: the game's ABI and
+        # the SDK declarations, through platform.h
+        xdk_cflags = " ".join([
+            *GAME_ABI, game_opt, *lto,
+            "-std=gnu11", "-w", "-DHALO_LINUX_PLATFORM_LAYER",
+            f"-I{PORT_DIR}/src", f"-I{PORT_DIR}/include", "-Iport/linux/src",
+            "-Iport/linux/include", "-Iport/include", "-Isource", "-Isource/cseries",
+            f"-include {PORT_DIR}/include/halo_n64_prefix.h",
+            f"-include {semantics}",
+            f"-idirafter {XDK_INCLUDE}",
+            " ".join(f"-D{d}" for d in extra_defines),
+        ])
+        for source in sorted((PORT_DIR / "src").glob("xdk_*.c")):
+            add(objects, obj_dir, source, xdk_cflags)
+        for name in port.get("linux_platform_sources", []):
+            add(objects, obj_dir, Path("port/linux/src") / name, xdk_cflags)
+
+        # the libdragon-facing half (port/n64/src/n64_*.c)
+        platform_cflags = " ".join([opt, *[f for f in PLATFORM_FLAGS if f], f"-I{PORT_DIR}/src", f"-I{PORT_DIR}/include",
+                                    f"-I{TINY3D}/src", *(f"-D{d}" for d in extra_defines)])
+        for source in sorted((PORT_DIR / "src").glob("n64_*.c")):
+            add(objects, obj_dir, source, platform_cflags)
+        objects += musl_objects
+
+        variant_dir.mkdir(parents=True, exist_ok=True)
+        # the object list, for tools/n64_link_check.py
+        objlist = variant_dir / "objects.txt"
+        objlist.write_text("\n".join(objects) + "\n", encoding="utf-8")
+        elf = variant_dir / "halo.elf"
+        libdir = N64_INST / "mips64-elf" / "lib"
+        n.build(str(elf), "link", objects, variables={
+            "libdir": str(libdir),
+            "objlist": str(objlist),
+            "ldlibs": " ".join(port.get("libraries", [])) + f" {TINY3D}/build/libt3d.a -ldragon -lm -ldragonsys",
+            # (four link-time jobs: each lto1 takes hundreds of MB, and sixteen
+            # of them beside the map conversions froze a 15 GB machine)
+            "ldflags": " ".join(port.get("ldflags", []) + (["-flto=4", game_opt, small, *CODE_FLAGS] if lto else [])),
+        })
+
+        fsdir = variant_dir / "filesystem"
+        fs_files = []
+        for name in maps:
+            out_map = fsdir / "maps" / f"{name}.map"
+            outputs = [str(out_map), str(fsdir / "levels" / f"{name}.lvl"), str(fsdir / "maps" / f"{name}.anims"),
+                       str(variant_dir / "sound" / f"{name}.slist"), str(fsdir / "fx" / f"{name}.fx")]
+            if campaign:
+                outputs.append(str(fsdir / "levels" / f"{name}.enc"))
+            else:
+                outputs += [str(fsdir / "levels" / f"{name}.tiles"), str(fsdir / "levels" / f"{name}-low.lvl"),
+                            str(fsdir / "levels" / f"{name}-low.mdl")]
+            n.build(outputs, "convert_map",
+                    f"build/xbox/disc/maps/{name}.map", implicit=tool_sources + ["build/xbox/disc/maps/a30.map"],
+                    variables={"fsdir": str(fsdir), "map": str(out_map),
+                               "convert_flags": "--campaign" if campaign else ""})
+            fs_files.append(str(out_map))
+        # the maps' gameplay sounds in one bank (tools/n64/soundbank.py)
+        bank = fsdir / "snd" / "sounds.bank"
+        n.build([str(bank)] + [str(fsdir / "snd" / f"{name}.ofs") for name in maps], "sound_bank",
+                [str(variant_dir / "sound" / f"{name}.slist") for name in maps], implicit=["tools/n64/soundbank.py"],
+                variables={"variantdir": str(variant_dir), "fsdir": str(fsdir), "maps": " ".join(maps)})
+        fs_files.append(str(bank))
+        # the menu (port/n64/src/n64_menu.c): ui.map's scene, fonts and pictures
+        ui_scene = fsdir / "ui" / "scene.bin"
+        n.build([str(ui_scene), str(fsdir / "levels" / "ui.mdl"), str(fsdir / "fonts" / "small.glyphs")], "convert_ui",
+                "build/xbox/disc/maps/ui.map", implicit=tool_sources, variables={"fsdir": str(fsdir)})
+        fs_files.append(str(ui_scene))
+        # the main menu's music (tools/n64/music.py, port/n64/src/n64_sound.c)
+        music = [str(fsdir / "music" / f"title_{name}.wav64") for name in ("in", "loop0", "loop1", "loop2")]
+        n.build(music, "convert_music", "build/xbox/disc/maps/ui.map", implicit=tool_sources,
+                variables={"fsdir": str(fsdir)})
+        fs_files.append(music[0])
+        # the debug switches the cartridge carries (n64_debug_flag) are the files
+        # at its root (everything else is in folders): the ones port.json does
+        # not ask for are removed, so none lingers in a build (a list of known
+        # switches missed the new ones)
+        flag_names = [flag.split("=", 1)[0] for flag in flags]
+        if fsdir.exists():
+            for path in fsdir.iterdir():
+                if path.is_file() and path.name not in flag_names:
+                    path.unlink()
+        for flag in flags:
+            name, _, value = flag.partition("=")
+            out_flag = fsdir / name
+            if value:
+                fsdir.mkdir(parents=True, exist_ok=True)
+                if not out_flag.exists() or out_flag.read_text() != value + "\n":
+                    out_flag.write_text(value + "\n")
+            else:
+                n.build(str(out_flag), "touch")
+            fs_files.append(str(out_flag))
+        dfs = variant_dir / "halo.dfs"
+        n.build(str(dfs), "mkdfs", fs_files, variables={"fsdir": str(fsdir), "flags": " ".join(flags),
+                                                           "maps": " ".join(maps + ["ui"])})
+        target = BUILD_DIR / rom
+        n.build(str(target), "z64", str(elf), implicit=[str(dfs)],
+                variables={"extra": str(dfs), "outdir": str(variant_dir), "title": title})
+        return target, len(game_objects), len(objects)
+
+    targets = []
+    main_rom, game_count, object_count = variant(BUILD_DIR, [], port.get("maps", []), port.get("flags", []),
+                                                 "halo.z64", "HALO N64", False)
+    targets.append(main_rom)
+    # the campaign's cartridge (port.json "campaign"): its own build of the
+    # game (HALO_N64_CAMPAIGN: the compact collision of tools/n64/
+    # collision.py) and its levels converted as campaign maps
+    campaign = port.get("campaign")
+    if campaign:
+        rom, _, _ = variant(BUILD_DIR / "campaign", campaign.get("defines", []), campaign.get("maps", []),
+                            campaign.get("flags", []), campaign.get("rom", "halo-campaign.z64"),
+                            campaign.get("title", "HALO N64 CAMPAIGN"), True)
+        targets.append(rom)
+    n.build("campaign", "phony", [str(t) for t in targets[1:]])
+    n.default([str(main_rom)] + [str(t) for t in targets[1:]])
     out.close()
-    print(f"wrote {BUILD_DIR / 'build.ninja'}: {len(game_objects)} game units, {len(objects)} objects")
+    print(f"wrote {BUILD_DIR / 'build.ninja'}: {game_count} game units, {object_count} objects a cartridge, "
+          f"{len(targets)} cartridges")
 
 
 if __name__ == "__main__":

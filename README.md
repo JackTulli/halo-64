@@ -63,10 +63,44 @@ working notebook.
   on the Rumble Pak, each player's on or off.
 - **Settings** for the picture and speed (below). Settings and controls are
   saved on the cartridge (EEPROM).
+- **The ground in colour**: the natural ground's colour map in tiles of
+  its own, read from the cartridge as you come near (a megatexture: the
+  grass, dirt and paths of Halo's maps), and Blood Gulch's blue sky.
+- **A campaign cartridge** (`halo-campaign.z64`, a ROM of its own): the
+  level "Halo" with its Marines and Covenant driven by the N64's simplified
+  AI (Firefight's), squads and waves placed as you come near, checkpoints,
+  four difficulties and the warthog. No cutscenes or scripts yet, and the
+  level's second half (its other structure BSP) is not on it yet.
 
-No campaign and no networking.
+No networking.
 
 ## Building
+
+### The easy way: Halo 64 ROM Builder (Windows)
+
+`Halo64RomBuilder.exe` makes the ROMs without any of the tools below: drop
+your Halo: Combat Evolved **Xbox** disc image (`.iso`, trimmed or whole) or
+its `maps` folder on its window, tick the cartridges (multiplayer and the
+campaign's "Halo"), choose where they go and press **Build ROMs**. It
+converts your maps on your PC (a first build takes a while: every sound is
+converted once, then kept for the next) and writes `halo-n64.z64` and
+`halo-campaign.z64`. It needs about 3 GB of free memory and 3 GB of disk
+for its work folder (`%LOCALAPPDATA%\Halo64RomBuilder`). No Halo data comes
+with it: it carries the game's program, built from this repository, and
+the tools that turn your maps into the cartridge's files.
+
+How it is made: `tools/n64/rombuilder.py` runs the same conversions as the
+ninja build below with each cartridge's prebuilt program (the build's
+`halo.elf.stripped` and `halo.elf.sym`), `tools/n64/xiso.py` reads the disc
+image, `tools/n64/rombuilder_gui.py` is the window, `tools/n64/
+build_windows_tools.sh` builds libdragon's mksprite, audioconv64, mkdfs,
+n64tool and ed64romconfig for Windows (MinGW-w64, in WSL or on Linux) and
+`tools/n64/package_rombuilder.py`, run with a Windows Python that has
+`pillow tkinterdnd2 sv-ttk pyinstaller`, packages it all with PyInstaller.
+On Linux the builder runs from the repository too:
+`python3 -m tools.n64.rombuilder <disc image or maps folder> -o <folder>`.
+
+### From the sources
 
 The build runs on Linux (or on Windows in WSL, below). It takes ~10 minutes
 the first time (13 maps are converted) and makes `build/n64/halo.z64`, about
@@ -216,7 +250,7 @@ gamepad that has motors).
 | ANIMATIONS | full or half rate: half poses the characters, vehicles and your gun every other tick (halved again with 3 or 4 players), and the bots think less often. Faster. |
 | PARTICLES | muzzle flashes, sparks, dust and blood on or off |
 | VIEW MODEL | your gun and arms in low, medium or high detail, or off in split (low, and not drawn with 3 or 4 players: the biggest saving there) |
-| TERRAIN DETAIL | full (the detail maps' mipmaps down to 16x16), no overlay (rock and earth's second pass), all mips (down to 8x8, as before), no mips, or off: for tracking down black smudges consoles showed on distant detailed ground |
+| TERRAIN DETAIL | full (the detail maps everywhere: the ground's at every distance, rock and earth's drawn over them), high (the ground's detail fades out a few steps away, before it can shimmer), medium (high without rock and earth's second pass) or low (no detail maps: the ground's colour alone). Lower is faster. |
 | WIDESCREEN | off, or anamorphic 16:9 for a television that stretches the picture |
 | HUD INSET | moves the HUD in from the edges, for televisions that cut them off |
 | FPS COUNTER | frames a second and timings at the top of the screen |

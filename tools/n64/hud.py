@@ -18,6 +18,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from . import toolpaths
 from .bitmaps import bitmap_images, decode
 from .level import MKSPRITE, share_file, write_list
 from .walk import Walker
@@ -144,6 +145,6 @@ class HudExporter:
         else:
             fmt = "RGBA16"
         img.save(png)
-        subprocess.run([MKSPRITE, "--format", fmt, "--compress", "1", "-o", str(png.parent), str(png)],
+        toolpaths.run([MKSPRITE, "--format", fmt, "--compress", "1", "-o", str(png.parent), str(png)],
                        check=True, capture_output=True)
         png.unlink()

@@ -41,12 +41,23 @@ struct collision_surface
 	short material_index;
 };
 
+#ifdef HALO_N64_CAMPAIGN
+/* (the campaign cartridge's: 16-bit indices, NONE -1 as before -- an
+edge's are plain indices, read into longs unchanged; bsp3d.h) */
+struct collision_edge
+{
+	short vertex_indices[2];
+	short edge_indices[2];
+	short surface_indices[2];
+};
+#else
 struct collision_edge
 {
 	long vertex_indices[2];
 	long edge_indices[2];
 	long surface_indices[2];
 };
+#endif
 
 struct collision_vertex
 {
@@ -60,12 +71,17 @@ typedef char collision_surface_first_edge_index_offset_assert[
 	offsetof(struct collision_surface, first_edge_index) == 0x04 ? 1 : -1];
 typedef char collision_surface_material_index_offset_assert[
 	offsetof(struct collision_surface, material_index) == 0x0A ? 1 : -1];
+#ifdef HALO_N64_CAMPAIGN
+typedef char collision_edge_size_assert[
+	sizeof(struct collision_edge) == 0x0C ? 1 : -1];
+#else
 typedef char collision_edge_size_assert[
 	sizeof(struct collision_edge) == 0x18 ? 1 : -1];
 typedef char collision_edge_edge_indices_offset_assert[
 	offsetof(struct collision_edge, edge_indices) == 0x08 ? 1 : -1];
 typedef char collision_edge_surface_indices_offset_assert[
 	offsetof(struct collision_edge, surface_indices) == 0x10 ? 1 : -1];
+#endif
 typedef char collision_vertex_size_assert[
 	sizeof(struct collision_vertex) == 0x10 ? 1 : -1];
 typedef char collision_vertex_first_edge_index_offset_assert[

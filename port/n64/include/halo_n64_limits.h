@@ -29,7 +29,13 @@ here is only the Xbox's, kept for code that names it.
 /* ---------- pools */
 
 #define HALO_PORT_MAXIMUM_OBJECTS_PER_MAP 512
+#ifdef HALO_N64_CAMPAIGN
+/* (a campaign level: its encounters' actors, ~7 KB a biped, beside the
+scenery near the players -- port/n64/game/n64_campaign.c) */
+#define HALO_PORT_OBJECT_MEMORY_POOL_SIZE 0x48000
+#else
 #define HALO_PORT_OBJECT_MEMORY_POOL_SIZE 0x40000
+#endif
 #define HALO_PORT_MAXIMUM_CLUSTER_REFERENCES 512
 #define HALO_PORT_MAXIMUM_RENDERED_OBJECTS 64
 #define HALO_PORT_MAXIMUM_CACHED_OBJECT_RENDER_STATES 64

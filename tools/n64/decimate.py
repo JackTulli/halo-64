@@ -170,12 +170,16 @@ def decimate(vertices, triangles, target, cross_nodes=False, max_deviation=None)
         # the surface too far off its planes
         flips = False
         move = [positions[h][k] - positions[g][k] for k in range(3)]
+        # (max_deviation may be a function of the position: a level's, by
+        # how near the players go)
+        deviation = (min(max_deviation(positions[g]), max_deviation(positions[h])) if callable(max_deviation)
+                     else max_deviation)
         for t in by_group[g]:
             corners = tris[t][1]
             before = _normal(*(positions[c] for c in corners))
-            if max_deviation is not None:
+            if deviation is not None:
                 length = math.sqrt(before[0] ** 2 + before[1] ** 2 + before[2] ** 2)
-                if length > 1e-20 and abs(before[0] * move[0] + before[1] * move[1] + before[2] * move[2]) > max_deviation * length:
+                if length > 1e-20 and abs(before[0] * move[0] + before[1] * move[1] + before[2] * move[2]) > deviation * length:
                     flips = True
                     break
             if h in corners:

@@ -185,6 +185,26 @@ typedef char collision_bsp_test_sphere_context_projection_axis_offset_assert[
 typedef char collision_bsp_test_sphere_context_center2d_offset_assert[
 	offsetof(struct collision_bsp_test_sphere_context, center2d) == 0x220 ? 1 : -1];
 
+#ifdef HALO_N64_CAMPAIGN
+/* (the campaign cartridge's, 4 bytes each: bsp3d.h) */
+struct collision_leaf
+{
+	byte flags;
+	byte bsp2d_reference_count;
+	unsigned short first_bsp2d_reference_index;
+};
+
+struct bsp2d_reference
+{
+	bsp_flagged_index plane_designator;
+	bsp_flagged_index root_index;
+};
+
+typedef char collision_leaf_size_assert[
+	sizeof(struct collision_leaf) == 0x04 ? 1 : -1];
+typedef char bsp2d_reference_size_assert[
+	sizeof(struct bsp2d_reference) == 0x04 ? 1 : -1];
+#else
 struct collision_leaf
 {
 	word flags;
@@ -202,6 +222,7 @@ typedef char collision_leaf_size_assert[
 	sizeof(struct collision_leaf) == 0x08 ? 1 : -1];
 typedef char bsp2d_reference_size_assert[
 	sizeof(struct bsp2d_reference) == 0x08 ? 1 : -1];
+#endif
 
 struct collision_bsp_test_vector_context
 {
@@ -1461,7 +1482,7 @@ static boolean collision_bsp_test_pill_new_recursive(
 
 			near_hit = collision_bsp_test_pill_new_recursive(
 				data,
-				node->children[!front],
+				BSP_FLAGGED_INDEX(node->children[!front]),
 				t0,
 				near_t);
 			if (near_hit)
@@ -1478,14 +1499,14 @@ static boolean collision_bsp_test_pill_new_recursive(
 
 			near_hit |= collision_bsp_test_pill_new_recursive(
 				data,
-				node->children[front],
+				BSP_FLAGGED_INDEX(node->children[front]),
 				far_t,
 				t1);
 
 			return near_hit;
 		}
 
-		node_index = node->children[reaches_front];
+		node_index = BSP_FLAGGED_INDEX(node->children[reaches_front]);
 	}
 
 	if (node_index == NONE && data->last_plane_designator != NONE)
@@ -1566,7 +1587,7 @@ static long collision_leaf_test_vector(
 			reference_index,
 			struct bsp2d_reference);
 
-		if ((reference->plane_designator & LONG_MAX) == plane_index)
+		if ((BSP_FLAGGED_INDEX(reference->plane_designator) & LONG_MAX) == plane_index)
 		{
 			real_plane3d const *plane = TAG_BLOCK_GET_ELEMENT(
 				&bsp->bsp3d.planes,
@@ -1587,7 +1608,7 @@ static long collision_leaf_test_vector(
 				projection = absolute_j >= absolute_i ? _y : _x;
 			projection_sign =
 				projection_sign_from_vector3d(&plane->n, projection) !=
-				(reference->plane_designator & LONG_MIN ? TRUE : FALSE);
+				(BSP_FLAGGED_INDEX(reference->plane_designator) & LONG_MIN ? TRUE : FALSE);
 			hit_point.x = vector->i*t + point->x;
 			hit_point.y = vector->j*t + point->y;
 			hit_point.z = vector->k*t + point->z;
@@ -1595,7 +1616,7 @@ static long collision_leaf_test_vector(
 			surface_index = bsp2d_test_point(
 				&bsp->bsp2d.nodes,
 				&point2d,
-				reference->root_index);
+				BSP_FLAGGED_INDEX(reference->root_index));
 			if (!test_surface ||
 				collision_surface_test_point(
 					bsp,
@@ -1730,7 +1751,7 @@ static void bsp3d_test_sphere_recursive(
 				data->stack_depth>=0 && data->stack_depth<MAXIMUM_BSP3D_DEPTH);
 			data->plane_stack[data->stack_depth++] =
 				node->plane_designator | LONG_MIN;
-			bsp3d_test_sphere_recursive(data, node->children[0]);
+			bsp3d_test_sphere_recursive(data, BSP_FLAGGED_INDEX(node->children[0]));
 
 			data->stack_depth--;
 			match_assert(
@@ -1739,13 +1760,13 @@ static void bsp3d_test_sphere_recursive(
 				data->stack_depth>=0 && data->stack_depth<MAXIMUM_BSP3D_DEPTH);
 			data->plane_stack[data->stack_depth++] =
 				node->plane_designator & LONG_MAX;
-			bsp3d_test_sphere_recursive(data, node->children[1]);
+			bsp3d_test_sphere_recursive(data, BSP_FLAGGED_INDEX(node->children[1]));
 			data->stack_depth--;
 
 			return;
 		}
 
-		node_index = node->children[child_index];
+		node_index = BSP_FLAGGED_INDEX(node->children[child_index]);
 	}
 
 	if (node_index != NONE)
@@ -1777,11 +1798,11 @@ static void bsp3d_test_sphere_recursive(
 
 			for (stack_index = 0; stack_index < data->stack_depth; stack_index++)
 			{
-				if (data->plane_stack[stack_index] == reference->plane_designator)
+				if (data->plane_stack[stack_index] == BSP_FLAGGED_INDEX(reference->plane_designator))
 				{
 					real_plane3d const *plane = TAG_BLOCK_GET_ELEMENT(
 						&data->bsp->bsp3d.planes,
-						reference->plane_designator & LONG_MAX,
+						BSP_FLAGGED_INDEX(reference->plane_designator) & LONG_MAX,
 						real_plane3d);
 					real plane_distance = -plane3d_distance_to_point(plane, data->center);
 					real_point3d projected_center;
@@ -1806,13 +1827,13 @@ static void bsp3d_test_sphere_recursive(
 					data->projection_axis = projection;
 					data->projection_sign =
 						projection_sign_from_vector3d(&plane->n, projection) !=
-						(reference->plane_designator & LONG_MIN ? TRUE : FALSE);
+						(BSP_FLAGGED_INDEX(reference->plane_designator) & LONG_MIN ? TRUE : FALSE);
 					project_point3d(
 						&projected_center,
 						data->projection_axis,
 						data->projection_sign,
 						&data->center2d);
-					bsp2d_test_sphere_recursive(data, reference->root_index);
+					bsp2d_test_sphere_recursive(data, BSP_FLAGGED_INDEX(reference->root_index));
 					break;
 				}
 			}
@@ -1852,7 +1873,7 @@ static boolean collision_bsp_test_vector_recursive(
 
 			if (collision_bsp_test_vector_recursive(
 				data,
-				node->children[!front],
+				BSP_FLAGGED_INDEX(node->children[!front]),
 				t0,
 				t))
 			{
@@ -1865,7 +1886,7 @@ static boolean collision_bsp_test_vector_recursive(
 			data->last_plane_index = node->plane_designator;
 			if (collision_bsp_test_vector_recursive(
 				data,
-				node->children[front],
+				BSP_FLAGGED_INDEX(node->children[front]),
 				t,
 				t1))
 			{
@@ -1874,7 +1895,7 @@ static boolean collision_bsp_test_vector_recursive(
 		}
 		else if (collision_bsp_test_vector_recursive(
 			data,
-			node->children[reaches_front],
+			BSP_FLAGGED_INDEX(node->children[reaches_front]),
 			t0,
 			t1))
 		{
@@ -2146,17 +2167,17 @@ static boolean bsp3d_test_pill_recursive(
 			data->plane_stack[data->stack_depth++] = front ?
 				(node->plane_designator | LONG_MIN) :
 				(node->plane_designator & LONG_MAX);
-			if (bsp3d_test_pill_recursive(data, node->children[!front]))
+			if (bsp3d_test_pill_recursive(data, BSP_FLAGGED_INDEX(node->children[!front])))
 			{
 				hit = TRUE;
 			}
 			data->stack_depth--;
-			if (bsp3d_test_pill_recursive(data, node->children[front]))
+			if (bsp3d_test_pill_recursive(data, BSP_FLAGGED_INDEX(node->children[front])))
 			{
 				hit = TRUE;
 			}
 		}
-		else if (bsp3d_test_pill_recursive(data, node->children[reaches_front]))
+		else if (bsp3d_test_pill_recursive(data, BSP_FLAGGED_INDEX(node->children[reaches_front])))
 		{
 			hit = TRUE;
 		}
@@ -2184,11 +2205,11 @@ static boolean bsp3d_test_pill_recursive(
 
 			for (stack_index = 0; stack_index < data->stack_depth; stack_index++)
 			{
-				if (data->plane_stack[stack_index] == reference->plane_designator)
+				if (data->plane_stack[stack_index] == BSP_FLAGGED_INDEX(reference->plane_designator))
 				{
 					real_plane3d const *plane = TAG_BLOCK_GET_ELEMENT(
 						&data->bsp->bsp3d.planes,
-						reference->plane_designator & LONG_MAX,
+						BSP_FLAGGED_INDEX(reference->plane_designator) & LONG_MAX,
 						real_plane3d);
 					real distance0 = plane3d_distance_to_point(plane, data->point);
 					real dot = dot_product3d(data->vector, &plane->n);
@@ -2224,7 +2245,7 @@ static boolean bsp3d_test_pill_recursive(
 						data->projection_axis = projection;
 						data->projection_sign =
 							projection_sign_from_vector3d(&plane->n, projection) !=
-							(reference->plane_designator & LONG_MIN ? TRUE : FALSE);
+							(BSP_FLAGGED_INDEX(reference->plane_designator) & LONG_MIN ? TRUE : FALSE);
 						pill_point.x = data->vector->i*t + data->point->x;
 						pill_point.y = data->vector->j*t + data->point->y;
 						pill_point.z = data->vector->k*t + data->point->z;
@@ -2240,7 +2261,7 @@ static boolean bsp3d_test_pill_recursive(
 						surface_index = bsp2d_test_point(
 							&data->bsp->bsp2d.nodes,
 							&point2d,
-							reference->root_index);
+							BSP_FLAGGED_INDEX(reference->root_index));
 						if (collision_surface_test_point(
 							data->bsp,
 							0,
@@ -2256,7 +2277,7 @@ static boolean bsp3d_test_pill_recursive(
 								struct collision_surface);
 
 							data->result->t = t;
-							if (reference->plane_designator & LONG_MIN)
+							if (BSP_FLAGGED_INDEX(reference->plane_designator) & LONG_MIN)
 							{
 								real_plane3d *result_plane = &data->result->plane;
 
@@ -2292,7 +2313,7 @@ static boolean bsp3d_test_pill_recursive(
 							data->projection_axis,
 							data->projection_sign,
 							(real_point2d *)&data->vector2d);
-						if (bsp2d_test_pill_recursive(data, reference->root_index))
+						if (bsp2d_test_pill_recursive(data, BSP_FLAGGED_INDEX(reference->root_index)))
 						{
 							hit = TRUE;
 						}

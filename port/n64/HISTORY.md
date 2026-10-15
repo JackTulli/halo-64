@@ -5,6 +5,126 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+15 October, evening: the Halo 64 ROM Builder, a Windows program for
+players (the user: drag and drop the Halo ISO or the maps folder, build
+the ROM, no build process). tools/n64/rombuilder.py runs what
+tools/n64_build.py's ninja build runs for each cartridge's files -- the
+maps (convert.py, three at a time, each in a process of its own: ~800 MB
+each), the menu (ui.py), the title music (music.py, once for both
+cartridges), the sound bank, prune, mkdfs -- and makes the ROM with the
+cartridge's prebuilt program (the build's compressed, stripped ELF and
+its symbols: code, no Halo data), n64tool and ed64romconfig.
+tools/n64/xiso.py reads an Xbox disc image (XDVDFS: the volume descriptor
+32 sectors into the game partition -- at 0 in a trimmed image, 0x18300000
+in a whole disc's -- and each directory a binary tree of entries); the maps
+are copied out of it to the work folder (%LOCALAPPDATA%\Halo64RomBuilder)
+and deleted after, the sounds' cache kept. tools/n64/rombuilder_gui.py is
+the window (tkinter, tkinterdnd2's drag and drop, sv-ttk's look): drop
+zone, the two cartridges, the output folder, Build, progress, the log.
+libdragon's mksprite, audioconv64, mkdfs, n64tool and ed64romconfig are
+built for Windows with MinGW-w64, statically
+(tools/n64/build_windows_tools.sh); tools/n64/package_rombuilder.py
+packages it all with PyInstaller (~27 MB zipped), the converters running
+as the program itself ("--worker <module>", their output in log files: a
+windowed program has no console). For Windows the converters call the
+tools through tools/n64/toolpaths.py: their folder (N64_TOOLS, else
+$N64_INST/bin), .exe, paths with forward slashes (mksprite names its
+output after the input's part past the last /: with backslashes it wrote
+"<folder>/C:\\...") and no console window (one each, from a windowed
+parent: slow, flashing, and now and then 0xC0000142). The title music is
+resampled by audioconv64 (libsamplerate) instead of ffmpeg. Checked: from
+the Xbox disc image, in WSL, both cartridges in 16.7 minutes with cold
+caches, their files byte for byte the ninja build's but the title music's
+four (the resampler).
+
+15 October, afternoon: the campaign's Covenant, memory and warthog (the
+user: barely any enemies spawn, out-of-memory errors, a warthog belongs by
+the base, the "dropships" are invisible but solid). Halo places a level's
+objects at the start; a30's half on the cartridge has ~435, of them ~300
+trees and boulders, ~230 KB of the 256 KB of object memory the N64 gives
+Halo, and the encounters' actors (a biped ~7 KB with its nodes) found no
+room: object_new failed ("OUT OF OBJECTS" on the console, which Halo prints
+on the screen) and n64_campaign.c counted each such actor as placed and
+down, so whole squads and waves never came. Now the scenery and ambient
+sounds are left out of the start's placing (tools/n64/campaign.py
+STREAMED_PLACEMENTS: "not placed" bit 0 set) and n64_campaign.c
+stream_scenery makes them with Halo's object_new_from_scenario within 58
+units of a player (past the fog's end) and deletes them past 66; an actor
+with no room is tried again two seconds later instead of being counted
+down (and one whose weapon found no room is not placed without it); four
+bodies are kept, not twelve; the campaign's object memory is 288 KB. The
+converter keeps only placements in the open space of the BSP on the
+cartridge (campaign.py Placements, its collision's test_point), leaves out
+Halo's particle emitters (objects with nothing else to them on the N64),
+the cutscenes' props and -- at the user's word -- a30's crashed lifepods:
+the "invisible dropships" were these, their insides' model at the highest
+level of detail finding no room in the models' cache once the ground's
+tiles took ~85 KB of the campaign's heap (~0.67 MB beside the 3.2 MB map
+image). The campaign has no colour tiles (the ground's vertex colours with
+the detail maps' tint), and its encounter table only the squads that can
+start on the cartridge's BSP (31 of 78). The warthog: the vehicles' blocks
+are kept, and a vehicle of CAMPAIGN_VEHICLES (a30's warthog by the marines'
+base, at (-132, -31)) is placed at the start; the image grows ~75 KB for
+it, ~30 KB less for the lifepods. The FPS counter has two more lines on a
+campaign level: MODELS (the cache's KB, the models that found no room and
+were drawn as nothing) and the game's objects, the share of their memory
+in use, the actors and the scenery made.
+
+15 October, later: Blood Gulch's sky and fog as the original's (the user:
+the reddish-brown fog looked like a dust storm). No sky was drawn in a
+game: past the draw distance the frame was cleared to the fog's colour,
+the sky's outdoor fog, Blood Gulch's pale peach (1.0, 0.90, 0.77) -- in
+Halo a light haze (at most 40% dense, 3 to 100 units: a fifth at the
+N64's 55), here opaque where the level ends, over a peach sky. Its sky,
+"clear afternoon", is a dome under a radial gradient seen from above,
+deep blue overhead (0, 0, 143) to pale blue at the rim (180, 202, 224),
+the radius the cosine of the height, under light grey puffy clouds.
+n64_render.c draw_sky now fills each view from the horizon up with
+strips whose rows take the sky's colour at their height (five stops,
+0-90 degrees: n64_render_set_sky), the fog the sky's colour at the
+horizon, so the level fades into it; n64_render_game.c's n64_skies table
+gives Blood Gulch's colours (each stop a third of the way to the clouds')
+and its fog a later start (0.6 of the draw distance, from 0.5). Other
+maps are as they were.
+
+15 October: the natural ground's colour map in tiles, a megatexture (the
+user: Blood Gulch's ground was not as vibrant as the original's). Halo
+lays one colour map over its natural ground (Blood Gulch's 512x512 spans
+the map) under detail maps repeating every metre or two; the RDP samples
+two textures a pixel and the detail map's mipmaps took both, so the
+colour went on the vertices, 64x64 seven units apart -- grass, dirt and
+paths blurred to beige. tools/n64/terrain_tiles.py gives each terrain
+batch of a level (the 1-2 player levels and the campaign's; the 3-4
+player levels keep their vertex colours) its own RGBA16 tile of the map,
+at most 1024 texels and no finer than the map, the light baked in from
+the lightmap under each texel (the terrain's triangles in the map's
+coordinates), addressed with the batch's own detail coordinates shifted
+right and wrapped (a texel stored at its coordinate mod the tile's
+width): rom:/levels/<map>.tiles. Tiles over 256 texels are read when
+their batch comes within 18 units (24 slots of 2 KB, 2 reads a frame,
+the least recently drawn first), a copy of at most 8x8 staying in memory
+for the distance. n64_render.c (MATERIAL_TILED) draws tile x (0.5 +
+detail) in two cycles: the detail map's 32x32 level faded to grey by the
+LOD fraction, which the RDP works out for a combiner that asks for it
+without mipmapping -- with the triangles' max level 1 (SOMX_NUMLODS, which
+tiny3d copies into its triangles) it rises from 0 to 1 as two detail
+texels come to share a pixel, a few units away on flat ground. TERRAIN
+DETAIL is now four levels (the user's ask): full (the ground's detail at
+every distance, the default), high (faded), medium (high without rock and
+earth's overlays), low (no detail maps); the smudge hunt's modes (every
+mipmap, no mipmaps) are gone.
+Blood Gulch: 103 tiles, 16 KB in memory, 176 KB on the cartridge;
+checked offline by drawing the converted files top-down as the RDP
+addresses them. The first build doubled colour x light as the level's
+other textures are, and the user found it blown out: Halo's detail
+functions do the doubling (twice the detail texel), and Blood Gulch's
+grass detail is green, so the tiles (and the vertex colours of the
+untiled ground) take the colour map times its detail maps' average
+colours (level.py detail_tint: the primary's where the map's alpha is
+high, the secondary's where low, then the micro detail's) times the
+light. PIL scales RGBA premultiplied, which had blackened the map where
+its alpha is 0 (the grass): colour and alpha are scaled apart.
+
 14 October, afternoon: the powerups in their colours (the user: they were
 all grey). The overshield and active camouflage are a metal frame
 ("powerup edge"), a few glass panels and an energy orb, a transparent

@@ -115,7 +115,7 @@ long bsp3d_test_point(
 			node->plane_designator,
 			real_plane3d);
 
-		node_index = node->children[plane3d_distance_to_point(plane, point) >= 0.f];
+		node_index = BSP_FLAGGED_INDEX(node->children[plane3d_distance_to_point(plane, point) >= 0.f]);
 	}
 	while (!(node_index & LONG_MIN));
 
@@ -179,7 +179,7 @@ long bsp3d_clip_line_to_leaves(
 		{
 			real_point3d const *c0 = p0_flags[child_index == 0] ? &intersection : p0;
 			real_point3d const *c1 = p1_flags[child_index == 0] ? &intersection : p1;
-			long child = node->children[child_index];
+			long child = BSP_FLAGGED_INDEX(node->children[child_index]);
 
 			if (child & LONG_MIN)
 			{
@@ -333,16 +333,16 @@ long bsp3d_clip_polygon_to_leaves_recursive(
 	{
 		if (clipped_counts[child_index])
 		{
-			if (node->children[child_index] & LONG_MIN)
+			if (BSP_FLAGGED_INDEX(node->children[child_index]) & LONG_MIN)
 			{
-				if (node->children[child_index] != NONE)
+				if (BSP_FLAGGED_INDEX(node->children[child_index]) != NONE)
 				{
 					if (proc)
 					{
 						proc(
 							clipped_polygons[child_index],
 							clipped_counts[child_index],
-							node->children[child_index] & LONG_MAX,
+							BSP_FLAGGED_INDEX(node->children[child_index]) & LONG_MAX,
 							plane_designator,
 							context);
 					}
@@ -354,7 +354,7 @@ long bsp3d_clip_polygon_to_leaves_recursive(
 			{
 				intersected_leaf_count += bsp3d_clip_polygon_to_leaves_recursive(
 					bsp,
-					node->children[child_index],
+					BSP_FLAGGED_INDEX(node->children[child_index]),
 					plane_designator,
 					clipped_polygons[child_index],
 					clipped_counts[child_index],

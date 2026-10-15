@@ -57,6 +57,17 @@ int n64_firefight_results(char lines[][64], int maximum);
 int n64_firefight_status(char *text, int size);
 long n64_game_engine_postgame_state(void);
 
+#ifdef HALO_N64_CAMPAIGN
+/* ---------- a campaign level (n64_campaign.c) */
+
+void n64_campaign_begin(int difficulty);
+void n64_campaign_stop(void);
+int n64_campaign_active(void);
+void n64_campaign_tick(void);
+int n64_campaign_status(char *text, int size);
+void main_set_difficulty(short difficulty);
+#endif
+
 /* ---------- a game straight from the start, for testing */
 
 #define N64_TEST_GAME_VARIANT "slayer"
@@ -75,6 +86,40 @@ static void n64_game_start(
 	struct game_variant variant, temporary_variant;
 	char const *folder = n64_menu_map_folder(n64_choice.map);
 	char line[96];
+
+#ifdef HALO_N64_CAMPAIGN
+	/* a campaign level: no game engine (Halo's campaign), the difficulty,
+	one player; its squads and checkpoints are n64_campaign.c's */
+	if (n64_choice.campaign)
+	{
+		extern int n64_gamepad_ports[4];
+		int port;
+
+		n64_pro_weapons = FALSE;
+		game_set_game_variant(NULL);
+		main_set_difficulty((short)PIN(n64_choice.difficulty, 0, 3));
+		n64_firefight_stop();
+		n64_bots_stop();
+		n64_campaign_begin(n64_choice.difficulty);
+		player_spawn_count = (short)PIN(n64_choice.player_count, 1, 2);
+		snprintf(map_name, sizeof(map_name), "levels\\%s\\%s", folder, folder);
+		main_set_map_name(map_name);
+		main_disallow_persistent_storage();
+		n64_gamepad_ports[0] = n64_choice.ports[0];
+		for (port = 0; port < 4; port++)
+		{
+			if (port != n64_choice.ports[0])
+			{
+				n64_gamepad_ports[1] = port;
+				break;
+			}
+		}
+		snprintf(line, sizeof(line), "n64: campaign %s, difficulty %d", map_name, n64_choice.difficulty);
+		n64_log(line);
+		return;
+	}
+	n64_campaign_stop();
+#endif
 
 	/* Firefight: team slayer, every player on the red team, no score to
 	reach; the waves are n64_firefight.c's */
@@ -388,8 +433,13 @@ void n64_game_pause_frame(
 	if (!n64_paused)
 	{
 		/* (a game being played: not its end, the results coming) */
-		if (!(pressed & N64_BUTTON_START) || n64_input_blocked || !game_in_progress() ||
-			!game_engine_running() || n64_game_engine_postgame_state() != 0 || game_time_get() < 3)
+		boolean playing = game_engine_running() && n64_game_engine_postgame_state() == 0;
+
+#ifdef HALO_N64_CAMPAIGN
+		playing = playing || n64_campaign_active();
+#endif
+		if (!(pressed & N64_BUTTON_START) || n64_input_blocked || !game_in_progress() || !playing ||
+			game_time_get() < 3)
 		{
 			return;
 		}
@@ -421,6 +471,10 @@ void n64_game_pause_frame(
 	screen.note = NULL;
 	if (n64_firefight_status(note, sizeof(note)))
 		screen.note = note;
+#ifdef HALO_N64_CAMPAIGN
+	else if (n64_campaign_status(note, sizeof(note)))
+		screen.note = note;
+#endif
 	else if (game_engine && game_engine_has_teams() && game_engine->get_player_score)
 	{
 		long red = game_engine_get_team_score(0), blue = game_engine_get_team_score(1);
@@ -504,6 +558,10 @@ void n64_game_local_player(
 	*color = (short)n64_choice.colors[index];
 	*team = (short)(n64_choice.firefight ? 0 :
 		n64_menu_game_teams(n64_choice.game_type) ? n64_choice.teams[index] : index);
+#ifdef HALO_N64_CAMPAIGN
+	if (n64_choice.campaign)
+		*team = 1; /* _game_team_player: n64_campaign.c's Marines */
+#endif
 }
 
 /* ---------- memory map */
@@ -810,6 +868,9 @@ void n64_game_free_map(
 	memory the next image wants in one piece) */
 	n64_hud_release();
 	n64_particles_release();
+#ifdef HALO_N64_CAMPAIGN
+	n64_campaign_stop();
+#endif
 	/* and the level and its models: with the image in the maps' home,
 	freeing it gives the heap nothing, and the menu (its fonts, its logo:
 	menu_load) found the old level still there -- out of memory after
@@ -1042,6 +1103,9 @@ void n64_game_tick(
 		game_engine_end_game();
 	n64_profile_zone = n64_debug_flag("profile_tick");
 	n64_firefight_tick();
+#ifdef HALO_N64_CAMPAIGN
+	n64_campaign_tick();
+#endif
 	game_tick();
 	n64_profile_zone = 0;
 	/* (the audio fed between ticks too: a slow frame runs several) */

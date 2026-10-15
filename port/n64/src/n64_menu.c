@@ -49,6 +49,10 @@ static const struct
 	const char *folder, *name;
 	int picture; /* in ui/mp_map_grafix's order */
 } maps[] = {
+#ifdef HALO_N64_CAMPAIGN
+	/* (the campaign cartridge's levels: port/n64/game/n64_campaign.c) */
+	{"a30", "HALO", -1},
+#else
 	{"beavercreek", "BATTLE CREEK", 0},
 	{"sidewinder", "SIDEWINDER", 1},
 	{"damnation", "DAMNATION", 2},
@@ -62,6 +66,7 @@ static const struct
 	{"wizard", "WIZARD", 10},
 	{"putput", "CHIRON TL-34", 11},
 	{"longest", "LONGEST", 12},
+#endif
 };
 #define MAP_COUNT ((int)(sizeof(maps) / sizeof(maps[0])))
 
@@ -96,7 +101,7 @@ static const int player_colors[4] = {2, 3, 6, 5};
 static const unsigned long player_rgb[4] = {0xC82020, 0x2050D8, 0x20A040, 0xE0C820};
 static const unsigned long team_rgb[2] = {0xC82020, 0x2050D8};
 
-const char *n64_menu_map_folder(int map) { return map >= 0 && map < MAP_COUNT ? maps[map].folder : "wizard"; }
+const char *n64_menu_map_folder(int map) { return map >= 0 && map < MAP_COUNT ? maps[map].folder : maps[0].folder; }
 int n64_menu_map_count(void) { return MAP_COUNT; }
 const char *n64_menu_map_name(int map) { return map >= 0 && map < MAP_COUNT ? maps[map].name : ""; }
 const char *n64_menu_game_variant(int type) { return type >= 0 && type < GAME_TYPE_COUNT ? game_types[type].variant : "slayer"; }
@@ -152,7 +157,8 @@ static struct
 	/* pixels, HUD_INSET_STEP at a time up to HUD_INSET_MAXIMUM */
 	int hud_inset;
 	int fps_counter;
-	/* TERRAIN DETAIL (n64_render_set_terrain_detail): 0-4 */
+	/* TERRAIN DETAIL (n64_render_set_terrain_detail): full, high, medium,
+	low */
 	int terrain_detail;
 	/* the CONTROLS page: each controller's chosen row (CONTROL_*), and the
 	controller whose row the help line explains */
@@ -744,7 +750,16 @@ enum { ROW_GAME_TYPE, ROW_MAP, ROW_SCORE, ROW_BOTS, ROW_START, ROW_COUNT };
 /* bots (port/n64/game/n64_bots.c): at most this many, whatever the
 players (each biped costs ~2.7 ms of a tick: many will be slow) */
 #define MAXIMUM_BOTS 8
+#ifdef HALO_N64_CAMPAIGN
+/* (the campaign cartridge: CAMPAIGN where MULTIPLAYER is, no FIREFIGHT) */
+enum { TITLE_MULTIPLAYER, TITLE_CONTROLS, TITLE_SETTINGS, TITLE_COUNT, TITLE_FIREFIGHT = -1 };
+#define CAMPAIGN_CARTRIDGE 1
+#else
 enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE_COUNT };
+#define CAMPAIGN_CARTRIDGE 0
+#endif
+/* a game played at a difficulty, not to a score: Firefight, a campaign */
+#define DIFFICULTY_GAME(c) ((c)->firefight || (c)->campaign)
 enum { CONTROL_SCHEME, CONTROL_CROUCH, CONTROL_LOOK, CONTROL_FIRE, CONTROL_STICK_SPEED, CONTROL_C_SPEED,
 	CONTROL_RUMBLE, CONTROL_COUNT };
 /* the buzz a controller gives when its rumble is turned on (frames) */
@@ -765,17 +780,11 @@ static int resolution_step(int chunky, int step)
 		i++;
 	return resolution_order[(i + step + 4) % 4];
 }
-static const char *const terrain_details[5] = {"FULL", "NO OVERLAY", "ALL MIPS", "OFF", "NO MIPS"};
-/* (the order the values come in on the menu: off last) */
-static const int terrain_order[5] = {0, 1, 2, 4, 3};
+static const char *const terrain_details[4] = {"FULL", "HIGH", "MEDIUM", "LOW"};
 
 static int terrain_step(int value, int step)
 {
-	int i = 0;
-
-	while (i < 4 && terrain_order[i] != value)
-		i++;
-	return terrain_order[(i + step + 5) % 5];
+	return (value + step + 4) % 4;
 }
 #define HUD_INSET_STEP 4
 #define HUD_INSET_MAXIMUM 20
@@ -852,7 +861,7 @@ static int settings_unpack(const unsigned char *bytes)
 	menu.widescreen = bytes[10] != 0;
 	menu.hud_inset = bytes[11] <= HUD_INSET_MAXIMUM && !(bytes[11] % HUD_INSET_STEP) ? bytes[11] : 0;
 	menu.fps_counter = bytes[12] != 0;
-	menu.terrain_detail = bytes[14] <= 4 ? bytes[14] : 0;
+	menu.terrain_detail = bytes[14] <= 3 ? bytes[14] : 0;
 	for (int p = 0; p < 4; p++)
 	{
 		const unsigned char *controls = bytes + SAVED_CONTROLS + p * 6;
@@ -926,14 +935,19 @@ static void setting_row(int x0, int x1, int y, int selected, struct n64_font *fo
 
 static void draw_title(int item)
 {
+#ifdef HALO_N64_CAMPAIGN
+	static const char *items[TITLE_COUNT] = {"CAMPAIGN", "CONTROLS", "SETTINGS"};
+#else
 	static const char *items[TITLE_COUNT] = {"MULTIPLAYER", "FIREFIGHT", "CONTROLS", "SETTINGS"};
+#endif
 
 	/* Halo's logo (with its drawing's lines) across the top, centred */
 	if (menu.logo)
 		blit(menu.logo, (SCREEN_W - menu.logo->width) / 2, 30, 1.f);
 	for (int i = 0; i < TITLE_COUNT; i++)
 		list_item(SCREEN_W / 2, 306 + i * 36, 280, i == item, items[i]);
-	text_centered(menu.small, SCREEN_W / 2, 450, TEXT_DIM, "SPLIT SCREEN   -   UP TO 4 PLAYERS");
+	text_centered(menu.small, SCREEN_W / 2, 450, TEXT_DIM,
+		CAMPAIGN_CARTRIDGE ? "THE SECOND MISSION" : "SPLIT SCREEN   -   UP TO 4 PLAYERS");
 }
 
 /* the CONTROLS page: a panel for each controller (two by two), its own rows
@@ -1052,7 +1066,7 @@ static void draw_settings(int item)
 		{"HALF: POSES, YOUR GUN'S TOO, AT HALF THE RATE", "(HALVED AGAIN WITH 3 OR 4 PLAYERS)"},
 		{"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
 		{"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES;", "OFF IN SPLIT: LOW, NONE WITH 3-4 PLAYERS (FASTER)"},
-		{"FULL: MIPMAPS TO 16X16; ALL MIPS: TO 8X8, AS", "BEFORE; NO MIPS: NONE (THE CONSOLE'S SMUDGES)"},
+		{"FULL: GROUND DETAIL AT EVERY DISTANCE; HIGH: IT", "FADES; MEDIUM: LESS ON ROCK; LOW: NONE (FASTER)"},
 		{"ANAMORPHIC: A 16:9 PICTURE, FOR A SCREEN", "THAT STRETCHES THE IMAGE TO 16:9"},
 		{"MOVES THE HUD IN FROM THE SCREEN'S EDGES, FOR", "TELEVISIONS THAT CUT THEM OFF"},
 		{"FRAMES A SECOND AND TIMINGS AT THE TOP", ""},
@@ -1071,7 +1085,7 @@ static void draw_settings(int item)
 	setting_row(112, 528, 173, item == SETTING_VIEW_MODEL, menu.large, "VIEW MODEL",
 		menu.view_model == 3 ? "OFF IN SPLIT" : menu.view_model == 2 ? "HIGH" : menu.view_model == 1 ? "MEDIUM" : "LOW");
 	setting_row(112, 528, 198, item == SETTING_TERRAIN, menu.large, "TERRAIN DETAIL",
-		terrain_details[menu.terrain_detail >= 0 && menu.terrain_detail <= 4 ? menu.terrain_detail : 0]);
+		terrain_details[menu.terrain_detail >= 0 && menu.terrain_detail <= 3 ? menu.terrain_detail : 0]);
 	if (menu.hud_inset)
 		snprintf(value, sizeof(value), "%d PIXELS", menu.hud_inset);
 	else
@@ -1098,16 +1112,16 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 	char value[48];
 	/* (Firefight: the difficulty in the game type's row, no score; the
 	players one team) */
-	int teams = !c->firefight && n64_menu_game_teams(c->game_type);
+	int teams = !DIFFICULTY_GAME(c) && n64_menu_game_teams(c->game_type);
 
-	page(c->firefight ? "FIREFIGHT" : "MULTIPLAYER", "SPLIT SCREEN");
+	page(c->campaign ? "CAMPAIGN" : c->firefight ? "FIREFIGHT" : "MULTIPLAYER", c->campaign ? "ONE PLAYER" : "SPLIT SCREEN");
 	/* the rows on the left: what it is above, its value below */
 	for (int r = 0; r < ROW_COUNT; r++)
 	{
 		int x0 = SAFE_LEFT, x1 = 336, y = 80 + r * 50;
 		int selected = r == row;
 
-		if (c->firefight && (r == ROW_SCORE || r == ROW_BOTS))
+		if (DIFFICULTY_GAME(c) && (r == ROW_SCORE || r == ROW_BOTS))
 			continue;
 		if (selected)
 			chosen(x0, y, x1, y + 46);
@@ -1123,8 +1137,8 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 			continue;
 		}
 		menu_text(menu.small, x0 + 14, y + 18, selected ? TEXT_COLOR : TEXT_DIM,
-			c->firefight && r == ROW_GAME_TYPE ? "DIFFICULTY" : labels[r]);
-		if (r == ROW_GAME_TYPE && c->firefight)
+			DIFFICULTY_GAME(c) && r == ROW_GAME_TYPE ? "DIFFICULTY" : labels[r]);
+		if (r == ROW_GAME_TYPE && DIFFICULTY_GAME(c))
 			snprintf(value, sizeof(value), "%s", difficulties[c->difficulty & 3]);
 		else if (r == ROW_GAME_TYPE)
 			snprintf(value, sizeof(value), "%s", game_types[c->game_type].name);
@@ -1151,7 +1165,13 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 	panel(352, 84, SAFE_RIGHT, 212, 0xC0000000);
 	blit(picture(&menu.map_picture, "map", maps[c->map].picture), 352, 84, 1.f);
 	frame_line(350, 82, SAFE_RIGHT + 2, 214, FRAME_COLOR);
-	if (c->firefight)
+	if (c->campaign)
+	{
+		text_centered(menu.large, 480, 150, TEXT_BRIGHT, "HALO");
+		text_centered(menu.large, 480, 256, TEXT_COLOR, "FIND THE SURVIVORS");
+		text_centered(menu.small, 480, 282, TEXT_DIM, "CHECKPOINTS AS YOU GO");
+	}
+	else if (c->firefight)
 	{
 		text_centered(menu.large, 480, 256, TEXT_COLOR, "COVENANT IN WAVES");
 		text_centered(menu.small, 480, 282, TEXT_DIM, "SHARED LIVES");
@@ -1226,7 +1246,10 @@ static void draw_loading(const struct n64_menu_choice *c)
 	int width = n64_render_screen_width(), middle = n64_render_screen_height() / 2;
 	int high = width >= SCREEN_W;
 
-	snprintf(text, sizeof(text), "%s ON %s", c->firefight ? "FIREFIGHT" : game_types[c->game_type].name, maps[c->map].name);
+	if (c->campaign)
+		snprintf(text, sizeof(text), "%s, %s", maps[c->map].name, difficulties[c->difficulty & 3]);
+	else
+		snprintf(text, sizeof(text), "%s ON %s", c->firefight ? "FIREFIGHT" : game_types[c->game_type].name, maps[c->map].name);
 	panel(0, middle - (high ? 40 : 24), width, middle + (high ? 40 : 24), 0xC0000818);
 	text_centered(menu.large, width / 2, middle - (high ? 4 : 2), TEXT_BRIGHT, "LOADING");
 	text_centered(menu.small, width / 2, middle + (high ? 24 : 16), TEXT_COLOR, text);
@@ -1255,6 +1278,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 	n64_render_show_counter(0);
 	if (c->map < 0 || c->map >= MAP_COUNT)
 		c->map = n64_menu_map_from_folder("wizard");
+	if (c->map < 0)
+		c->map = 0;
 	if (c->game_type < 0 || c->game_type >= GAME_TYPE_COUNT)
 		c->game_type = 0;
 	if (score_index < 0)
@@ -1310,11 +1335,12 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					continue;
 				}
 				c->firefight = item == TITLE_FIREFIGHT;
+				c->campaign = CAMPAIGN_CARTRIDGE && item == TITLE_MULTIPLAYER;
 				{
 					/* (normal, the first time) */
 					static int difficulty_chosen;
 
-					if (c->firefight && !difficulty_chosen)
+					if (DIFFICULTY_GAME(c) && !difficulty_chosen)
 					{
 						c->difficulty = 1;
 						difficulty_chosen = 1;
@@ -1434,7 +1460,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				{
 					/* A joins (on the START row it starts the game, once
 					someone has) */
-					if (pad->pressed.a && !(row == ROW_START && c->player_count) && c->player_count < 4)
+					if (pad->pressed.a && !(row == ROW_START && c->player_count) && c->player_count < (c->campaign ? 1 : 4))
 					{
 						c->ports[c->player_count] = p;
 						c->teams[c->player_count] = c->player_count & 1;
@@ -1458,10 +1484,10 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 							screen = SCREEN_TITLE;
 						continue;
 					}
-					if ((pad->pressed.z || pad->pressed.r) && !c->firefight)
+					if ((pad->pressed.z || pad->pressed.r) && !DIFFICULTY_GAME(c))
 						c->teams[slot] ^= 1;
 					/* (A on the bots' row: their skill) */
-					if (pad->pressed.a && row == ROW_BOTS && !c->firefight)
+					if (pad->pressed.a && row == ROW_BOTS && !DIFFICULTY_GAME(c))
 						c->bot_skill = (c->bot_skill + 1) & 3;
 				}
 				if (pad->up)
@@ -1469,13 +1495,13 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				if (pad->down)
 					row = (row + 1) % ROW_COUNT;
 				/* (Firefight has no score or bots rows) */
-				while (c->firefight && (row == ROW_SCORE || row == ROW_BOTS))
+				while (DIFFICULTY_GAME(c) && (row == ROW_SCORE || row == ROW_BOTS))
 					row = (row + (pad->up ? ROW_COUNT - 1 : 1)) % ROW_COUNT;
 				if (pad->left || pad->right)
 				{
 					int step = pad->right ? 1 : -1;
 
-					if (row == ROW_GAME_TYPE && c->firefight)
+					if (row == ROW_GAME_TYPE && DIFFICULTY_GAME(c))
 						c->difficulty = (c->difficulty + 4 + step) % 4;
 					else if (row == ROW_GAME_TYPE)
 					{
@@ -1496,7 +1522,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 		}
 		c->score = game_types[c->game_type].scores[score_index];
 		for (int i = 0; i < c->player_count; i++)
-			c->colors[i] = c->firefight ? player_colors[i & 3] :
+			c->colors[i] = DIFFICULTY_GAME(c) ? player_colors[i & 3] :
 				n64_menu_game_teams(c->game_type) ? (c->teams[i] ? 3 : 2) : player_colors[i & 3];
 
 		/* (the settings kept when their page is left) */

@@ -9,9 +9,10 @@ whose samples are Xbox ADPCM in the cache file: 4-bit IMA ADPCM in
 not itself a sample -- then 64 samples' nibbles, interleaved between the
 channels 4 bytes at a time; as port/linux/src/dsound_sdl.c decodes them:
 ffmpeg's IMA WAV decoder outputs the header as a 65th sample). The chains
-are joined (each block starts afresh), decoded here, resampled with
-ffmpeg, and compressed to VADPCM wav64 files with libdragon's audioconv64,
-which the menu streams from the cartridge:
+are joined (each block starts afresh), decoded here, and resampled and
+compressed to VADPCM wav64 files with libdragon's audioconv64 (its
+libsamplerate; ffmpeg did the resampling, which the Windows ROM builder
+would have had to carry), which the menu streams from the cartridge:
 
     music/title_in.wav64, music/title_loop0..2.wav64
 
@@ -24,13 +25,15 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from . import toolpaths
 from .tagdefs import TagDefinitions
+from .toolpaths import tool
 from .xboxmap import XboxMap
 
 TITLE_MUSIC = "sound\\music\\title1\\title1"
 # the N64's playback rate (the menu's mixer, n64_menu.c)
 RATE = 22050
-AUDIOCONV = Path.home() / "n64" / "toolchain" / "bin" / "audioconv64"
+AUDIOCONV = Path(tool("audioconv64"))
 SAMPLE_RATES = {0: 22050, 1: 44100}
 
 
@@ -134,13 +137,16 @@ def convert(xmap, defs, filesystem):
             versions, rate, channels = chains(xmap, defs, tag)
             for i, data in enumerate(versions):
                 out_name = name if name == "title_in" else f"{name}{i}"
-                decoded = work / f"{out_name}.pcm.wav"
-                decoded.write_bytes(pcm_wav(decode_xbox_adpcm(data, channels), rate, channels))
-                pcm = work / f"{out_name}.wav"
-                subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(decoded), "-ar", str(RATE), "-ac", "2",
-                                "-c:a", "pcm_s16le", str(pcm)], check=True)
-                subprocess.run([str(AUDIOCONV), "--wav-compress", "1", "-o", str(music), str(pcm)], check=True,
-                               capture_output=True)
+                pcm = decode_xbox_adpcm(data, channels)
+                if channels == 1:
+                    # (the menu's music is stereo)
+                    samples = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+                    pcm = struct.pack(f"<{2 * len(samples)}h", *(s for s in samples for _ in range(2)))
+                # (audioconv64 names its output after its input)
+                decoded = work / f"{out_name}.wav"
+                decoded.write_bytes(pcm_wav(pcm, rate, 2))
+                toolpaths.run([str(AUDIOCONV), "--wav-resample", str(RATE), "--wav-compress", "1", "-o", str(music),
+                                str(decoded)], check=True, capture_output=True)
                 seconds = len(data) / (36 * channels) * 64 / rate
                 written.append(f"{out_name} ({seconds:.0f} s)")
     return written

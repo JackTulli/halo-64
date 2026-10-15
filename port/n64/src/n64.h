@@ -239,6 +239,13 @@ void n64_render_set_clear_color(unsigned long rgb);
 reached at end, nothing drawn past it (the frame cleared to the colour);
 end 0: no fog, the views' own far planes */
 void n64_render_set_fog(unsigned long rgb, float start, float end);
+/* the sky behind the views, while there is fog: its colours (0xRRGGBB) at
+0, 15, 30, 50 and 90 degrees above the horizon (N64_SKY_STOPS), or NULL:
+the fog's colour alone */
+#define N64_SKY_STOPS 5
+void n64_render_set_sky(const unsigned long *colors);
+/* the FPS counter's line of the game's own (n64_campaign.c), 0 for none */
+int n64_game_debug_line(char *text, int size);
 /* the views this frame: small views draw objects' far versions sooner */
 void n64_render_set_view_count(int count);
 /* then the first-person weapon: its own near plane, drawn over the world */
@@ -436,6 +443,9 @@ struct n64_menu_choice
 	/* the next menu opens on its title (the pause menu's MAIN MENU), not
 	the game's setup; cleared there */
 	int to_title;
+	/* a campaign level (the campaign cartridge, HALO_N64_CAMPAIGN): the
+	map, the difficulty */
+	int campaign;
 };
 
 /* runs the menu until a game is chosen (after a game, its results first:

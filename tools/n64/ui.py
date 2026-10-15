@@ -22,6 +22,7 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
+from . import toolpaths
 from .bitmaps import bitmap_images, decode
 from .level import MKSPRITE, MATERIAL_TWO_SIDED
 from .models import ModelConverter, strip_triangles, transform_point
@@ -137,7 +138,7 @@ def export_font(xmap, defs, tag, out):
     name = FONTS[tag.name]
     png = out / f"{name}.png"
     atlas.save(png)
-    subprocess.run([MKSPRITE, "--format", "I8", "--compress", "1", "-o", str(out), str(png)], check=True,
+    toolpaths.run([MKSPRITE, "--format", "I8", "--compress", "1", "-o", str(out), str(png)], check=True,
                    capture_output=True)
     png.unlink()
     table = b"H64F" + struct.pack(">hhH", ascent, descent, len(glyphs))
@@ -211,7 +212,7 @@ def export_pictures(xmap, defs, out):
             img = img.resize((width, height), Image.LANCZOS)
             png = out / (f"{name}.png" if name == "logo" else f"{name}{i}.png")
             img.save(png)
-            subprocess.run([MKSPRITE, "--format", fmt, "--compress", "1", "-o", str(out), str(png)], check=True,
+            toolpaths.run([MKSPRITE, "--format", fmt, "--compress", "1", "-o", str(out), str(png)], check=True,
                            capture_output=True)
             png.unlink()
             written.append(png.stem)
@@ -409,7 +410,7 @@ class UIModels(ModelConverter):
             scale_log = -max(0, round(math.log2(max(1.0, repeats * HULL_DETAIL_SIZE / HULL_SIZE))))
             command += ["--detail", f"{detail_png},I4,{HULL_DETAIL_FACTOR}",
                         "--detail-texparms", f"0,{scale_log},2048,0"]
-        subprocess.run(command + ["-o", str(png.parent), str(png)], check=True, capture_output=True)
+        toolpaths.run(command + ["-o", str(png.parent), str(png)], check=True, capture_output=True)
         png.unlink()
         if detail_tag is not None:
             detail_png.unlink()

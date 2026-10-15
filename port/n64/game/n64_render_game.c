@@ -174,10 +174,31 @@ nearer where Halo's own fog is opaque nearer); past it, nothing. */
 /* the fog starts at this share of the distance */
 #define N64_FOG_START 0.5f
 
+/* Maps whose sky the N64 draws (n64_render_set_sky), as Halo's looks from
+the horizon up, the fog the sky's colour at the horizon. Halo's own fog is
+a light haze (Blood Gulch's: pale peach, at most 40% dense, 3 to 100 units:
+a fifth at the N64's 55); the N64's must be opaque at its draw distance,
+where the level ends, and in that peach over a peach frame Blood Gulch
+looked like a dust storm under a peach sky. Blood Gulch's sky, "clear
+afternoon": a dome whose colour is a radial gradient seen from above -- deep
+blue overhead, (0, 0, 143), to pale blue at the rim, (180, 202, 224), the
+radius the cosine of the height -- under light grey puffy clouds; here each
+stop is a third of the way to the clouds' colour. The fog starts later than
+elsewhere: the valley's middle distance clear, as in Halo */
+static const struct n64_sky
+{
+	const char *map;
+	unsigned long colors[N64_SKY_STOPS];
+	real fog_start;
+} n64_skies[] = {
+	{"bloodgulch", {0xBBCCDD, 0xADC1DA, 0x90AAD3, 0x778CC6, 0x474AB1}, 0.6f},
+};
+
 static struct
 {
 	unsigned long color;
 	real opaque_distance;
+	real start;
 } n64_fog;
 
 static void n64_fog_for_new_map(
@@ -185,9 +206,12 @@ static void n64_fog_for_new_map(
 {
 	struct sky *sky = global_scenario_get() ? scenario_get_sky(0) : NULL;
 	char line[128];
+	int i;
 
 	n64_fog.color = 0x60708C;
 	n64_fog.opaque_distance = 0.f;
+	n64_fog.start = N64_FOG_START;
+	n64_render_set_sky(NULL);
 	if (sky)
 	{
 		real_rgb_color const *color = &sky->outdoor_fog.color;
@@ -204,6 +228,15 @@ static void n64_fog_for_new_map(
 			sky->outdoor_fog.maximum_density, sky->outdoor_fog.start_distance, sky->outdoor_fog.opaque_distance);
 		n64_log(line);
 	}
+	for (i = 0; i < (int)NUMBEROF(n64_skies); i++)
+	{
+		if (!strcmp(n64_loaded_map_name(), n64_skies[i].map))
+		{
+			n64_fog.color = n64_skies[i].colors[0];
+			n64_fog.start = n64_skies[i].fog_start;
+			n64_render_set_sky(n64_skies[i].colors);
+		}
+	}
 }
 
 static void n64_fog_for_views(
@@ -214,7 +247,7 @@ static void n64_fog_for_views(
 
 	if (n64_fog.opaque_distance > 0.f && n64_fog.opaque_distance < distance)
 		distance = n64_fog.opaque_distance;
-	n64_render_set_fog(n64_fog.color, distance * N64_FOG_START, distance);
+	n64_render_set_fog(n64_fog.color, distance * n64_fog.start, distance);
 }
 
 void render_initialize_for_new_map(

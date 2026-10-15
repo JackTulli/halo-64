@@ -786,6 +786,14 @@ void player_died(
 			player->local_player_index,
 			NONE);
 	}
+#ifdef HALO_N64_CAMPAIGN
+	/* (a campaign keeps no statistics, game_engine_can_score: counted here,
+	or players_update_before_game would spawn the dead player at the level's
+	start at once -- the campaign cartridge brings it back itself,
+	n64_player_respawn_at) */
+	if (!game_engine_running())
+		player->statistics.deaths++;
+#endif
 
 	players_globals->all_dead = TRUE;
 	data_iterator_new(
@@ -2075,6 +2083,33 @@ boolean player_teleport(
 
 	return result;
 }
+
+#ifdef HALO_N64_CAMPAIGN
+/* The campaign cartridge's checkpoints (port/n64/game/n64_campaign.c): the
+N64 keeps no saved game to go back to when the players are all dead
+(players_update_after_game), so a dead player comes back where the
+campaign chose -- a new unit with the scenario's starting profile, moved
+there. FALSE if it could not be made */
+boolean n64_player_respawn_at(
+	long player_index,
+	real_point3d const *position,
+	real facing)
+{
+	struct player_datum *player = player_get(player_index);
+	real_vector3d forward;
+
+	if (player->unit_index == NONE)
+	{
+		player_spawn(player_index);
+		if (player->unit_index == NONE)
+			return FALSE;
+	}
+	vector3d_from_angle(&forward, facing);
+	object_set_position(player->unit_index, position, &forward, global_up3d);
+	players_globals->all_dead = FALSE;
+	return TRUE;
+}
+#endif
 
 void players_debug_render(
 	void)
@@ -3913,7 +3948,11 @@ void players_update_after_game(
 	{
 		if (!game_engine_running() && !players_lost_map_started)
 		{
+#ifndef HALO_N64_CAMPAIGN
+			/* (the campaign cartridge brings them back itself:
+			n64_player_respawn_at) */
 			main_lost_map();
+#endif
 			players_lost_map_started = TRUE;
 		}
 	}

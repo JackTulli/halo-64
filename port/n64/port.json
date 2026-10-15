@@ -79,6 +79,14 @@
     "sidewinder"
   ],
   "flags": [],
+  "campaign": {
+    "comment": "the campaign cartridge (tools/n64_build.py variant): its own build of the game with HALO_N64_CAMPAIGN, its levels converted with --campaign (tools/n64/campaign.py)",
+    "maps": ["a30"],
+    "defines": ["HALO_N64_CAMPAIGN"],
+    "rom": "halo-campaign.z64",
+    "title": "HALO 64 CAMPAIGN",
+    "flags": []
+  },
   "ldflags": ["-Wl,--wrap,malloc_uncached", "-Wl,--wrap,malloc_uncached_aligned", "-Wl,--wrap,free_uncached"],
   "lto": true,
   "small_data": 8

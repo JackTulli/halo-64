@@ -201,16 +201,109 @@ class N64Policy(Policy):
         return bytes(out)
 
 
-def convert(path, output, filesystem=None):
+class CampaignPolicy(N64Policy):
+    """a campaign level's (tools/n64/campaign.py): only the tags its closure
+    keeps, without the blocks the N64 does not use"""
+
+    def __init__(self, xmap, defs, kept, single_bsp):
+        super().__init__(xmap, defs)
+        from .campaign import CAMPAIGN_DROPPED_BLOCKS
+        self.kept = kept
+        self.dropped_blocks = set(CAMPAIGN_DROPPED_BLOCKS)
+        if single_bsp:
+            # (one BSP on the cartridge: nothing to switch to)
+            self.dropped_blocks.add("Scenario.bsp switch trigger volumes[]")
+
+    def keep_tag(self, tag):
+        return tag.index in self.kept and super().keep_tag(tag)
+
+    def keep_block(self, tag, path, count):
+        if path in self.dropped_blocks:
+            return 0
+        return super().keep_block(tag, path, count)
+
+    # the level's collision (campaign.py level_collision), and what is
+    # indexed by its nodes, leaves and surfaces; every other collision BSP
+    # (the objects' collision models) in the compact layout as it is
+    LEVEL = "ScenarioStructureBSP.collision bsp[]."
+    level_collision = None
+    model_collision = {}
+
+    def override(self, tag, struct_name, field_name, address):
+        lc = self.level_collision
+        if lc is not None and struct_name == "ScenarioStructureBSPClusterPortal" and field_name == "plane index":
+            return lc["portal_planes"][address]
+        from .campaign import PLACEMENT_STRUCTS, placement_not_placed, placement_type
+        if struct_name in PLACEMENT_STRUCTS and field_name == "type":
+            return placement_type(self.map, self.defs, self.placements, struct_name, address)
+        if struct_name in PLACEMENT_STRUCTS and field_name == "not placed":
+            return placement_not_placed(self.placements, address)
+        return super().override(tag, struct_name, field_name, address)
+
+    def replace_block(self, tag, path, count, pointer):
+        from .collision import BLOCK_NAMES, compact_block_from_map
+        lc = self.level_collision
+        if lc is not None and path.startswith(self.LEVEL):
+            return lc["blocks"][BLOCK_NAMES[path[len(self.LEVEL):-2]]]
+        if lc is not None and path == "ScenarioStructureBSP.nodes[]":
+            # (the nodes' bounds: the Xbox renderer's alone)
+            return 0, b""
+        if lc is not None and path == "ScenarioStructureBSP.leaves[]":
+            # (a leaf's cluster, nothing else: structure_bsp_definitions.h,
+            # HALO_N64_CAMPAIGN)
+            return len(lc["clusters"]), struct.pack(f">{len(lc['clusters'])}h", *lc["clusters"])
+        if lc is not None and path == "ScenarioStructureBSP.pathfinding surfaces[]":
+            return len(lc["pathfinding"]), lc["pathfinding"]
+        if lc is not None and path in ("ScenarioStructureBSP.pathfinding edges[]",
+                                       "ScenarioStructureBSP.breakable surfaces[]",
+                                       "ScenarioStructureBSP.leaf map leaves[]",
+                                       "ScenarioStructureBSP.leaf map portals[]"):
+            return 0, b""
+        if ".bsps[]." in path and tag.group_name == "coll":
+            field = path.rsplit(".", 1)[1][:-2]
+            if field in BLOCK_NAMES:
+                # (the scenery's simplified: campaign.py model_collisions)
+                if count > 0 and pointer in self.model_collision:
+                    return self.model_collision[pointer]
+                return compact_block_from_map(self.map, BLOCK_NAMES[field], count, pointer)
+        return None
+
+    def data(self, tag, path, parent, raw):
+        # (the scripts are not run)
+        if path.endswith("Scenario.script string data"):
+            return None
+        return super().data(tag, path, parent, raw)
+
+
+def convert(path, output, filesystem=None, campaign=False):
     xmap = XboxMap(path)
     bsp_tag, bsp_base, bsp_size = xmap.load_bsp(0)
     source = Path(path).parent / f"{FIREFIGHT_SOURCE}.map"
-    if xmap.map_type == 1 and source.exists():
+    if xmap.map_type == 1 and source.exists() and not campaign:
         from .merge import merge_tags
         imported = merge_tags(xmap, XboxMap(source), FIREFIGHT_ROOTS)
         print(f"{xmap.name}: {len(imported)} Covenant tags from {FIREFIGHT_SOURCE}")
     repacker = Repacker(xmap, None)
-    repacker.policy = N64Policy(xmap, repacker.defs)
+    if campaign:
+        from .campaign import campaign_closure, encounter_table, mask_dropped_tags
+        closure = campaign_closure(xmap, repacker.defs, (0,))
+        kept = closure.kept
+        # (the encounters read before the tags they name are hidden)
+        table, kinds, squads, locations = encounter_table(xmap, repacker.defs, kept, closure.placements.inside)
+        print(f"{xmap.name}: {len(kept)} of {len(xmap.tags)} tags kept; {len(kinds)} actor kinds, "
+              f"{len(squads)} squads, {len(locations)} starting locations; {len(closure.placements.kept)} "
+              f"placements kept, {closure.placements.dropped} left out")
+        from .campaign import level_collision, model_collisions
+        collision = level_collision(xmap, repacker.defs, bsp_tag)
+        models = model_collisions(xmap, repacker.defs, kept)
+        mask_dropped_tags(xmap, kept)
+        repacker.policy = CampaignPolicy(xmap, repacker.defs, kept, single_bsp=True)
+        repacker.policy.encounters = table
+        repacker.policy.level_collision = collision
+        repacker.policy.placements = closure.placements
+        repacker.policy.model_collision = models
+    else:
+        repacker.policy = N64Policy(xmap, repacker.defs)
     if filesystem is not None:
         from .hud import HudExporter
         repacker.policy.hud = HudExporter(xmap, repacker.defs, xmap.name, filesystem)
@@ -276,7 +369,63 @@ def convert(path, output, filesystem=None):
     if sounds is not None:
         files, made = sounds.write(Path(filesystem).parent / "sound" / f"{xmap.name}.slist")
         print(f"{xmap.name} sounds: {files} files ({made} new), {sounds.seconds:.0f} s")
+    # a campaign level's encounters (campaign.py encounter_table)
+    if campaign:
+        enc = (Path(filesystem) if filesystem is not None else Path(output).parent) / "levels" / f"{xmap.name}.enc"
+        enc.parent.mkdir(parents=True, exist_ok=True)
+        enc.write_bytes(repacker.policy.encounters)
     return xmap, repacker, len(out), relocs
+
+
+# campaign scenery the players go inside: its highest level of detail (the
+# lower ones are its outside alone), with this many triangles
+INTERIOR_MODELS = ("lifepod_crashed",)
+INTERIOR_BUDGET = 2000
+
+
+def write_campaign_assets(xmap, repacker, filesystem):
+    """a campaign level's render geometry, models and particles: the level
+    streamed by cluster (level.py, version 5: too big to keep in memory),
+    lit at its triangles' corners; the characters at their lowest level of
+    detail; one player's sets only (no lighter set for split screen)"""
+    from .effects import EffectParticles
+    from .level import LevelBuilder, write_list
+    from .models import ModelConverter
+    builder = LevelBuilder(xmap, repacker.defs, xmap.name, filesystem, split_depth=0)
+    builder.greyscale = builder.terrain_detail = True
+    # (no colour tiles, terrain_tiles.py: ~85 KB of a campaign level's heap,
+    # which its models' cache and Halo's objects need -- the ground's colour
+    # with its detail maps' tint on its vertices instead)
+    # (no detail drawn over rock and earth: a second pass of each, three
+    # times the batches)
+    builder.streamed = True
+    # (an earlier build's tiles would still be loaded beside the level)
+    (filesystem / "levels" / f"{xmap.name}.tiles").unlink(missing_ok=True)
+    stats = builder.write(filesystem / "levels" / f"{xmap.name}.lvl", xmap.bsps[0][0])
+    print(f"{xmap.name} level: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+    characters = [t.index for t in xmap.tags if t.group_name == "mode" and t.name.startswith("characters\\")
+                  and "\\fp\\" not in t.name]
+    lowest = ("super low", "low", "medium", "high", "super high")
+    # scenery the players stand in (a30's crashed lifepods: the level
+    # starts inside one): only the highest level of detail has the inside
+    highest = ("super high", "high", "medium", "low", "super low")
+    insides = [t.index for t in xmap.tags if t.group_name == "mode" and t.name.endswith(INTERIOR_MODELS)]
+    model_sets = []
+    for quality, view_scale in VIEW_MODEL_QUALITIES:
+        suffix = f"-fp{quality}" if quality else ""
+        models = ModelConverter(xmap, repacker.defs, xmap.name + suffix, filesystem)
+        models.lod_preferences = {i: lowest for i in characters}
+        models.budget_overrides = {i: 250 for i in characters}
+        models.lod_preferences.update({i: highest for i in insides})
+        models.budget_overrides.update({i: INTERIOR_BUDGET for i in insides})
+        models.first_person_budget = int(models.first_person_budget * view_scale)
+        stats = models.write(filesystem / "levels" / f"{xmap.name}{suffix}.mdl")
+        print(f"{xmap.name}{suffix} models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+        model_sets.append(models)
+    stats = EffectParticles(xmap, repacker.defs).write(filesystem / "fx" / f"{xmap.name}.fx")
+    print(f"{xmap.name} particles: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+    write_list(filesystem / "tex" / f"{xmap.name}.list",
+               sorted(builder.used_textures.union(*(m.textures.used_textures for m in model_sets))))
 
 
 def main():
@@ -287,11 +436,17 @@ def main():
     parser.add_argument("--filesystem", type=Path,
                         help="the cartridge's file tree: the level's render geometry goes to "
                         "levels/<map>.lvl and its textures to tex/<map>/")
+    parser.add_argument("--campaign", action="store_true",
+                        help="a campaign level for a cartridge of its own (tools/n64/campaign.py)")
+    parser.add_argument("--tags-only", action="store_true", help="the tag image alone (measuring)")
     args = parser.parse_args()
-    xmap, repacker, size, relocs = convert(args.map, args.output, args.filesystem)
+    xmap, repacker, size, relocs = convert(args.map, args.output, None if args.tags_only else args.filesystem,
+                                           campaign=args.campaign)
     print(f"{xmap.name}: {size / 1e6:.2f} MB, {len(relocs)} relocations, "
           f"{repacker.policy.stream_size / 1e6:.2f} MB of animation frames streamed")
-    if args.filesystem:
+    if args.filesystem and not args.tags_only and args.campaign:
+        write_campaign_assets(xmap, repacker, args.filesystem)
+    elif args.filesystem and not args.tags_only:
         from .level import LevelBuilder
         builder = LevelBuilder(xmap, repacker.defs, xmap.name, args.filesystem)
         # textures without colour of their own in greyscale from the larger
@@ -301,6 +456,9 @@ def main():
         # rock, earth, snow: their detail maps drawn over them (not in the
         # lighter level of 3-4 player games)
         builder.overlay_detail = True
+        # the ground's colour map in tiles, the light baked in
+        # (terrain_tiles.py; not in the lighter level either)
+        builder.colour_tiles = True
         stats = builder.write(args.filesystem / "levels" / f"{xmap.name}.lvl", xmap.bsps[0][0])
         print(f"{xmap.name} level: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         # the lighter level of 3-4 player games: the BSP's own triangles,

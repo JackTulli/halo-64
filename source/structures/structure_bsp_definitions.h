@@ -30,6 +30,15 @@ enum
 
 /* ---------- structures */
 
+#ifdef HALO_N64_CAMPAIGN
+/* the campaign cartridge's: a collision leaf's cluster, nothing else (the
+bounds and the surfaces are the Xbox renderer's: structure_visibility.c,
+structures.c; tools/n64/convert.py writes them so) */
+struct structure_leaf
+{
+	short cluster_index;
+};
+#else
 struct structure_leaf
 {
 	byte_rectangle3d bounds;
@@ -38,6 +47,7 @@ struct structure_leaf
 	short surface_reference_count;
 	long first_surface_reference_index;
 };
+#endif
 
 struct structure_surface
 {

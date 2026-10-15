@@ -83,6 +83,12 @@ class Policy:
         """how many elements of a block to keep (0 drops it)"""
         return count
 
+    def replace_block(self, tag, path, count, pointer):
+        """a block made anew: (element count, its elements' bytes, already
+        big-endian, with no pointers), or None to copy the map's (count
+        elements at the map address pointer)"""
+        return None
+
     def data(self, tag, path, parent, raw):
         """the bytes to store for a data blob (already copied from the map,
         little-endian), swapped; None drops it"""
@@ -145,9 +151,11 @@ class Repacker:
             if f.kind == "pad":
                 self.image.put(dst, src)
             elif f.kind == "prim":
-                value = self.policy.override(tag, name, f.name, address) if f.size == 4 else None
-                if value is not None:
+                value = self.policy.override(tag, name, f.name, address) if f.size in (2, 4) else None
+                if value is not None and f.size == 4:
                     self.image.put_u32(dst, value)
+                elif value is not None:
+                    self.image.put(dst, struct.pack(">H", value & 0xFFFF))
                 else:
                     self.image.put(dst, swap_array(src, f.swap))
             elif f.kind == "struct":
@@ -159,6 +167,18 @@ class Repacker:
                     s = src[i * 12:(i + 1) * 12]
                     count, pointer, _ = struct.unpack("<iII", s)
                     sub = f"{path}.{f.name}[]"
+                    made = self.policy.replace_block(tag, sub, count, pointer)
+                    if made is not None:
+                        keep, blob = made
+                        target = None
+                        if keep > 0:
+                            target = self.image.alloc(len(blob), 8)
+                            self.image.put(target, blob)
+                            self.count(tag, len(blob))
+                        self.image.put_u32(dst + i * 12, keep)
+                        self.image.put_pointer(dst + i * 12 + 4, target)
+                        self.image.put_u32(dst + i * 12 + 8, 0)
+                        continue
                     keep = self.policy.keep_block(tag, sub, count) if count > 0 else 0
                     target = None
                     if keep > 0:

@@ -258,7 +258,18 @@ static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, XINPUT_GAMEP
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_X] = (b & N64_BUTTON_B) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_B] = (b & N64_BUTTON_L) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_Y] = (b & N64_BUTTON_D_UP) ? 255 : 0;
+#ifdef HALO_N64_CAMPAIGN
+	/* (the campaign cartridge: D-pad right steps the player's speed, for
+	looking round a level quickly -- n64_campaign.c; no grenade switch) */
+	if (pressed & N64_BUTTON_D_RIGHT)
+	{
+		extern int n64_campaign_speed_requests;
+
+		n64_campaign_speed_requests++;
+	}
+#else
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] = (b & N64_BUTTON_D_RIGHT) ? 255 : 0;
+#endif
 	if (crouch)
 		gamepad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
 	if (b & N64_BUTTON_D_LEFT)
