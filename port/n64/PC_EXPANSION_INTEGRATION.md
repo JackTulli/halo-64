@@ -1,6 +1,6 @@
 # PC expansion integration on Halo 64 v0.2.0
 
-**PC expansion BUILT / FROZEN: STATIC PASS and bounded native PASS; SD and hardware pending.**
+**SummerCart SD READY: static/bounded native PASS; physical hardware acceptance pending.**
 The 19-map expansion ROM is 65,945,600 bytes, with 1,163,264 bytes of headroom
 under 64 MiB. The private installer's packaged worker checks also pass within
 the boundaries below. One ordinary menu boot and a separate 172.221-second
@@ -8,15 +8,19 @@ Timberland run with one human and three bots now pass bounded native checks.
 Observed FPS remains below the 20 FPS target; no physical stability is established.
 The separate vanilla build has one bounded menu boot; that evidence
 does not transfer to the expansion. This document records merge decisions,
-artifact identities and remaining review gates. No new upstream-based ROM is
-installed on a flashcart. Preserve the existing main build, separately named
-development build and saves.
+artifact identities and remaining review gates. The versioned vanilla and PC
+expansion ROMs are now copied, flushed and hash-readback verified on SummerCart.
+Existing main/development builds and saves are preserved. EverDrive X7 remains
+staged locally. A bounded crash review is complete without a new concrete
+correctness defect or runtime patch. Its unfinished renderer fixture is excluded;
+physical reliability and intermittent M64 black-screen repair remain unproven.
 
 ## Pinned history and recovery
 
 | Role | Exact ref / identity |
 |---|---|
 | Built code checkpoint | `d330422cdf9a3146f02613c66dabd77a6273689a` |
+| Verified source/documentation checkpoint | `2412b4e8709f0642902aecb2960f68e3075886e1` (before this SD/review update) |
 | Installer parity checkpoint | `e2ab7d013358bb45d608002af2979c4816d0cc3a` |
 | Initial integration checkpoint | `51e405d047e44530b7ba9e1143075d21a0135e2d` |
 | Integration base | Upstream `v0.2.0`, `a3f98e6484b488c1ef8638a99fba0a2b33adf28b` |
@@ -56,14 +60,29 @@ That complete bundle restores the **pre-upstream** preserved commit; it does not
 contain the later integration checkpoints. The separate `c5f2954` checkpoint
 bundle/restore proofs retain their historical commit scope; they do not imply
 that subsequent P8/compression/FX-pool/ROM-guard commits are backed up by the same
-bytes. After committing the final guide, root will create the enclosing project's
+bytes. The later enclosing-project artifacts
 `upstream-20261015/handoff/pc-expansion-v0.2.0-final-integration.bundle`,
-`final-integration-patches/` and `final-integration-verification.json`. These are
-planned artifacts until their verification receipt exists. Require an actual
-standalone bundle clone plus `git fsck --full`, and a clean v0.2.0-base checkout
-with the patch series applied by `git am` and a matching complete source tree.
-The final guide commit follows the built code checkpoint without changing game
-code; do not substitute a historical bundle's successful test for these gates.
+`final-integration-patches/` and `final-integration-verification.json` are now
+verified **only through source/documentation checkpoint `2412b4e`**. The receipt
+records an actual standalone bundle clone, `git fsck --full`, and all ten patches
+applied with `git am` to clean v0.2.0 base `a3f98e6`, producing the identical full
+source tree. The bundle SHA-256 is
+`b161ab203feb73fc43748b55ed67c8a4d4df498ce4ca25ba57810b8bfb5092d2`.
+This proof covers that source snapshot, not ignored retail/tool/generated files
+or later review changes. Preserve the verified bundle and patch set unchanged.
+
+The current SD/review guide update follows that checkpoint. The bounded crash
+review admits no new runtime patch; root will commit the final reviewed guide
+and create the **new**, separately named outputs under
+`upstream-20261015/handoff/`:
+
+- `pc-expansion-v0.2.0-crash-reviewed-integration.bundle`
+- `crash-reviewed-integration-patches/`
+- `crash-reviewed-integration-verification.json`
+
+These outputs are planned, not yet verified. Require an actual standalone
+clone/fsck and clean-base `git am`/full-tree match again; do not relabel the
+`2412b4e` proof as coverage of later commits.
 
 The bundle preserves source history, not ignored dependencies, retail input data,
 SDK working changes or generated ROMs. `backup-manifest.json`,
@@ -290,14 +309,15 @@ new integration, not an invented implementation defect.
 | Content/visuals | MISSING for new upstream integration | PC weapon pickups, Flamethrower dragon/fire, Rocket Hog pose/turret/wheels, deaths, alpha foliage, decals/paint/VFX/ribbon |
 | ROM capacity | PASS: final ROM 65,945,600 bytes; 1,163,264 bytes below 64 MiB. Packed DFS 64,469,184 bytes, lossless saving 2,646,342 | Final ROM/header/TOC/load-segment/readback checks PASS; no runtime or performance inference |
 | Performance/memory | Bounded Timberland 1H3B: 43 logged FPS windows, 10.2–18.1 FPS, median 15.2; lowest logged free heap 94 KiB | Does not meet 20 FPS. Debugger perturbation; no universal malloc-failure counter/true heap low-water guarantee. Bounded full8 is also below target; worst maps/splits/vehicles/modifiers and hardware remain open; Experimental retained |
-| Flashcarts/hardware | MISSING | New exact package readback, SummerCart/EverDrive X7, physical cold boot/repeated gameplay; preserve named saves and main ROM |
+| Flashcarts/hardware | SummerCart copy/flush/hash-readback PASS for separate versioned vanilla and PC ROMs; all nine existing files preserved. EverDrive X7 local stage only | Physical cold boot/repeated gameplay and M64 black-screen repair proof remain open; no firmware/menu/save writes |
+| Focused crash review | Bounded source/unit/compile review COMPLETE: no new concrete correctness defect and no runtime patch | Independent renderer fixture unfinished/excluded; automated review limitation recorded. Genuine SDK OOM still asserts; black-screen cause, hardware, all-map dynamic and long-soak acceptance remain open |
 | Networking | MISSING / separate research scope | No native M64 Wi-Fi or SummerCart USB matchmaking acceptance from this merge |
 
-The last verified development-card install is the named Stability06 ROM
-(FFC5), distinct from upstream integration. Older 19-map and ten-boot evidence
-belongs to that executable; the later alignment07's single ordinary boot and
-bounded Prisoner run are also older-code evidence. Neither transfers to this
-merge. Do not claim blanket performance, hardware stability, all-map visual
+The card now also has the separately named upstream PC Integration01 ROM
+(33247b81), alongside the preserved Stability06 ROM (FFC5) and old main build.
+Older 19-map and ten-boot evidence belongs to Stability06; the later alignment07
+single ordinary boot and bounded Prisoner run are also older-code evidence.
+Neither transfers to this merge or proves the new physical installation works. Do not claim blanket performance, hardware stability, all-map visual
 quality, networking or 100% project completion.
 
 ## Dependency SDK patch and current build progress
@@ -518,7 +538,7 @@ below the 67,108,864-byte limit. Old protected local files remain unchanged.
 Private worker qualification is separately recorded under
 `upstream-20261015/audit/installer/private-package-postpool01-qualification.json`.
 
-### Bounded native02 result and local cartridge stages
+### Bounded native02 result, stages and verified SummerCart installation
 
 The enclosing project's
 `audit/hardware-repair/integration-upstream-a3f98e6-runtime01/runtime-receipt02.json`
@@ -556,11 +576,12 @@ as preparation history; it occurred before launch and was not a game failure.
 All owned native02 emulator children stopped, the debug port cleared and frozen
 inputs remained unchanged.
 
-`upstream-20261015/pc-integration-ready-manifest.json` records **three local** exact
-copies of `Halo64-DEV-v0.2.0-PC-Integration01.z64`: the ROM folder, SummerCart stage
-and EverDrive X7 stage. These are prepared on the PC, not installed on removable
-media. No SD was mounted at the last root check (2026-10-15 21:07:35 UTC); no saves
-were copied and no old builds replaced. The vanilla stages remain separate.
+The historical `upstream-20261015/pc-integration-ready-manifest.json` records
+**three local** exact copies of `Halo64-DEV-v0.2.0-PC-Integration01.z64`: the ROM
+folder, SummerCart stage and EverDrive X7 stage. Its no-card observation at
+2026-10-15 21:07:35 UTC is a time-scoped snapshot. The later installation receipt
+below supersedes only that card-status observation; it does not change the frozen
+ROM identities, bounded native results or local EverDrive-only status.
 
 A separate **one-human/eight-bot** Timberland stress run is sealed in
 `audit/hardware-repair/integration-upstream-a3f98e6-runtime01/full8-runtime-receipt03.json`.
@@ -587,7 +608,78 @@ control/content gameplay, repeated cold boots, sustained reliability and
 controlled 20 FPS remain open. Bounded full8 observation is complete; broad
 full8 performance/reliability acceptance is not. The native/worker passes do not
 close full 19-map installer ROM generation, rendered packaged GUI, clean-machine
-operation, SD installation or physical hardware acceptance.
+operation or physical hardware acceptance.
+
+The later enclosing-project receipt
+`upstream-20261015/audit/sd-install-v020-20261015-01/receipt.json` records the actual
+SummerCart installation at 2026-10-15 21:13:32 UTC:
+
+| Card-relative location | SHA-256 |
+|---|---|
+| `Games/Halo64-Upstream/Halo64-Vanilla-v0.2.0-a3f98e6-20261015.z64` | `a59444a6583275641aea354ee7525c834a216bdb5e0884aa54659b9a23b0cd21` |
+| `Games/Halo64-PC-Expansion-v0.2.0/Halo64-DEV-v0.2.0-PC-Integration01.z64` | `33247b81ca0d11b93c62b847a928bad8777b45eb8896a853bc8711f3965b7ee9` |
+
+Both new files were flushed and hash-readback verified; owned card handles are
+closed. All **nine preexisting files** remain unchanged, including old main and
+Stability06 ROMs, saves, menu/configuration/history. Three current saves and the
+old development BUILD-INFO were backed up locally. No save was written to the
+card, no old ROM removed/replaced and no firmware or menu updated. EverDrive X7
+remains prepared **locally only**. This is successful media preparation; physical
+launch, repeated reliability and intermittent M64 black-screen resolution are
+not established.
+
+### Completed bounded crash review and remaining limits
+
+The enclosing project's `upstream-20261015/audit/astra-runtime-review02/`
+contains the sealed `REVIEW.txt` and `receipt.json`, independently authenticated
+by root. Review source is documentation checkpoint `2412b4e`; its runtime source
+matches built code `d330422`. **No new concrete ordinary C correctness defect was
+established and no new production runtime patch is proposed or admitted.**
+This is bounded source/unit/compile evidence, not whole-game stability acceptance.
+
+- The actual memory-pool implementation passes 25,000 deterministic allocation/
+  free/reallocation/compaction operations with owner/payload/nonoverlap/accounting
+  checks, including exercised refusals. The host allocation/assertion shim has a
+  different layout from target hardware; the fixture also compiles for MIPS.
+- Actual FX record/span/cache functions pass 500 simulated map lifecycles and
+  19,500 requests, including 3,000 allocator refusals, retry, LRU/cache-hit/missing-
+  tag paths and cleanup. DMA/surfaces are mocks; records use one empty event.
+- The unchanged menu allocator passes 100 lifecycle cycles, split/coalesce,
+  exhaustion, heap fallback/failure and no-arena cases. File/sprite loading is
+  outside that fixture. Campaign boundary inspection and complete translation-
+  unit compiles cover start/stop/load/release and CP16/MP32/MP-option gates;
+  campaign conversion and playthrough remain unqualified.
+- Bot review passes 93,600 extracted actual-C LOD/lifecycle cases **per upstream
+  and integration version**, plus existing movement/reset/jump controls. Registry
+  and physics are mocked; no new invalid-memory defect or bot patch is established.
+- There are **30 full production MIPS translation-unit compiles plus two fixture
+  compiles**. Renderer source inspection and three-mode production compilation
+  pass within that scope. Packed-member alignment warnings remain recorded.
+
+The earlier independent renderer fixture did **not** complete after automated
+classification rejected its review continuation. Its unfinished fixture is
+explicitly **excluded from passing evidence**; narrower source inspection and
+ordinary target compilation completed separately. No GPU scheduling or hardware
+ownership/lifetime proof follows from those compiles. Other blocked partial
+reviews are not promoted into passes.
+
+The DEV SDK can still assert when a required RDP block allocation genuinely
+cannot be satisfied. That existing fail-stop contract is not a newly established
+integration regression; no speculative recovery patch is admitted. No cause has
+been proven for the photographed RDP assertion or intermittent black boot.
+An empty public issue list does not disprove community crash reports, whose
+build/configuration/reproduction identity has not been matched here.
+
+The bounded 1H3B/1H8B observations were not rerun by this review. Eight-bot FPS
+remains below target and **DEV remains Experimental**. Physical tests, repeated
+cold boots, long sessions/map cycling, all-map dynamic memory/collision/visual
+coverage and campaign playthrough remain open. Vanilla also remains hardware-
+unproven; one menu boot is not a reliability qualification.
+
+Root will preserve the verified 2412b4e recovery set, commit this SD/review guide
+and create the separately named crash-reviewed recovery outputs described above.
+Those new outputs still require actual standalone clone/fsck and clean-base
+patch/full-tree verification; they are not yet claimed created or verified.
 
 ## Earlier checkpoint: dependency closure and vanilla readiness
 
@@ -630,12 +722,12 @@ CreateThread message remain recorded as nonfatal diagnostics; do not claim a
 warning-free run. This does not test multiplayer/bots/maps, sustained reliability,
 FPS, campaign or physical hardware.
 
-`upstream-20261015/vanilla-ready-manifest.json` records **local** version-named
-ROM/SummerCart/EverDrive stage copies. They are ready for a later card return,
-not installed on removable media. No card is presently available for this new
-copy. Original MAIN/DEV ROMs and saves are preserved; the synthetic Ares default
-EEPROM is not copied into card stages. A later hardware preparation must keep the
-new versioned save separate and record the actual copy/readback. PC19 integration
+`upstream-20261015/vanilla-ready-manifest.json` records the earlier **local**
+version-named ROM/SummerCart/EverDrive stage copies. The later SummerCart receipt
+above adds an actual installed vanilla copy; EverDrive remains locally staged.
+Original MAIN/DEV ROMs and saves remain preserved. The synthetic Ares default
+EEPROM was not copied into card stages or written to the card. The installation
+writes no saves; physical gameplay and later save creation still require testing. PC19 integration
 now has a separate static freeze and bounded native02 result; broader native and
 hardware qualification remain open.
 
