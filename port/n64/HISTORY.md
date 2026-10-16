@@ -5,6 +5,21 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+15 October, late: libdragon's RSP crash screen given room. On the user's
+console a game stopped at "Out of memory" in display_init, under
+console_init, under __rsp_crash, under display_get: the CPU had waited
+200 ms for a frame buffer (the RSP or the RDP stuck on the frame before),
+and the crash screen, which makes a 640x240 display of its own (600 KB),
+found none of the memory free -- the model cache fills the heap and the
+display's buffers are lent from the map's home -- so the screen showed its
+own failure instead of the RSP's and RDP's state. The link now wraps
+console_init (only the crash screen calls it; `port.json`'s ldflags):
+the map's whole home is lent to the display and the uncached reserve
+freed first. The hang itself is not found yet: the new terrain tiles are
+16-byte aligned (the RDP hangs loading from an address 1-7 bytes into a
+16-byte line, which emulators don't model) and the sky draws in the
+standard mode; the next crash screen will say more.
+
 15 October, night, later: a bot's movement every other tick with four
 bots or more (the user's ask, after the profile of the 14th: with 2
 players and 4 bots on Blood Gulch the tick was 22 ms against 6.4 alone,

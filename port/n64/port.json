@@ -120,7 +120,8 @@
     "title": "HALO 64 PC EXPANSION",
     "flags": []
   },
-  "ldflags": ["-Wl,--wrap,malloc_uncached", "-Wl,--wrap,malloc_uncached_aligned", "-Wl,--wrap,free_uncached"],
+  "ldflags": ["-Wl,--wrap,malloc_uncached", "-Wl,--wrap,malloc_uncached_aligned", "-Wl,--wrap,free_uncached",
+    "-Wl,--wrap,console_init"],
   "lto": true,
   "small_data": 8
 }

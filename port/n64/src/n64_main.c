@@ -369,6 +369,29 @@ void __wrap_free_uncached(void *buffer)
 	free(cached);
 }
 
+/* ---------- room for libdragon's RSP crash screen
+
+libdragon's RSP crash screen (__rsp_crash: the CPU waited too long for the
+RSP or the RDP -- display_get's frame buffer, rspq_wait -- or an RSP assert)
+makes a display of its own, console_init's two 640x240 buffers (600 KB),
+when the game has all the memory: the model cache fills the heap and the
+display's buffers are lent from the map's home. On the user's console
+(2026-10-15) it stopped at "Out of memory" in display_init instead of
+showing the crash. The link wraps console_init (port.json's ldflags; the
+game never calls it, only the crash screen does): the map's whole home is
+lent to the display -- the game is over by then -- and the uncached reserve
+given back, before libdragon's console_init. */
+void __real_console_init(void);
+void __wrap_console_init(void) __attribute__((used));
+
+void __wrap_console_init(void)
+{
+	if (home_start)
+		n64_display_lend(home_start, (unsigned long)(home_end - home_start));
+	n64_uncached_reserve_release();
+	__real_console_init();
+}
+
 /* Halo's deepest calls (collision, physics under the game tick) need more
 than the 64 KB libdragon keeps for main's stack at the top of RAM (~97 KB
 in Wizard), and the heap grows up to it. The game runs on main's stack
