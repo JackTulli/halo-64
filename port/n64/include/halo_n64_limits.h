@@ -18,8 +18,17 @@ here is only the Xbox's, kept for code that names it.
 
 #define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x80061000
 /* Native pools use about 432 KiB. Avoid a 1 MiB temporary ceiling at boot,
-which competes with the expanded map arena and initial display buffers. */
+which competes with the expanded map arena and initial display buffers.
+The campaign's pools (its AI, encounters and bigger object pool) are more:
+0x70000 stopped it at boot in effects_initialize ("a game state allocation
+after the game state was locked, or past its size"), so it keeps the 1 MiB
+ceiling it had before; either way the buffer is trimmed to what was
+allocated when the first map locks it (n64_game_state_trim). */
+#ifdef HALO_N64_CAMPAIGN
+#define HALO_PORT_GAME_STATE_CPU_SIZE 0x100000
+#else
 #define HALO_PORT_GAME_STATE_CPU_SIZE 0x70000
+#endif
 #define HALO_PORT_GAME_STATE_GPU_SIZE 0
 #define HALO_PORT_GAME_STATE_SIZE (HALO_PORT_GAME_STATE_CPU_SIZE+HALO_PORT_GAME_STATE_GPU_SIZE)
 
