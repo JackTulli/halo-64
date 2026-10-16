@@ -853,7 +853,7 @@ void *tag_get(
 	return tag_instance->base_address;
 }
 
-#ifdef HALO_LINUX
+#if defined(HALO_LINUX) || defined(HALO_N64)
 /* whether the index is a loaded tag of the group (or a group it inherits
 from): the distributed netcode names tags another machine sent
 (port/linux/game/network_damage.c), which tag_get would only assert on */

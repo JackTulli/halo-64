@@ -427,6 +427,13 @@ void game_initialize(
 	bink_playback_initialize();
 	progress_bar_initialize();
 
+#ifdef HALO_N64
+	{
+		extern void n64_map_boot_complete(void);
+		n64_map_boot_complete();
+	}
+#endif
+
 	return;
 }
 

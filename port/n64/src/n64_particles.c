@@ -36,6 +36,8 @@ the two colours by the texel), all drawn like the particles.
 #include <string.h>
 
 #include "n64.h"
+#include "n64_sniper_ribbon.h"
+#include "n64_fx_format.h"
 
 #define MAXIMUM_PARTICLES 128
 #define CELL 16
@@ -79,14 +81,18 @@ static const struct explosion_look
 	{1.6f, {255, 250, 225}, {255, 205, 100}, {245, 112, 32}, {120, 32, 14}, {58, 54, 50}, 1.f},
 	/* the needler's: pink */
 	{0.6f, {255, 235, 250}, {255, 160, 235}, {230, 80, 205}, {110, 28, 100}, {80, 62, 80}, 0.15f},
+	/* PC Fuel Rod: green plasma, distinct from a rocket or plasma grenade. */
+	{1.15f, {245, 255, 210}, {210, 255, 110}, {100, 230, 36}, {38, 100, 20}, {58, 78, 45}, 0.3f},
 };
 
 struct explosion
 {
 	float position[3];
 	float age;
-	uint8_t kind, seed, live;
+	uint8_t kind, seed, live, paint;
 };
+/* Paint uses the old padding byte; both pools keep their original size. */
+typedef char explosion_pool_size_check[sizeof(struct explosion) == 20 ? 1 : -1];
 
 struct particle
 {
@@ -115,6 +121,8 @@ static struct
 	struct fx_index *index;
 	int index_count;
 	uint32_t rom;
+	/* Inclusive lower / exclusive upper record-file bounds; no bank heap copy. */
+	uint32_t record_min, record_max;
 	surface_t atlas;
 	uint8_t cell_colours[CELLS][4];
 	struct
@@ -137,11 +145,39 @@ static struct
 	int explosion_effect_count;
 	struct explosion explosions[MAXIMUM_EXPLOSIONS];
 	int next_explosion;
-	uint8_t explosion_seed;
+	uint8_t explosion_seed, paint_splash_budget;
 	surface_t fireball;
 } fx;
 
+/* Eight short, independently fading shot segments: 224 bytes, no heap. */
+static struct { float start[3], end[3], age; } sniper_ribbons[N64_SNIPER_RIBBONS];
+static int next_sniper_ribbon;
+/* I4: soft across the ribbon, tapered at both ends, no opaque card. */
+static unsigned char sniper_mask[32] __attribute__((aligned(16))) = {
+    0,0,0,0,0,0,0,0,
+    0x01,0x35,0x79,0xBC,0xCB,0x97,0x53,0x10,
+    0x01,0x35,0x79,0xBC,0xCB,0x97,0x53,0x10,
+    0,0,0,0,0,0,0,0
+};
+static void reset_sniper_ribbons(void)
+{
+    for (int i = 0; i < N64_SNIPER_RIBBONS; i++) sniper_ribbons[i].age = N64_SNIPER_LIFE;
+    next_sniper_ribbon = 0;
+}
+void n64_sniper_ribbon(const float *start, const float *end)
+{
+    if (fx.disabled) return;
+    int index = next_sniper_ribbon;
+    if (!sniper_ribbon_segment(start, end, sniper_ribbons[index].start, sniper_ribbons[index].end)) return;
+    sniper_ribbons[index].age = 0.f;
+    next_sniper_ribbon = (index + 1) % N64_SNIPER_RIBBONS;
+}
+
 static void make_fireball(void);
+static int enhanced_fx;
+static unsigned char flame_cell;
+void n64_particles_set_enhanced(int on) { enhanced_fx = !!on; }
+int n64_particles_enhanced(void) { return enhanced_fx; }
 
 /* the explosions' fireball, made at boot (n64_main.c): made with the first
 map it was kept above that map's image (n64_anim.c) */
@@ -165,6 +201,9 @@ static void fx_free(void)
 	if (fx.atlas.buffer)
 		surface_free(&fx.atlas);
 	fx.rom = 0;
+	fx.record_min = fx.record_max = 0;
+	fx.explosion_effect_count = 0;
+	memset(fx.cell_colours, 0, sizeof(fx.cell_colours));
 }
 
 /* the map's effects given back (the fireball stays): at the end of a game
@@ -174,6 +213,8 @@ void n64_particles_release(void)
 {
 	rspq_wait();
 	fx_free();
+	flame_cell = 0;
+	reset_sniper_ribbons();
 	memset(fx.particles, 0, sizeof(fx.particles));
 	fx.live = 0;
 	memset(fx.explosions, 0, sizeof(fx.explosions));
@@ -240,67 +281,142 @@ static void make_fireball(void)
 	data_cache_hit_writeback(fx.fireball.buffer, fx.fireball.stride * FIREBALL);
 }
 
+/* A failed load publishes no index, atlas, bank address or explosion list. */
+static int fx_file_bytes(FILE *file, uint32_t *bytes)
+{
+    long end;
+    if (fseek(file, 0, SEEK_END) || (end = ftell(file)) < 0 || (uint64_t)end > 0x7fffffffu) return 0;
+    *bytes = (uint32_t)end;
+    return !fseek(file, 0, SEEK_SET);
+}
+
+static int fx_read_at(FILE *file, uint32_t offset, void *out, size_t bytes)
+{
+    return !fseek(file, (long)offset, SEEK_SET) && fread(out, 1, bytes, file) == bytes;
+}
+
+static int fx_rom_span(uint32_t rom, uint32_t offset, uint32_t size)
+{
+    uint32_t padded = (size + 15u) & ~15u;
+    if (!rom || size > 65535u || offset > UINT32_MAX - rom) return 0;
+    return padded && padded - 1u <= UINT32_MAX - (rom + offset);
+}
+
+static int fx_bank_validate(FILE *file, uint32_t identity, uint32_t *minimum, uint32_t *maximum)
+{
+    uint8_t header[32], scratch[256];
+    uint32_t bytes, crc = 0xffffffffu;
+    if (!fx_file_bytes(file, &bytes) || !fx_read_at(file, 0, header, sizeof(header)) ||
+        !n64_fx_bank_header(header, bytes, identity, minimum, maximum)) return 0;
+    for (uint32_t offset = *minimum; offset < *maximum;) {
+        uint32_t count = *maximum - offset;
+        if (count > sizeof(scratch)) count = sizeof(scratch);
+        if (fread(scratch, 1, count, file) != count) return 0;
+        crc = n64_fx_crc32_update(crc, scratch, count);
+        offset += count;
+    }
+    return (crc ^ 0xffffffffu) == identity;
+}
+
+/* Record shape/table checks stream through bounded stack storage. No record
+   allocation is added to map loading, even for the largest bank record. */
+static int fx_file_record(FILE *file, uint32_t offset, uint32_t bytes)
+{
+    uint8_t head[4], scratch[256];
+    uint32_t events, emitters, first, previous = 0, seen = 0;
+    if (!fx_read_at(file, offset, head, sizeof(head))) return 0;
+    events = n64_fx_be16(head); emitters = n64_fx_be16(head + 2);
+    first = (4u + 2u * (events + 1u) + 3u) & ~3u;
+    if (bytes < 8 || first > bytes || bytes - first != emitters * N64_FX_EMITTER_BYTES) return 0;
+    for (uint32_t remaining = 2u * (events + 1u); remaining;) {
+        uint32_t count = remaining > sizeof(scratch) ? sizeof(scratch) : remaining;
+        if (fread(scratch, 1, count, file) != count) return 0;
+        for (uint32_t i = 0; i < count; i += 2) {
+            uint32_t current = n64_fx_be16(scratch + i);
+            if ((!seen && current) || current < previous || current > emitters) return 0;
+            previous = current; seen++;
+        }
+        remaining -= count;
+    }
+    return previous == emitters;
+}
+
 void n64_particles_load(const char *map_name)
 {
-	char path[48];
-	uint8_t header[32];
-	FILE *file;
+    char path[48];
+    uint8_t header[32], colours[CELLS][4], explosions[MAXIMUM_EXPLOSION_EFFECTS][4];
+    struct n64_fx_layout layout;
+    struct fx_index *index = NULL;
+    surface_t atlas = {0};
+    FILE *file = NULL, *bank = NULL, *records;
+    uint32_t map_bytes, rom, record_min, record_max;
+    int ok = 0;
 
-	fx_free();
-	memset(fx.particles, 0, sizeof(fx.particles));
-	fx.live = 0;
-	memset(fx.explosions, 0, sizeof(fx.explosions));
-	fx.explosion_effect_count = 0;
-	if (!fx.fireball.buffer)
-		make_fireball();
-	snprintf(path, sizeof(path), "fx/%s.fx", map_name);
-	fx.rom = dfs_rom_addr(path);
-	snprintf(path, sizeof(path), "rom:/fx/%s.fx", map_name);
-	file = fopen(path, "rb");
-	if (!file || !fx.rom)
-	{
-		if (file)
-			fclose(file);
-		debugf("n64: no particles for %s\n", map_name);
-		fx.rom = 0;
-		return;
-	}
-	if (fread(header, 1, sizeof(header), file) == sizeof(header) && !memcmp(header, "N64F", 4))
-	{
-		int count = header[8] << 8 | header[9];
-		uint32_t index_offset = (uint32_t)header[12] << 24 | header[13] << 16 | header[14] << 8 | header[15];
-		uint32_t atlas_offset = (uint32_t)header[16] << 24 | header[17] << 16 | header[18] << 8 | header[19];
+    reset_sniper_ribbons();
+    n64_paint_reset(map_name);
+    fx_free();
+    flame_cell = 0;
+    memset(fx.particles, 0, sizeof(fx.particles)); fx.live = 0;
+    memset(fx.explosions, 0, sizeof(fx.explosions)); fx.paint_splash_budget = 4;
+    if (!fx.fireball.buffer) make_fireball();
 
-		fx.index = malloc(sizeof(struct fx_index) * (count ? count : 1));
-		fseek(file, index_offset, SEEK_SET);
-		if (fx.index && (int)fread(fx.index, sizeof(struct fx_index), count, file) == count)
-			fx.index_count = count;
-		fx.atlas = surface_alloc(FMT_I4, ATLAS_COLUMNS * CELL, ATLAS_BYTES * 2 / (ATLAS_COLUMNS * CELL));
-		fseek(file, atlas_offset, SEEK_SET);
-		if (fx.atlas.buffer)
-		{
-			fread(fx.atlas.buffer, 1, ATLAS_BYTES, file);
-			data_cache_hit_writeback(fx.atlas.buffer, ATLAS_BYTES);
-		}
-		/* each cell's colour, after the atlas */
-		fread(fx.cell_colours, 4, CELLS, file);
-		/* the explosions' list (version 2: bytes 20-25 of the header) */
-		{
-			uint32_t explosions_offset = (uint32_t)header[20] << 24 | header[21] << 16 | header[22] << 8 | header[23];
-			int explosions = header[24] << 8 | header[25];
+    if (!map_name || snprintf(path, sizeof(path), "fx/%s.fx", map_name) >= (int)sizeof(path)) goto done;
+    rom = dfs_rom_addr(path);
+    if (snprintf(path, sizeof(path), "rom:/fx/%s.fx", map_name) >= (int)sizeof(path)) goto done;
+    file = fopen(path, "rb");
+    if (!file || !rom || !fx_file_bytes(file, &map_bytes) ||
+        !fx_read_at(file, 0, header, sizeof(header)) || !n64_fx_map_header(header, map_bytes, &layout)) goto done;
 
-			if (explosions_offset && explosions > 0)
-			{
-				if (explosions > MAXIMUM_EXPLOSION_EFFECTS)
-					explosions = MAXIMUM_EXPLOSION_EFFECTS;
-				fseek(file, explosions_offset, SEEK_SET);
-				fx.explosion_effect_count = (int)fread(fx.explosion_effects, 4, explosions, file);
-			}
-		}
-	}
-	fclose(file);
-	debugf("n64: particles for %d effects of %s, %d explosions\n", fx.index_count, map_name,
-		fx.explosion_effect_count);
+    records = file; record_min = layout.record_min; record_max = layout.record_max;
+    if (layout.version == 3) {
+        rom = dfs_rom_addr("fx/records.bank");
+        bank = fopen("rom:/fx/records.bank", "rb");
+        if (!bank || !rom || !fx_bank_validate(bank, layout.identity, &record_min, &record_max)) goto done;
+        records = bank;
+    }
+    index = malloc(sizeof(struct fx_index) * (layout.count ? layout.count : 1));
+    if (!index) goto done;
+    for (int i = 0; i < layout.count; i++) {
+        uint8_t entry[8];
+        if (!fx_read_at(file, layout.index_offset + (uint32_t)i * 8, entry, sizeof(entry))) goto done;
+        index[i].tag_index = n64_fx_be16(entry); index[i].size = n64_fx_be16(entry + 2);
+        index[i].offset = n64_fx_be32(entry + 4);
+        if ((i && index[i].tag_index <= index[i - 1].tag_index) ||
+            !n64_fx_record_span(record_min, record_max, index[i].offset, index[i].size) ||
+            !fx_rom_span(rom, index[i].offset, index[i].size) ||
+            !fx_file_record(records, index[i].offset, index[i].size)) goto done;
+    }
+    atlas = surface_alloc(FMT_I4, ATLAS_COLUMNS * CELL, ATLAS_BYTES * 2 / (ATLAS_COLUMNS * CELL));
+    if (!atlas.buffer || !fx_read_at(file, layout.atlas_offset, atlas.buffer, ATLAS_BYTES) ||
+        !fx_read_at(file, layout.atlas_offset + ATLAS_BYTES, colours, sizeof(colours))) goto done;
+    if (layout.explosions && !fx_read_at(file, layout.explosions_offset, explosions, (size_t)layout.explosions * 4)) goto done;
+    for (int i = 0; i < layout.explosions; i++)
+        if (explosions[i][2] >= N64_EXPLOSION_KINDS || explosions[i][3] ||
+            (i && n64_fx_be16(explosions[i]) <= n64_fx_be16(explosions[i - 1]))) goto done;
+
+    /* No persistent bank allocation and no visible half-loaded map state. */
+    data_cache_hit_writeback(atlas.buffer, ATLAS_BYTES);
+    fx.index = index; index = NULL;
+    fx.atlas = atlas; memset(&atlas, 0, sizeof(atlas));
+    memcpy(fx.cell_colours, colours, sizeof(colours));
+    for (int i = 0; i < layout.explosions; i++) {
+        fx.explosion_effects[i].tag_index = n64_fx_be16(explosions[i]);
+        fx.explosion_effects[i].kind = explosions[i][2]; fx.explosion_effects[i].pad = 0;
+    }
+    fx.explosion_effect_count = layout.explosions;
+    fx.record_min = record_min; fx.record_max = record_max;
+    flame_cell = layout.flame_cell;
+    fx.rom = rom;
+    fx.index_count = layout.count;
+    ok = 1;
+done:
+    if (bank) fclose(bank);
+    if (file) fclose(file);
+    free(index);
+    if (atlas.buffer) surface_free(&atlas);
+    if (!ok) fx_free();
+    debugf("n64: particles for %d effects of %s, %d explosions%s\n", fx.index_count,
+        map_name ? map_name : "(invalid)", fx.explosion_effect_count, ok ? "" : " (invalid or missing FX data)");
 }
 
 int n64_explosion_kind(int effect_tag_index)
@@ -317,8 +433,13 @@ void n64_explosion(const float position[3], int kind)
 {
 	struct explosion *e = &fx.explosions[fx.next_explosion];
 
-	if (kind < 0 || kind >= N64_EXPLOSION_KINDS)
+	if (fx.disabled || kind < 0 || kind >= N64_EXPLOSION_KINDS)
 		return;
+	if (n64_paint_enabled())
+	{
+		n64_paint_splash(position, explosion_looks[kind].radius, -1);
+		return;
+	}
 	/* (full: the oldest goes) */
 	fx.next_explosion = (fx.next_explosion + 1) % MAXIMUM_EXPLOSIONS;
 	memcpy(e->position, position, sizeof(e->position));
@@ -327,6 +448,55 @@ void n64_explosion(const float position[3], int kind)
 	e->seed = fx.explosion_seed;
 	fx.explosion_seed += 37;
 	e->live = 1;
+	e->paint = 0;
+}
+
+/* Authored impact leaves only: firing, muzzle, Flame jet/pilot and ambient
+   effects never enter this path. Called once per effect event, not per drop. */
+int n64_paint_effect(const char *name)
+{
+	const char *leaf;
+	if (!name || (strncmp(name, "weapons\\", 8) && strncmp(name, "vehicles\\", 9))) return 0;
+	leaf = strrchr(name, '\\');
+	if (!leaf) return 0;
+	leaf++;
+	if (strstr(leaf, "impact")) return 1;
+	if (strstr(leaf, "explosion") || (strstr(leaf, "detonat") && strcmp(leaf, "detonation start"))) return 2;
+	return 0;
+}
+
+void n64_paint_splash(const float position[3], float radius, int color)
+{
+	struct explosion *e;
+	unsigned char size;
+	if (fx.disabled || !n64_paint_enabled() || !position || !isfinite(radius) || radius <= 0.f) return;
+	for (int k = 0; k < 3; k++) if (!isfinite(position[k])) return;
+	/* Paint reuses kind as a quantized size. It is never an explosion index. */
+	size = (unsigned char)(n64_min_f(2.5f, n64_max_f(.125f, radius)) * 32.f + .5f);
+	/* A surface decal can follow its effect in the same update. Merge that
+   pair once here, before any per-view/per-drop work, and adopt its ink hue. */
+	for (int i = 0; i < MAXIMUM_EXPLOSIONS; i++)
+	{
+		float distance = 0.f;
+		e = &fx.explosions[i];
+		if (!e->live || !e->paint || e->age > .05f) continue;
+		for (int k = 0; k < 3; k++) { float d = e->position[k] - position[k]; distance += d * d; }
+		if (distance > .0625f) continue;
+		if (color >= 0 && color < 6) e->paint = (unsigned char)(color + 1);
+		if (size > e->kind) e->kind = size;
+		return;
+	}
+	if (fx.paint_splash_budget <= 0) return;
+	fx.paint_splash_budget--;
+	e = &fx.explosions[fx.next_explosion];
+	fx.next_explosion = (fx.next_explosion + 1) % MAXIMUM_EXPLOSIONS;
+	memcpy(e->position, position, sizeof(e->position));
+	e->age = 0.f;
+	e->kind = size;
+	e->seed = fx.explosion_seed;
+	fx.explosion_seed += 37;
+	e->live = 1;
+	e->paint = (unsigned char)((color >= 0 && color < 6 ? color : e->seed % 6) + 1);
 }
 
 /* an effect's record (by binary search of the index; read from the
@@ -364,12 +534,19 @@ static const uint8_t *fx_record(int tag_index)
 		{
 			int size = (entry->size + 15) & ~15;
 
+			if (!n64_fx_record_span(fx.record_min, fx.record_max, entry->offset, entry->size) ||
+				!fx_rom_span(fx.rom, entry->offset, entry->size)) return NULL;
 			free(fx.cache[slot].data);
+			fx.cache[slot].tag_index = -1;
 			fx.cache[slot].data = memalign(16, size);
 			if (!fx.cache[slot].data)
 				return NULL;
 			data_cache_hit_writeback_invalidate(fx.cache[slot].data, size);
 			dma_read(fx.cache[slot].data, fx.rom + entry->offset, size);
+			if (!n64_fx_record_memory(fx.cache[slot].data, entry->size)) {
+				free(fx.cache[slot].data); fx.cache[slot].data = NULL;
+				return NULL;
+			}
 			fx.cache[slot].tag_index = tag_index;
 			fx.cache[slot].used = fx.clock;
 			fx.reads++;
@@ -427,9 +604,11 @@ void n64_particle_spawn(const struct n64_particle_spawn *spawn)
 	/* (a muzzle flash lives ~30 ms, less than a frame: at least 80, so that
 	it is drawn at all) */
 	p->life = spawn->life > 0.08f ? spawn->life : 0.08f;
+	if (enhanced_fx && p->life < 0.11f) p->life = 0.11f;
 	p->fade_in = spawn->fade_in;
 	p->fade_out = spawn->fade_out;
 	p->radius = spawn->radius;
+	if (enhanced_fx && (spawn->flags & N64_PARTICLE_FIRST_PERSON)) p->radius *= 1.08f;
 	p->end_scale = spawn->end_scale;
 	p->gravity = spawn->gravity;
 	p->drag = spawn->drag;
@@ -441,8 +620,40 @@ void n64_particle_spawn(const struct n64_particle_spawn *spawn)
 	fx.spawned++;
 }
 
+/* Follow the real damaging projectile. Xbox's ribbon contrails are absent
+from the native renderer, so a bounded, expanding fire trail makes the PC
+Flamethrower readable. It shares the existing particle budget in every view. */
+void n64_flame_trail(const float *position, const float *velocity)
+{
+	struct n64_particle_spawn p = {0};
+	for (int k = 0; k < 3; k++)
+	{
+		p.position[k] = position[k];
+		p.velocity[k] = velocity[k] * 3.f;
+	}
+	p.velocity[2] += 0.12f;
+	p.radius = 0.055f;
+	p.end_scale = enhanced_fx ? 3.2f : 2.f;
+	p.life = enhanced_fx ? 0.32f : 0.2f;
+	p.fade_in = 0.025f;
+	p.fade_out = 0.18f;
+	p.drag = 2.f;
+	p.color = 0xFFB040D0;
+	p.cell = flame_cell;
+	p.flags = N64_PARTICLE_FLAME;
+	p.local_player = -1;
+	n64_particle_spawn(&p);
+}
+
 void n64_particles_update(float dt)
 {
+	/* At most four new bursts per simulation/render update, shared by views. */
+	fx.paint_splash_budget = 4;
+	n64_paint_update(dt);
+	/* Age even if the sprite pool is empty. No simulation tick/RNG changes. */
+	if (isfinite(dt) && dt > 0.f)
+		for (int i = 0; i < N64_SNIPER_RIBBONS; i++)
+			if (sniper_ribbons[i].age < N64_SNIPER_LIFE) sniper_ribbons[i].age += dt;
 	static float log_time;
 
 	/* (port.json flag "debug_particles": the counts every five seconds) */
@@ -461,7 +672,7 @@ void n64_particles_update(float dt)
 	{
 		struct explosion *e = &fx.explosions[i];
 
-		if (e->live && (e->age += n64_min_f(dt, 0.25f)) >= SMOKE_START + SMOKE_TIME)
+		if (e->live && (e->age += n64_min_f(dt, 0.25f)) >= (e->paint ? .48f : SMOKE_START + SMOKE_TIME))
 			e->live = 0;
 	}
 	if (!fx.live || dt <= 0.f)
@@ -502,6 +713,7 @@ struct drawn
 	uint32_t color;
 	uint16_t depth;
 	uint8_t cell;
+	uint8_t flags;
 };
 
 static int compare_drawn(const void *a, const void *b)
@@ -568,6 +780,15 @@ static void draw_particles(const struct n64_particle_view *view)
 			continue;
 		/* fading out over its whole life */
 		alpha = 1.f - p->age / p->life;
+		/* Use the source's fade-in/out windows for a smooth flame envelope. */
+		if (enhanced_fx)
+		{
+			alpha = 1.f;
+			if (p->fade_in > 0.f && p->age < p->fade_in) alpha *= p->age / p->fade_in;
+			if (p->fade_out > 0.f && p->life - p->age < p->fade_out)
+				alpha *= (p->life - p->age) / p->fade_out;
+			if (p->fade_out <= 0.f) alpha *= 1.f - p->age / p->life;
+		}
 		if (view->fog_end > 0.f && z > view->fog_start)
 			alpha *= 1.f - (z - view->fog_start) / (view->fog_end - view->fog_start);
 		alpha *= (p->flags & N64_PARTICLE_ADDITIVE) ? 1.f : (p->color & 0xFF) * (1.f / 255.f);
@@ -596,8 +817,15 @@ static void draw_particles(const struct n64_particle_view *view)
 			uint32_t b = n64_div255(((p->color >> 8) & 0xFF) * hue[2]);
 
 			d->color = r << 24 | g << 16 | b << 8 | (uint32_t)(alpha * 255.f);
+			if (p->flags & N64_PARTICLE_FLAME)
+			{
+				float cool = p->age / p->life;
+				d->color = 0xFF000000 | (uint32_t)(242.f - 82.f * cool) << 16 |
+					(uint32_t)(190.f - 150.f * cool) << 8 | (uint32_t)(alpha * 255.f);
+			}
 		}
 		d->cell = p->cell;
+		d->flags = p->flags;
 		count++;
 	}
 	if (!count)
@@ -613,12 +841,30 @@ static void draw_particles(const struct n64_particle_view *view)
 	rdpq_mode_zoverride(true, 0.f, 0);
 	rdpq_mode_filter(FILTER_BILINEAR);
 	rdpq_tex_upload(TILE0, &fx.atlas, NULL);
+	int last_flame = 0;
 	for (int i = 0; i < count; i++)
 	{
 		struct drawn const *d = &drawn[i];
 		/* (one clean soft glow for every particle, in its own colour: Halo's
 		pictures at 16x16 were noise) */
 		int s = 0, t = 0;
+		int flame = !!(d->flags & N64_PARTICLE_FLAME);
+		if (flame != last_flame)
+		{
+			rdpq_sync_pipe();
+			if (flame)
+			{
+				rdpq_mode_combiner(RDPQ_COMBINER1((PRIM, ENV, TEX0, ENV), (TEX0, 0, PRIM, 0)));
+				rdpq_set_env_color(RGBA32(200, 32, 0, 255));
+			}
+			else rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
+			last_flame = flame;
+		}
+		if (flame)
+		{
+			s = (d->cell % ATLAS_COLUMNS) * CELL;
+			t = (d->cell / ATLAS_COLUMNS) * CELL;
+		}
 
 		rdpq_set_prim_color(RGBA32(d->color >> 24, (d->color >> 16) & 0xFF, (d->color >> 8) & 0xFF, d->color & 0xFF));
 		rdpq_set_prim_depth_raw(d->depth, 0);
@@ -634,7 +880,9 @@ struct puff
 	uint8_t prim[4], env[3];
 	uint8_t flip;
 	uint16_t depth;
+	uint8_t paint;
 };
+typedef char puff_size_check[sizeof(struct puff) == 32 ? 1 : -1];
 
 static int compare_puffs(const void *a, const void *b)
 {
@@ -658,6 +906,36 @@ static void fire_colour(const struct explosion_look *look, float t, uint8_t *out
 		mix(look->hot, look->warm, (t - 0.2f) / 0.3f, out);
 	else
 		mix(look->warm, look->cool, n64_min_f(1.f, (t - 0.5f) / 0.5f), out);
+}
+
+/* One coherent ink color: a quick irregular splat and six falling drops.
+   No smoke, white flash, hot core or color cycling in Paintball impacts. */
+static int paint_puff(const struct explosion *e, int part, const float direction[3],
+	float size, float offset[3], float *radius, float *alpha, struct puff *p)
+{
+	float r = e->kind * (1.f / 32.f), t;
+	const unsigned char *color;
+	if (!e->paint || e->paint > 6 || part < 0 || part > 6 || !isfinite(e->age) || e->age < 0.f) return 0;
+	if (part == 0)
+	{
+		t = e->age / .14f;
+		if (t >= 1.f) return 0;
+		*radius = r * (.48f + .32f * t);
+		*alpha = .95f * (1.f - t);
+	}
+	else
+	{
+		t = e->age / .48f;
+		if (t >= 1.f) return 0;
+		for (int k = 0; k < 3; k++) offset[k] = direction[k] * r * (.12f + 1.8f * t);
+		offset[2] += r * (.45f * t - 1.5f * t * t);
+		*radius = r * .085f * size * (1.f - .35f * t);
+		*alpha = .95f * (1.f - t * t);
+	}
+	color = n64_paint_color(e->paint - 1);
+	memcpy(p->prim, color, 3);
+	memcpy(p->env, color, 3);
+	return 1;
 }
 
 static void draw_explosions(const struct n64_particle_view *view)
@@ -693,11 +971,13 @@ static void draw_explosions(const struct n64_particle_view *view)
 	for (int i = 0; i < MAXIMUM_EXPLOSIONS; i++)
 	{
 		struct explosion const *e = &fx.explosions[i];
-		const struct explosion_look *look = &explosion_looks[e->kind];
-		float r = look->radius;
+		const struct explosion_look *look;
+		float r;
 
 		if (!e->live)
 			continue;
+		look = e->paint ? NULL : &explosion_looks[e->kind];
+		r = e->paint ? e->kind * (1.f / 32.f) : look->radius;
 		for (int part = 0; part < EXPLOSION_PUFFS; part++)
 		{
 			struct puff *p = &puffs[count];
@@ -711,7 +991,12 @@ static void draw_explosions(const struct n64_particle_view *view)
 
 			for (int k = 0; k < 3; k++)
 				d[k] /= length;
-			if (part == 0)
+			p->paint = e->paint;
+			if (e->paint)
+			{
+				if (!paint_puff(e, part, d, size, offset, &radius, &alpha, p)) continue;
+			}
+			else if (part == 0)
 			{
 				/* the flash */
 				if (e->age >= FLASH_TIME)
@@ -789,7 +1074,8 @@ static void draw_explosions(const struct n64_particle_view *view)
 				p->x1 = view->x0 + (p->x1 - view->x0) * view->chunky_scale;
 			}
 			p->z = z;
-			p->flip = (uint8_t)(hash2(part, 5, e->seed) * 4.f) & 3;
+			p->flip = ((uint8_t)(hash2(part, 5, e->seed) * 4.f) & 3) |
+				(e->paint ? (e->seed % 3) << 2 : 0);
 			count++;
 		}
 	}
@@ -806,25 +1092,82 @@ static void draw_explosions(const struct n64_particle_view *view)
 	rdpq_mode_zoverride(true, 0.f, 0);
 	rdpq_mode_filter(FILTER_BILINEAR);
 	rdpq_tex_upload(TILE0, &fx.fireball, NULL);
+	/* The three immutable 32x32 I4 splats share TMEM with the 32x32 I8
+	   fireball: 1024 + 3*512 = 2560 bytes, below the RDP's 4096 bytes. */
+	int paint_textures = 0;
+	for (int i = 0; i < count; i++) if (puffs[i].paint) { paint_textures = 1; break; }
+	if (paint_textures)
+		for (int pattern = 0; pattern < 3; pattern++)
+		{
+			const unsigned char *data = n64_paint_mask(pattern);
+			if (data)
+			{
+				surface_t mask = surface_make_linear((void *)data, FMT_I4, 32, 32);
+				rdpq_tex_upload(TILE1 + pattern, &mask, &(rdpq_texparms_t){.tmem_addr = 1024 + pattern * 512});
+			}
+		}
 	for (int i = 0; i < count; i++)
 	{
 		struct puff const *p = &puffs[i];
 		int s0 = p->flip & 1 ? FIREBALL : 0, t0 = p->flip & 2 ? FIREBALL : 0;
+		int tile = p->paint ? TILE1 + ((p->flip >> 2) % 3) : TILE0;
+		if (p->paint && !n64_paint_mask((p->flip >> 2) % 3)) continue;
 
 		rdpq_set_prim_color(RGBA32(p->prim[0], p->prim[1], p->prim[2], p->prim[3]));
 		rdpq_set_env_color(RGBA32(p->env[0], p->env[1], p->env[2], 0xFF));
 		rdpq_set_prim_depth_raw(p->depth, 0);
-		rdpq_texture_rectangle_scaled(TILE0, p->x0, p->y0, p->x1, p->y1, s0, t0, FIREBALL - s0, FIREBALL - t0);
+		rdpq_texture_rectangle_scaled(tile, p->x0, p->y0, p->x1, p->y1, s0, t0, FIREBALL - s0, FIREBALL - t0);
 	}
 	rdpq_mode_zoverride(false, 0.f, 0);
 }
 
+static void draw_sniper_ribbons(const struct n64_particle_view *view)
+{
+    int started = 0;
+    for (int i = 0; i < N64_SNIPER_RIBBONS; i++)
+    {
+        float projected[N64_SNIPER_CLIP][6];
+        float age = sniper_ribbons[i].age;
+        if (age >= N64_SNIPER_LIFE) continue;
+        int count = sniper_ribbon_geometry(view, sniper_ribbons[i].start, sniper_ribbons[i].end, projected);
+        if (count < 3) continue;
+        if (!started)
+        {
+            surface_t mask = surface_make_linear(sniper_mask, FMT_I4, 16, 4);
+            data_cache_hit_writeback(sniper_mask, sizeof(sniper_mask));
+            rdpq_sync_pipe();
+            rdpq_set_mode_standard();
+            rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
+            rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+            rdpq_mode_zbuf(true, false);
+            rdpq_mode_persp(true);
+            rdpq_mode_filter(FILTER_BILINEAR);
+            rdpq_tex_upload(TILE0, &mask, NULL);
+            started = 1;
+        }
+        float alpha = 1.f - age / N64_SNIPER_LIFE;
+        if (view->fog_end > view->fog_start)
+        {
+            float z = 1.f / projected[0][5];
+            if (z > view->fog_end) continue;
+            if (z > view->fog_start) alpha *= 1.f - (z - view->fog_start) / (view->fog_end - view->fog_start);
+        }
+        /* Pale vapor, deliberately much quieter than impact flashes. */
+        rdpq_set_prim_color(RGBA32(205, 225, 235, (int)(alpha * alpha * 76.f)));
+        for (int v = 1; v < count - 1; v++) rdpq_triangle(&TRIFMT_ZBUF_TEX, projected[0], projected[v], projected[v + 1]);
+    }
+}
+
 void n64_particles_draw(const struct n64_particle_view *view)
 {
+	if (fx.disabled) return;
 	draw_particles(view);
 	/* (explosions are the world's: not in the first-person pass) */
 	if (!view->first_person)
+	{
 		draw_explosions(view);
+		draw_sniper_ribbons(view);
+	}
 }
 
 void n64_particles_statistics(unsigned long *spawned, unsigned long *drawn, unsigned long *reads, int *live)

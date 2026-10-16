@@ -26,6 +26,9 @@ units (it sees the game's headers):
 #include "saved games/game_state.h"
 #include "game/players.h"
 #include "objects/objects.h"
+#include "objects/object_types.h"
+#include "scenario/scenario.h"
+#include "scenario/scenario_definitions.h"
 #include "memory/data.h"
 #include "units/units.h"
 #include "items/weapons.h"
@@ -74,7 +77,7 @@ void main_set_difficulty(short difficulty);
 #define N64_TEST_PLAYER_COUNT 2
 
 /* what the menu chose (or the test game) */
-static struct n64_menu_choice n64_choice = { .bot_skill = 1 };
+static struct n64_menu_choice n64_choice = { .bot_skill = 1, .enhanced_fx = 1 };
 /* a Pro variant: everyone starts with a pistol and an assault rifle */
 static int n64_pro_weapons;
 
@@ -138,7 +141,15 @@ static void n64_game_start(
 		variant.universal_variant.score_to_win = 9999;
 	else if (n64_choice.score > 0)
 		variant.universal_variant.score_to_win = n64_choice.score;
+	/* Native set zero admits every vehicle in the map palette. Defaults and
+	the original Rocket Hogs mode retain the game type's existing filter. */
+	if (!n64_choice.firefight &&
+		(n64_choice.vehicle_set == N64_VEHICLES_ALL_MAP || n64_choice.vehicle_set == N64_VEHICLES_ALL_ROCKET))
+		variant.universal_variant.vehicle_set = 0;
 	game_set_game_variant(&variant);
+	n64_particles_set_enhanced(n64_choice.enhanced_fx);
+	n64_modifiers_set(!n64_choice.firefight && n64_choice.big_head, !n64_choice.firefight && n64_choice.paintball);
+	n64_golden_reset();
 	if (n64_choice.firefight)
 	{
 		n64_firefight_begin(n64_choice.difficulty, n64_choice.player_count);
@@ -148,7 +159,7 @@ static void n64_game_start(
 	{
 		n64_firefight_stop();
 		/* (up to 8, whatever the players: each biped ~2.7 ms of a tick) */
-		n64_bots_begin(PIN(n64_choice.bots, 0, 8), n64_choice.bot_skill,
+		n64_bots_begin(PIN(n64_choice.bots, n64_menu_game_bots(n64_choice.game_type) ? 1 : 0, 8), n64_choice.bot_skill,
 			n64_menu_game_teams(n64_choice.game_type));
 	}
 	player_spawn_count = (short)n64_choice.player_count;
@@ -210,6 +221,18 @@ void n64_game_setup(
 	/* (port.json flag "debug_game_type=<n>": the menu's game type) */
 	if (n64_debug_text("debug_game_type", name, sizeof(name)))
 		n64_choice.game_type = atoi(name);
+	if (n64_debug_text("debug_weapons", name, sizeof(name)))
+#ifdef HALO_N64_PC_EXPANSION
+		n64_choice.weapon_set = PIN(atoi(name), 0, N64_WEAPONS_PC_ADDITIVE);
+#else
+		n64_choice.weapon_set = PIN(atoi(name), 0, 3);
+#endif
+	if (n64_debug_text("debug_vehicles", name, sizeof(name)))
+		n64_choice.vehicle_set = PIN(atoi(name), 0, N64_VEHICLES_COUNT - 1);
+	n64_choice.big_head = n64_debug_flag("debug_big_head");
+	n64_choice.paintball = n64_debug_flag("debug_paintball");
+	if (n64_debug_flag("debug_golden_style"))
+		for (i = 0; i < 4; i++) n64_controls[i].scheme = N64_SCHEME_GOLDEN_STYLE;
 	/* (port.json flag "debug_high_detail": the 3D in high detail) */
 	n64_render_set_high_detail(n64_debug_flag("debug_high_detail"));
 	for (i = 0; i < 4; i++)
@@ -328,7 +351,13 @@ static int n64_score_rows(
 		if (row.human)
 			snprintf(row.name, sizeof(row.name), "PLAYER %d", n64_choice.ports[player->local_player_index] + 1);
 		else
-			n64_ascii(row.name, sizeof(row.name), player->name);
+		{
+			const char *full_name = n64_bots_display_name(player_index);
+			if (full_name)
+				snprintf(row.name, sizeof(row.name), "%s", full_name);
+			else
+				n64_ascii(row.name, sizeof(row.name), player->name);
+		}
 		csmemset(score_text, 0, sizeof(score_text));
 		if (game_engine->format_player_score)
 			game_engine->format_player_score(player_index, score_text);
@@ -403,16 +432,73 @@ void n64_game_results(
 
 /* ---------- the pause menu: START during a game stops its clock and shows
 the scoreboard over it (n64_hud_pause), every player and bot; START (or B)
-goes back to the game, A takes MAIN MENU, its one button. Meanwhile the
+goes back to the game. Controls is selected first; left/right selects it
+or Main Menu, A opens it. Every joined pad edits only its own Controls
+panel; B returns to the scoreboard, START resumes. Meanwhile the
 game's gamepads read as untouched, its sounds are silent and the Rumble
 Paks still; the frames go on being drawn (main_loop draws a paused game) */
 
 static boolean n64_paused;
+static int n64_pause_controls, n64_pause_selected;
+static int n64_pause_control_rows[4];
+static signed char n64_pause_stick[4];
+static unsigned long long n64_pause_repeat[4];
+
+/* Identity is a physical controller port, never a combined button mask.
+Only joined players can pause or edit their own saved controls. */
+static int n64_pause_player(int port)
+{
+	int i;
+	for (i = 0; i < n64_choice.player_count; i++)
+		if (n64_choice.ports[i] == port) return i;
+	return -1;
+}
+
+static unsigned short n64_pause_directions(int port)
+{
+	struct n64_pad pad;
+	unsigned long long now = n64_microseconds();
+	int direction;
+	n64_input_get(port, &pad);
+	direction = pad.stick_y > 50 ? 1 : pad.stick_y < -50 ? 2 :
+		pad.stick_x < -50 ? 3 : pad.stick_x > 50 ? 4 : 0;
+	if (!direction) { n64_pause_stick[port] = 0; return 0; }
+	if (direction == n64_pause_stick[port] && now < n64_pause_repeat[port]) return 0;
+	n64_pause_repeat[port] = now + (direction != n64_pause_stick[port] ? 330000 : 130000);
+	n64_pause_stick[port] = direction;
+	return direction == 1 ? N64_BUTTON_D_UP : direction == 2 ? N64_BUTTON_D_DOWN :
+		direction == 3 ? N64_BUTTON_D_LEFT : N64_BUTTON_D_RIGHT;
+}
+
+static void n64_pause_controls_input(int port, unsigned short pressed)
+{
+	int *row, step;
+	if (n64_pause_player(port) < 0) return;
+	row = &n64_pause_control_rows[port];
+	if (pressed & N64_BUTTON_D_UP) *row = (*row + CONTROL_COUNT - 1) % CONTROL_COUNT;
+	else if (pressed & N64_BUTTON_D_DOWN) *row = (*row + 1) % CONTROL_COUNT;
+	step = pressed & N64_BUTTON_D_LEFT ? -1 : pressed & (N64_BUTTON_D_RIGHT | N64_BUTTON_A) ? 1 : 0;
+	if (step) n64_controls_step(port, *row, step,
+		!!(pressed & N64_BUTTON_A) && !(pressed & (N64_BUTTON_D_LEFT | N64_BUTTON_D_RIGHT)));
+}
 
 static void n64_pause_end(
 	void)
 {
 	n64_paused = FALSE;
+	n64_pause_controls = 0;
+	n64_controls_save();
+	/* Aim is transient, but other players' crouch toggles survive a pause. */
+	n64_golden_reset();
+	{
+		int p;
+		for (p = 0; p < 4; p++)
+		{
+			struct n64_pad pad;
+			n64_input_get(p, &pad);
+			n64_controls[p].last_buttons = pad.buttons;
+		}
+	}
 	game_time_set_paused(FALSE);
 	n64_sound_pause(0);
 }
@@ -424,12 +510,15 @@ void n64_game_pause_frame(
 	struct n64_score_row rows[N64_SCORE_ROWS];
 	struct n64_pause_screen screen;
 	char note[64];
-	unsigned short pressed = 0;
+	unsigned short pressed = 0, presses[4];
 	int port;
 
 	n64_input_poll();
 	for (port = 0; port < 4; port++)
-		pressed |= n64_input_take_pressed(port);
+	{
+		presses[port] = n64_input_take_pressed(port);
+		if (n64_pause_player(port) >= 0) pressed |= presses[port];
+	}
 	if (!n64_paused)
 	{
 		/* (a game being played: not its end, the results coming) */
@@ -447,25 +536,57 @@ void n64_game_pause_frame(
 		game_time_set_paused(TRUE);
 		n64_input_blocked = 1;
 		n64_sound_pause(1);
+		n64_pause_controls = 0;
+		n64_pause_selected = 0;
+		memset(n64_pause_stick, 0, sizeof(n64_pause_stick));
 		pressed = 0;
+		memset(presses, 0, sizeof(presses));
 	}
-	else if (pressed & (N64_BUTTON_START | N64_BUTTON_B))
+	else if ((pressed & N64_BUTTON_START) || (!n64_pause_controls && (pressed & N64_BUTTON_B)))
 	{
 		n64_pause_end();
 		n64_input_blocked = 0;
 		return;
 	}
-	else if (pressed & N64_BUTTON_A)
+	else if (n64_pause_controls)
 	{
-		/* (the gamepads stay untouched until the menu: the press is not
-		also a jump) */
-		n64_pause_end();
-		n64_quit_to_title = TRUE;
-		main_goto_main_menu();
-		return;
+		if (pressed & N64_BUTTON_B)
+		{
+			n64_controls_save();
+			n64_pause_controls = 0;
+		}
+		else
+			for (port = 0; port < 4; port++)
+				n64_pause_controls_input(port, presses[port] | n64_pause_directions(port));
+	}
+	else
+	{
+		for (port = 0; port < 4; port++)
+		{
+			unsigned short buttons;
+			if (n64_pause_player(port) < 0) continue;
+			buttons = presses[port] | n64_pause_directions(port);
+			if (buttons & (N64_BUTTON_D_LEFT | N64_BUTTON_D_UP)) n64_pause_selected = 0;
+			else if (buttons & (N64_BUTTON_D_RIGHT | N64_BUTTON_D_DOWN)) n64_pause_selected = 1;
+			if (!(buttons & N64_BUTTON_A)) continue;
+			if (!n64_pause_selected) n64_pause_controls = 1;
+			else
+			{
+				n64_pause_end();
+				n64_quit_to_title = TRUE;
+				main_goto_main_menu();
+				return;
+			}
+			break;
+		}
 	}
 	for (port = 0; port < 4; port++)
 		n64_input_rumble(port, 0.f, 0.f);
+	if (n64_pause_controls)
+	{
+		n64_hud_pause_controls(n64_choice.ports, n64_choice.player_count, n64_pause_control_rows);
+		return;
+	}
 
 	screen.title = "PAUSED";
 	screen.note = NULL;
@@ -494,6 +615,7 @@ void n64_game_pause_frame(
 	}
 	screen.rows = rows;
 	screen.row_count = n64_score_rows(rows, NULL, N64_SCORE_ROWS);
+	screen.selected = n64_pause_selected;
 	n64_hud_pause(&screen);
 }
 
@@ -518,14 +640,34 @@ void n64_game_menu(
 Pro variant a new unit gets a pistol (in hand) and an assault rifle instead
 of the map's starting weapons; FALSE otherwise */
 boolean n64_game_pro_weapons(
-	long unit_index)
+    long unit_index)
 {
-	static char const *const names[2] = { "weapons\\pistol\\pistol", "weapons\\assault rifle\\assault rifle" };
+	static char const *const loadouts[3][2] = {
+		{ "weapons\\pistol\\pistol", "weapons\\assault rifle\\assault rifle" },
+		{ "weapons\\plasma_cannon\\plasma_cannon", "weapons\\pistol\\pistol" },
+		{ "weapons\\flamethrower\\flamethrower", "weapons\\pistol\\pistol" }
+	};
+	/* Optional world pickups use MAP DEFAULT's exact loadout policy,
+	including its Pistol + AR override for Pro game variants. */
+	int weapon_set =
+#ifdef HALO_N64_PC_EXPANSION
+		n64_choice.weapon_set == N64_WEAPONS_PC_ADDITIVE ? 0 :
+#endif
+		n64_choice.weapon_set;
+	char const *const *names = loadouts[weapon_set > 1 ? PIN(weapon_set - 1, 0, 2) : 0];
 	boolean first = TRUE;
 	short i;
+	char diagnostic[160];
 
-	if (!n64_pro_weapons || unit_index == NONE)
+	if ((!n64_pro_weapons && !weapon_set) || unit_index == NONE || n64_choice.firefight)
 		return FALSE;
+	/* Refuse a partial loadout: keep the map's starting weapons instead. */
+	if (tag_loaded('weap', names[0]) == NONE || tag_loaded('weap', names[1]) == NONE)
+	{
+		snprintf(diagnostic, sizeof(diagnostic), "n64: loadout %d missing tags %lx %lx", n64_choice.weapon_set, tag_loaded('weap', names[0]), tag_loaded('weap', names[1]));
+		n64_log(diagnostic);
+		return FALSE;
+	}
 	for (i = 0; i < 2; i++)
 	{
 		long definition_index = tag_loaded('weap', names[i]);
@@ -538,11 +680,32 @@ boolean n64_game_pro_weapons(
 		weapon_index = object_new(&placement_data);
 		if (weapon_index != NONE)
 		{
-			unit_add_weapon_to_inventory(unit_index, weapon_index, first ? 2 : 0);
-			first = FALSE;
+			boolean added = unit_add_weapon_to_inventory(unit_index, weapon_index, first ? 2 : 0);
+			if (n64_debug_flag("debug_weapon_showcase"))
+			{
+				snprintf(diagnostic, sizeof(diagnostic), "n64: loadout %d %s -> %s added %d", n64_choice.weapon_set, names[i], tag_get_name(object_get(weapon_index)->definition_index), added);
+				n64_log(diagnostic);
+			}
+			if (added) first = FALSE;
+			else object_delete(weapon_index);
 		}
 	}
-	return TRUE;
+	return !first;
+}
+
+long n64_game_vehicle_override(long definition_index)
+{
+	if (definition_index != NONE && !n64_choice.firefight &&
+		(n64_choice.vehicle_set == N64_VEHICLES_ROCKET_HOGS || n64_choice.vehicle_set == N64_VEHICLES_ALL_ROCKET))
+	{
+		char const *name = tag_get_name(definition_index);
+		if (name && !strncmp(name, "vehicles\\warthog\\", 17))
+		{
+			long rocket = tag_loaded('vehi', "vehicles\\rwarthog\\rwarthog");
+			if (rocket != NONE) return rocket;
+		}
+	}
+	return definition_index;
 }
 
 /* main.c's create_local_players: the index-th player's controller port,
@@ -699,7 +862,21 @@ struct n64_map_header
 	unsigned long reserved[2];
 };
 
-#define N64_MAP_VERSION 1
+#define N64_MAP_VERSION 2
+#ifdef HALO_N64_CAMPAIGN
+#define N64_MAP_FORMAT_KIND 0x43503136UL /* CP16: campaign compact collision */
+#else
+#define N64_MAP_FORMAT_KIND 0x4D503332UL /* MP32: multiplayer collision */
+#endif
+
+typedef char n64_map_header_size_assert[sizeof(struct n64_map_header) == 64 ? 1 : -1];
+typedef char n64_map_header_kind_offset_assert[offsetof(struct n64_map_header, reserved) == 56 ? 1 : -1];
+
+static boolean n64_map_header_compatible(struct n64_map_header const *header)
+{
+	return !memcmp(header->magic, "H64M", 4) && header->version == N64_MAP_VERSION &&
+		header->reserved[0] == N64_MAP_FORMAT_KIND && header->reserved[1] == 0;
+}
 
 static struct
 {
@@ -739,7 +916,7 @@ void n64_map_home_reserve(
 		if (file < 0)
 			continue;
 		if (n64_file_read(file, &header, sizeof(header)) == (long)sizeof(header) &&
-			!memcmp(header.magic, "H64M", 4) && header.version == N64_MAP_VERSION && header.image_size > largest)
+			n64_map_header_compatible(&header) && header.image_size > largest)
 			largest = header.image_size;
 		n64_file_close(file);
 	}
@@ -773,6 +950,20 @@ void *n64_map_home_free_part(
 	return n64_map.home + used;
 }
 
+void n64_map_boot_complete(void)
+{
+	/* Persistent pools were allocated above the largest arena. Release its
+	unused tail for the title; all transient users leave before it grows. */
+	unsigned long size = 3 * 1024 * 1024;
+	if (n64_map.home && n64_map.home_size > size)
+	{
+		void *home = (realloc)(n64_map.home, size);
+		if (home != n64_map.home) n64_fatal("map arena moved while shrinking");
+		n64_map.home_size = size;
+		n64_display_set_home(home, size);
+	}
+}
+
 static void *n64_map_load(
 	char const *name)
 {
@@ -800,9 +991,41 @@ static void *n64_map_load(
 		error(_error_silent, "n64: no map %s", path);
 		return NULL;
 	}
-	n64_file_read(file, &n64_map.header, sizeof(n64_map.header));
-	if (memcmp(n64_map.header.magic, "H64M", 4) || n64_map.header.version != N64_MAP_VERSION)
+	if (n64_file_read(file, &n64_map.header, sizeof(n64_map.header)) != sizeof(n64_map.header))
+		n64_fatal("could not read map header");
+	if (!n64_map_header_compatible(&n64_map.header))
 		n64_fatal("the map was converted for another build (tools/n64/convert.py)");
+	/* Free the decoder and every transient render allocation before growing
+	the arena back into its original reserved span. */
+	n64_file_close(file);
+	n64_render_prepare_map_image();
+	/* The reclaimable RSP reserve may sit in the arena's released tail. */
+	n64_uncached_reserve_release();
+	unsigned long arena_size = MAX(n64_map.header.image_size, 3 * 1024 * 1024);
+	arena_size = (arena_size + 63) & ~63UL;
+	if (n64_map.home_size != arena_size)
+	{
+		void *home = (realloc)(n64_map.home, arena_size);
+		if (!home)
+		{
+			char pieces[200], message[320];
+			unsigned long largest = n64_heap_describe(pieces, sizeof(pieces));
+			n64_heap_dump("map resize", n64_map.home + n64_map.home_size);
+			snprintf(message, sizeof(message), "no memory to resize map arena: %lu -> %lu KB, %lu KB free, largest %lu KB; %s",
+				n64_map.home_size / 1024, arena_size / 1024, n64_heap_free() / 1024, largest / 1024, pieces);
+			n64_fatal(message);
+		}
+		n64_map.home = home; n64_map.home_size = arena_size;
+		n64_display_set_home(home, arena_size);
+	}
+	n64_uncached_reserve_take();
+	file = n64_file_open(path);
+	struct n64_map_header reopened_header;
+	if (file < 0 || n64_file_read(file, &reopened_header, sizeof(reopened_header)) != sizeof(reopened_header))
+		n64_fatal("could not reopen map stream");
+	if (!n64_map_header_compatible(&reopened_header) ||
+		memcmp(&reopened_header, &n64_map.header, sizeof(reopened_header)))
+		n64_fatal("map header changed while reopening stream");
 
 	/* in the home (if it is not lent to the display), else from the heap */
 	if (n64_map.home && n64_map.header.image_size <= n64_map.home_size && !n64_render_home_in_use())
@@ -824,26 +1047,34 @@ static void *n64_map_load(
 		n64_fatal(text);
 	}
 	n64_map.image_size = n64_map.header.image_size;
-	n64_file_read(file, n64_map.image, n64_map.header.image_size);
+	if (n64_file_read(file, n64_map.image, n64_map.header.image_size) != n64_map.header.image_size)
+		n64_fatal("could not read map image");
 
 	/* the relocations follow the image, 8-byte aligned */
 	offset = (sizeof(n64_map.header) + n64_map.header.image_size + 7) & ~7UL;
-	n64_file_seek(file, offset);
+	unsigned long padding = offset - sizeof(n64_map.header) - n64_map.header.image_size;
+	byte padding_bytes[8];
+	if (padding && n64_file_read(file, padding_bytes, padding) != padding)
+		n64_fatal("could not read map padding");
 	base = (unsigned long)n64_map.image;
 	relocations = malloc(4096);
+	if (!relocations)
+		n64_fatal("no memory for map relocations");
 	remaining = n64_map.header.relocation_count;
 	while (remaining)
 	{
 		unsigned long count = remaining < 1024 ? remaining : 1024;
 		unsigned long i;
 
-		n64_file_read(file, relocations, count * 4);
+		if (n64_file_read(file, relocations, count * 4) != count * 4)
+			n64_fatal("could not read map relocations");
 		for (i = 0; i < count; i++)
 			*(unsigned long *)(n64_map.image + relocations[i]) += base;
 		remaining -= count;
 	}
 	free(relocations);
 	n64_file_close(file);
+	n64_render_finish_map_image();
 
 	csstrncpy(n64_map.name, name, sizeof(n64_map.name) - 1);
 	n64_animation_open(name);
@@ -900,6 +1131,89 @@ char const *n64_loaded_map_name(
 {
 	return n64_map.name;
 }
+
+
+#if defined(HALO_N64_PC_EXPANSION) && !defined(HALO_N64_CAMPAIGN)
+static boolean n64_pc_vehicle_map(char const *name)
+{
+    return !strcmp(name, "dangercanyon") || !strcmp(name, "deathisland") ||
+        !strcmp(name, "gephyrophobia") || !strcmp(name, "icefields") ||
+        !strcmp(name, "infinity") || !strcmp(name, "timberland");
+}
+
+/* PC scenario vehicles store per-game-type allowed bits at bytes 90..91.
+ * Xbox maps use zero here; keep their existing placement behavior. */
+static boolean n64_pc_vehicle_spawn_allowed(
+    char const *map_name,
+    short engine,
+    unsigned int spawn_flags)
+{
+    unsigned int allowed_bit;
+    if (!n64_pc_vehicle_map(map_name))
+        return TRUE;
+
+    switch (engine)
+    {
+    case game_engine_ctf: allowed_bit = 9; break;
+    case game_engine_slayer: allowed_bit = 8; break;
+    case game_engine_oddball: allowed_bit = 11; break;
+    case game_engine_king: allowed_bit = 10; break;
+    default: return TRUE; /* No allowed bit is defined for Race. */
+    }
+    return (spawn_flags & (1u << allowed_bit)) != 0;
+}
+
+boolean n64_game_scenario_vehicle_allowed(
+    void const *placement)
+{
+    byte const *row = placement;
+    if (!game_engine_running() || n64_choice.firefight)
+        return TRUE;
+    short engine = game_engine_get_variant()->game_engine_index;
+    if (!n64_pc_vehicle_spawn_allowed(n64_map.name, engine,
+            ((unsigned int)row[90] << 8) | row[91]))
+        return FALSE;
+    /* PC maps contain several optional pads for each vehicle at each base.
+     * ALL MAP must not instantiate all of them on the N64's 256 KiB object
+     * pool. Keep the first eligible pad per definition/team, without editing
+     * scenario rows or relying on live objects (which die and respawn).
+     * MAP DEFAULT, Xbox maps, scripted placements and Race retain their policy. */
+    if ((n64_choice.vehicle_set == 2 || n64_choice.vehicle_set == 3) &&
+        n64_pc_vehicle_map(n64_map.name) &&
+        (engine == game_engine_slayer || engine == game_engine_ctf ||
+         engine == game_engine_king || engine == game_engine_oddball))
+    {
+        extern struct object_type_definition vehicle_data_definition;
+        struct scenario *scenario = global_scenario_get();
+        struct scenario_object_datum const *current = placement;
+        long stride = vehicle_data_definition.placement_tag_block_element_size;
+        long i, definition;
+        if (stride != 120 || scenario->vehicles.count < 0 ||
+            scenario->vehicles.count > 512 || !scenario->vehicles.address ||
+            current->palette_entry_index < 0 ||
+            current->palette_entry_index >= scenario->vehicle_palette.count)
+            return FALSE;
+        definition = TAG_BLOCK_GET_ELEMENT(&scenario->vehicle_palette,
+            current->palette_entry_index, struct scenario_object_palette_entry)->reference.index;
+        for (i = 0; i < scenario->vehicles.count; i++)
+        {
+            byte const *other = (byte const *)scenario->vehicles.address + i * stride;
+            struct scenario_object_datum const *prior = (void const *)other;
+            if (other == row) return TRUE;
+            if (other[88] == row[88] && prior->palette_entry_index >= 0 &&
+                prior->palette_entry_index < scenario->vehicle_palette.count &&
+                !TEST_FLAG(prior->placement_flags, _scenario_object_placement_not_automatic_bit) &&
+                n64_pc_vehicle_spawn_allowed(n64_map.name, engine,
+                    ((unsigned int)other[90] << 8) | other[91]) &&
+                TAG_BLOCK_GET_ELEMENT(&scenario->vehicle_palette, prior->palette_entry_index,
+                    struct scenario_object_palette_entry)->reference.index == definition)
+                return FALSE;
+        }
+        return FALSE; /* The initial-placement row must belong to this block. */
+    }
+    return TRUE;
+}
+#endif
 
 /* cache_files.c (HALO_N64): the loaded map's tag header */
 void *n64_cache_file_tag_header(
@@ -1230,3 +1544,16 @@ real_rgb_color player_profile_get_rgb_color(
 }
 
 word player_profile_number_of_available_primary_colors(void) { return NUMBEROF(n64_profile_color_table); }
+
+#ifdef HALO_N64_PC_EXPANSION
+int n64_game_pc_equipment_enabled(void)
+{
+    return n64_pc_equipment_enabled(n64_choice.weapon_set,
+        n64_choice.firefight || n64_choice.campaign);
+}
+int n64_game_pc_vehicle_enabled(void)
+{
+    return n64_pc_vehicle_enabled(n64_choice.vehicle_set,
+        n64_choice.firefight || n64_choice.campaign);
+}
+#endif

@@ -79,6 +79,9 @@ class Policy:
     def keep_tag(self, tag):
         return True
 
+    def array_data(self, tag, address, name, count, path):
+        return None
+
     def keep_block(self, tag, path, count):
         """how many elements of a block to keep (0 drops it)"""
         return count
@@ -135,6 +138,12 @@ class Repacker:
     def struct_array(self, tag, address, name, count, path):
         """copies `count` instances of struct `name` from the map address;
         returns the image offset"""
+        custom = self.policy.array_data(tag, address, name, count, path)
+        if custom is not None:
+            offset = self.image.alloc(len(custom))
+            self.image.put(offset, custom)
+            self.count(tag, len(custom))
+            return offset
         size = self.defs.size(name)
         offset = self.image.alloc(size * count)
         self.count(tag, size * count)

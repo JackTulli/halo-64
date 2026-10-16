@@ -53,6 +53,9 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries/cseries.h"
+#ifdef HALO_N64
+#include "../../port/n64/src/n64.h"
+#endif
 #include "cseries/errors.h"
 #include "bitmaps/bitmap_group.h"
 #include "cache/texture_cache.h"
@@ -1050,6 +1053,13 @@ static void crosshairs_draw(
 									!TEST_FLAG(item->placement.multiplayer_scaling_flags, _hud_dont_scale_size_bit) ?
 									0.5f :
 									1.0f;
+#ifdef HALO_N64
+                                struct bitmap_group *checked_bitmap = bitmap_group_get(verify_tag_reference(&element->crosshairs.bitmap));
+                                if (item->sequence_index < 0 ||
+                                    (!TEST_FLAG(item->flags, _hud_crosshair_not_a_sprite_bit) ?
+                                        item->sequence_index >= checked_bitmap->sequences.count :
+                                        item->sequence_index >= checked_bitmap->bitmaps.count)) continue;
+#endif
 								struct bitmap_group_sequence *sequence = !TEST_FLAG(item->flags, _hud_crosshair_not_a_sprite_bit) ?
 									TAG_BLOCK_GET_ELEMENT(
 										&bitmap_group_get(verify_tag_reference(&element->crosshairs.bitmap))->sequences,
@@ -1188,6 +1198,22 @@ static void crosshairs_draw(
 										strip_path_name(tag_get_name(definition_indices[definition_index]))));
 								{
 									struct bitmap_group *bitmap_group = bitmap_group_get(verify_tag_reference(&element->crosshairs.bitmap));
+									struct hud_placement_definition golden_placement = item->placement;
+#ifdef HALO_N64
+									/* Each authored crosshair item, including warning/magnification
+									labels, follows the same aim point. Full viewport cutouts
+									stay camera-bound. Other schemes receive a zero offset. */
+									if (!TEST_FLAG(item->flags, _hud_crosshair_hide_outside_area_bit))
+									{
+										float x, y;
+										n64_golden_cursor(player->local_player_index, &x, &y);
+										golden_placement.offset.x += (short)(x * (render.camera.viewport_bounds.x1 - render.camera.viewport_bounds.x0) * 0.5f);
+										golden_placement.offset.y -= (short)(y * (render.camera.viewport_bounds.y1 - render.camera.viewport_bounds.y0) * 0.5f);
+									}
+#endif
+#ifdef HALO_N64
+                                    if (sequence && (frame_index < 0 || frame_index >= sequence->sprites.count)) continue;
+#endif
 									struct bitmap_data *bitmap = TAG_BLOCK_GET_ELEMENT(
 										&bitmap_group->bitmaps,
 										sequence ?
@@ -1233,7 +1259,7 @@ static void crosshairs_draw(
 											hud_draw_bitmap(
 												bitmap,
 												&absolute_placement,
-												&item->placement,
+												&golden_placement,
 												&clip,
 												scale,
 												0.0f,
@@ -1247,7 +1273,7 @@ static void crosshairs_draw(
 											hud_draw_bitmap(
 												bitmap,
 												&absolute_placement,
-												&item->placement,
+												&golden_placement,
 												sequence ?
 													&TAG_BLOCK_GET_ELEMENT(&sequence->sprites, frame_index, struct bitmap_group_sprite)->bounds :
 													NULL,

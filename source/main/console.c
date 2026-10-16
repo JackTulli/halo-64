@@ -167,13 +167,17 @@ void console_printf(
 		terminal_clear();
 	}
 	
+#ifdef HALO_N64
+	vsnprintf(buffer, sizeof(buffer), format, arglist);
+#else
 	vsprintf(buffer, format, arglist);
+#endif
 	buffer[255] = '\0';
 	
 	terminal_printf(0, "%s", buffer);
 	if (console_dump_to_file)
 	{
-		strncat(buffer, "\r\n", NUMBEROF(buffer));
+		strncat(buffer, "\r\n", sizeof(buffer) - strlen(buffer) - 1);
 		write_to_error_file(buffer, TRUE);
 	}
 
@@ -192,13 +196,17 @@ void console_warning(
 	va_start(arglist, format);
 
 
+#ifdef HALO_N64
+	vsnprintf(buffer, sizeof(buffer), format, arglist);
+#else
 	vsprintf(buffer, format, arglist);
+#endif
 	buffer[255] = '\0';
 
 	terminal_printf(global_real_argb_red, "%s", buffer);
 	if (console_dump_to_file)
 	{
-		csstrncat(buffer, "\r\n", NUMBEROF(buffer));
+		csstrncat(buffer, "\r\n", sizeof(buffer) - strlen(buffer) - 1);
 		write_to_error_file(buffer, TRUE);
 	}
 

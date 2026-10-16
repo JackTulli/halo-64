@@ -1,0 +1,3 @@
+# Unified patches need their single-space blank context lines preserved.
+*.patch -whitespace
+*.sh text eol=lf

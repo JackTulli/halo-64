@@ -178,9 +178,9 @@ symbols in this file:
 
 /* at most this many of one emitter's particles an event, in one view and
 in more (the N64's particle pool is 128) */
-#define N64_EMITTERS_PER_EVENT 2
+#define N64_EMITTERS_PER_EVENT (n64_particles_enhanced() ? 3 : 2)
 /* emitters whose particles live longer than this are left out */
-#define N64_LONGEST_PARTICLE_MS 500
+#define N64_LONGEST_PARTICLE_MS (n64_particles_enhanced() ? 1200 : 500)
 #endif
 #undef real_local_random
 
@@ -2071,6 +2071,35 @@ static void effect_generate_particles(
 	else
 		event_fraction = 1.0f;
 
+	/* Paintball replaces only the impact sprites in this function. Effect
+	   parts still run independently, including authored DECA surface marks,
+	   sounds and damage. Firing/muzzle/Flame jet effects retain their art. */
+	if (n64_paint_enabled())
+	{
+		int paint_impact = n64_paint_effect(tag_get_name(effect->definition_index));
+		if (paint_impact)
+		{
+			if (effect->event_index == 0 && last_event_fraction <= 0.0f && event_fraction > 0.0f &&
+				definition->locations.count > 0)
+			{
+				long location_datum_index = effect->location_datum_indices[0];
+				struct effect_location_datum *instance = effect_location_get_next_instance(effect, &location_datum_index, 0);
+				if (instance)
+				{
+					real_point3d position = instance->matrix.position;
+					float point[3];
+					int kind = n64_explosion_kind(DATUM_INDEX_TO_ABSOLUTE_INDEX(effect->definition_index));
+					if (instance->node_designator != NONE)
+						matrix4x3_transform_point(effect_get_node_matrix(effect, instance->node_designator), &position, &position);
+					point[0] = position.x; point[1] = position.y; point[2] = position.z;
+					if (kind >= 0) n64_explosion(point, kind);
+					else n64_paint_splash(point, paint_impact == 2 ? .8f : .18f, -1);
+				}
+			}
+			return;
+		}
+	}
+
 	/* an explosion (a grenade's, a rocket's, a tank shell's: the effects
 	tools/n64/effects.py lists) is the N64's own flash, fireball and smoke,
 	made once, where the effect begins */
@@ -2823,7 +2852,7 @@ static void effect_update(
 			was half a dozen small ones; fewer, larger reads better) */
 			{
 				int n64_count;
-				short chosen[N64_EMITTERS_PER_EVENT];
+				short chosen[3];
 				short chosen_count = 0;
 				struct n64_fx_emitter const *n64_emitters = n64_fx_event(
 					DATUM_INDEX_TO_ABSOLUTE_INDEX(effect->definition_index),

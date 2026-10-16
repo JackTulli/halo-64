@@ -2088,7 +2088,14 @@ static void update_human_jeep_physics(
 	struct physics_definition *physics = physics_definition_get(
 		definition->unit.object.physics.index);
 
+#ifdef HALO_N64
+	/* Physics steps cover two ticks (four at half rate); wheel phase
+	must cover the same signed motor travel as that step. */
+	extern real n64_vehicle_physics_step(void);
+	vehicle->vehicle.wheel = vehicle->vehicle.speed*n64_vehicle_physics_step()+vehicle->vehicle.wheel;
+#else
 	vehicle->vehicle.wheel = vehicle->vehicle.speed+vehicle->vehicle.wheel;
+#endif
 	vehicle->vehicle.wheel = (real)fmod(vehicle->vehicle.wheel, definition->wheel_circumference);
 	if (vehicle->vehicle.wheel<0.0f)
 		vehicle->vehicle.wheel += definition->wheel_circumference;

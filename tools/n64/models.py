@@ -97,6 +97,10 @@ GROUP_BUDGETS = {"bipd": 600, "vehi": 600, "weap": 250, "eqip": 250, "garb": 250
 DETAIL_ATLAS = int(os.environ.get("N64_DETAIL_ATLAS", "128"))
 WINDOW = 64
 DETAIL_WINDOWS = os.environ.get("N64_DETAIL_WINDOWS", "1") == "1"
+# prepare_pc_content.py builds these owned PC maps into Xbox-format
+# intermediates. Invader changes the cache layout, not the bitmap channels.
+# Imported tags retain their source map through merge_tags.
+PC_INTERMEDIATE_MAPS = frozenset(("dangercanyon", "deathisland", "gephyrophobia", "icefields", "infinity", "timberland"))
 
 
 def matrix4x3(values):
@@ -137,6 +141,40 @@ def part_size(vertices, triangles):
     return math.sqrt(sum((b - a) ** 2 for a, b in zip(lo, hi)))
 
 
+def split_painted_faces(vertices, triangles, atlas_size, span=WINDOW - 2):
+    """Keep rigid painted panels out of the coarse whole-gun fallback.
+
+    Subdivide only edges on the same bone; interpolating across two local
+    bone spaces would deform the weapon. A fixed depth bounds the work.
+    """
+    out, midpoints = [], {}
+    pending = [(tuple(t), 0) for t in triangles]
+    while pending:
+        tri, depth = pending.pop()
+        uv = [vertices[i][2] for i in tri]
+        fits = all((max(p[k] for p in uv) - min(p[k] for p in uv)) * atlas_size[k] <= span
+                   for k in range(2))
+        if fits or depth >= 8 or len({vertices[i][0] for i in tri}) != 1:
+            out.append(tri)
+            continue
+        edges = [(tri[0], tri[1], tri[2]), (tri[1], tri[2], tri[0]), (tri[2], tri[0], tri[1])]
+        a, b, c = max(edges, key=lambda e: sum(((vertices[e[0]][2][k] - vertices[e[1]][2][k]) * atlas_size[k])**2
+                                               for k in range(2)))
+        key = tuple(sorted((a, b)))
+        if key not in midpoints:
+            va, vb = vertices[a], vertices[b]
+            average = lambda x, y: tuple((p + q) * 0.5 for p, q in zip(x, y))
+            normal = average(va[4], vb[4])
+            length = math.sqrt(sum(n*n for n in normal)) or 1.0
+            normal = tuple(n / length for n in normal)
+            shade = average(va[3], vb[3]) if isinstance(va[3], tuple) else (va[3] + vb[3]) * 0.5
+            midpoints[key] = len(vertices)
+            vertices.append((va[0], average(va[1], vb[1]), average(va[2], vb[2]), shade, normal))
+        middle = midpoints[key]
+        pending.extend((((a, middle, c), depth + 1), ((middle, b, c), depth + 1)))
+    return out
+
+
 def weld_nodes(vertices, world, nodes_inverse):
     """the vertices at one position all on the node most of them have (each
     vertex is on one node: two at a point on different nodes part as the
@@ -166,6 +204,23 @@ def strip_triangles(indices):
             continue
         out.append((a, b, c) if i % 2 == 0 else (b, a, c))
     return out
+
+
+def vertex_node(n0, n1, weight, node_count):
+    """Dominant bone of a Halo compressed vertex.
+
+    The weight uses Halo's signed-normalized 16-bit encoding: 32767 is
+    +1, not one half. PC rigid vertices often retain a valid node1=0 with
+    zero influence, while Xbox rigid vertices usually mark node1 absent.
+    Dividing by 65535 attached nearly all PC meshes to that zero-weight
+    second bone, freezing turrets and stretching animated player meshes.
+    """
+    decoded = (weight & 0x7FFF) / 32767.0 - (1.0 if weight & 0x8000 else 0.0)
+    decoded = min(1.0, max(0.0, decoded))
+    node0 = n0 // 3 if n0 >= 0 else -1
+    node1 = n1 // 3 if n1 >= 0 else -1
+    node = node0 if node1 < 0 or (node0 >= 0 and decoded >= 0.5) else node1
+    return node if 0 <= node < node_count else 0
 
 
 class ModelConverter:
@@ -273,10 +328,12 @@ class ModelConverter:
             base = struct.unpack("<I", self.map.read(tag.address + so["base map"] + 12, 4))[0]
             model_flags = struct.unpack("<H", self.map.read(tag.address + so["shader model flags"], 2))[0]
             flags = MATERIAL_TWO_SIDED if model_flags & 2 else 0
-            # a player's colour where the multipurpose map's blue says (the
-            # Xbox's channel order)
+            # Native Xbox multipurpose maps use blue; the PC intermediates
+            # retain PC pixels (alpha), even though their cache format is
+            # Xbox. Bit 6 explicitly selects Xbox order for PC shaders.
             change_source = struct.unpack("<H", self.map.read(tag.address + so["change color source"], 2))[0]
             multipurpose = struct.unpack("<I", self.map.read(tag.address + so["multipurpose map"] + 12, 4))[0]
+            channel = self.change_channel(tag, model_flags)
             # Halo tests the base map's alpha (at 0x7F) unless the shader says
             # "not alpha tested"; an alpha-blended decal (bit 3) is blended
             # by it -- here both cut out, where the base map has transparent
@@ -286,9 +343,9 @@ class ModelConverter:
             cut = (not model_flags & 4 or model_flags & 8) and self.textures.has_cutout(base)
             cut_flags = (MATERIAL_ALPHA_TEST | (DECAL if model_flags & 8 else 0)) if cut else 0
             if change_source and self.map.tag(multipurpose) is not None:
-                texture = self.masked_texture(base, multipurpose, cut)
+                texture = self.masked_texture(base, multipurpose, cut, channel)
                 if texture >= 0:
-                    return texture, flags | MATERIAL_CHANGE_COLOR | cut_flags, (base, multipurpose)
+                    return texture, flags | MATERIAL_CHANGE_COLOR | cut_flags, (base, multipurpose, channel)
             if cut:
                 return self.textures.cutout_texture(base)[0], flags | cut_flags, (base, None)
             return self.textures.texture(base), flags, (base, None)
@@ -296,8 +353,12 @@ class ModelConverter:
             so = self.f("ShaderEnvironment")
             base = struct.unpack("<I", self.map.read(tag.address + so["base map"] + 12, 4))[0]
             env_flags = struct.unpack("<H", self.map.read(tag.address + so["shader environment flags"], 2))[0]
-            if env_flags & 1 and self.textures.has_cutout(base):
-                return self.textures.cutout_texture(base)[0], MATERIAL_ALPHA_TEST, (base, None)
+            if env_flags & 1:
+                bump = struct.unpack("<I", self.map.read(tag.address + so["bump map"] + 12, 4))[0]
+                scale = struct.unpack("<f", self.map.read(tag.address + so["bump map scale"], 4))[0] or 1.0
+                # Keep the composed mask intact; base-only atlas windows
+                # would throw the bump alpha away again.
+                return self.textures.environment_texture(base, bump, scale), MATERIAL_ALPHA_TEST, None
             return self.textures.texture(base), 0, (base, None)
         # transparent shaders (glowing screens, sights, meters): meters and
         # numeric displays need Halo's own drawing and are left out (texture
@@ -442,8 +503,16 @@ class ModelConverter:
         self.masked[key] = index
         return index
 
-    def change_mask(self, multipurpose, size):
-        """the colour-change mask (the multipurpose map's blue) at size"""
+    def change_channel(self, shader, flags):
+        """Pixel layout follows an imported shader's source, not the map
+        receiving it. Native Xbox maps predate the explicit PC Xbox-order
+        flag; their multipurpose pixels always use blue.
+        """
+        source = getattr(shader, "source", None) or self.map
+        return "A" if source.name in PC_INTERMEDIATE_MAPS and not flags & 64 else "B"
+
+    def change_mask(self, multipurpose, size, channel="B"):
+        """The source shader's colour-change channel at size."""
         tag = self.map.tag(multipurpose)
         images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
         if not images:
@@ -452,12 +521,12 @@ class ModelConverter:
             img = decode(self.map, images[0], max(size))
         except ValueError:
             return None
-        return img.getchannel("B").resize(size, Image.BILINEAR)
+        return img.getchannel(channel).resize(size, Image.BILINEAR)
 
-    def masked_texture(self, base, multipurpose, cutout=False):
+    def masked_texture(self, base, multipurpose, cutout=False, channel="B"):
         """the base map whole at 64x64, its palette split by the colour-change
         mask (and its transparent texels cut out), or -1"""
-        key = (base, multipurpose, bool(cutout))
+        key = (base, multipurpose, bool(cutout), channel)
         if key in self.masked:
             return self.masked[key]
         index = -1
@@ -468,7 +537,7 @@ class ModelConverter:
                 img = decode(self.map, images[0], 64)
             except ValueError:
                 img = None
-            mask = self.change_mask(multipurpose, img.size) if img is not None else None
+            mask = self.change_mask(multipurpose, img.size, channel) if img is not None else None
             if img is not None:
                 index = self.textures.write_texture(img, tag.name, mask=mask, cutout=cutout)
         self.masked[key] = index
@@ -507,12 +576,7 @@ class ModelConverter:
         world = []
         for v in range(vertex_count):
             px, py, pz, normal, binormal, tangent, tu, tv, n0, n1, w0 = struct.unpack_from("<3fIIIhhbbH", data, v * 32)
-            node0 = n0 // 3 if n0 >= 0 else 0
-            node1 = n1 // 3 if n1 >= 0 else node0
-            weight = w0 / 65535.0
-            node = node0 if weight >= 0.5 or n1 < 0 else node1
-            if node >= len(nodes_inverse):
-                node = 0
+            node = vertex_node(n0, n1, w0, len(nodes_inverse))
             local = tuple(c * self.current_scale for c in transform_point(nodes_inverse[node], (px, py, pz)))
             n = unpack_normal(normal)
             light = max(0.0, n[0] * SKY_LIGHT[0] + n[1] * SKY_LIGHT[1] + n[2] * SKY_LIGHT[2])
@@ -621,11 +685,7 @@ class ModelConverter:
         world = []
         for v in range(vertex_count):
             px, py, pz, normal, binormal, tangent, tu, tv, n0, n1, w0 = struct.unpack_from("<3fIIIhhbbH", data, v * 32)
-            node0 = n0 // 3 if n0 >= 0 else 0
-            node1 = n1 // 3 if n1 >= 0 else node0
-            node = node0 if w0 / 65535.0 >= 0.5 or n1 < 0 else node1
-            if node >= len(nodes_inverse):
-                node = 0
+            node = vertex_node(n0, n1, w0, len(nodes_inverse))
             n = unpack_normal(normal)
             light = max(0.0, n[0] * SKY_LIGHT[0] + n[1] * SKY_LIGHT[1] + n[2] * SKY_LIGHT[2])
             vertices.append((node, transform_point(nodes_inverse[node], (px, py, pz)),
@@ -642,27 +702,34 @@ class ModelConverter:
         whole (cutout: alpha-tested, the windows' transparent texels kept)"""
         if bitmap is None:
             return None
-        bitmap, multipurpose = bitmap
+        bitmap, multipurpose, *channels = bitmap
+        channel = channels[0] if channels else "B"
         tag = self.map.tag(bitmap)
         if tag is None:
             return None
         images = bitmap_images(self.map, tag, self.defs)
         if not images or max(images[0].width, images[0].height) <= WINDOW:
             return None
+        # Preserve the PC Flamethrower's painted dragon face. Only this gun's
+        # first-person body gets a 256px source atlas; each RDP window still
+        # fits the existing 64px / CI4 TMEM limit. Other weapons keep budgets.
+        atlas_limit = (128 if self.detail_atlas <= 64 else 256) if tag.name == "weapons\\flamethrower\\bitmaps\\flamethrower" else self.detail_atlas
         try:
-            atlas = decode(self.map, images[0], self.detail_atlas)
+            atlas = decode(self.map, images[0], atlas_limit)
         except ValueError:
             return None
-        scale = min(1.0, self.detail_atlas / max(atlas.size))
+        scale = min(1.0, atlas_limit / max(atlas.size))
         aw, ah = max(1, int(atlas.width * scale)), max(1, int(atlas.height * scale))
         atlas = atlas.resize((aw, ah), Image.LANCZOS)
-        mask = self.change_mask(multipurpose, (aw, ah)) if multipurpose is not None else None
+        mask = self.change_mask(multipurpose, (aw, ah), channel) if multipurpose is not None else None
         if multipurpose is not None:
-            whole = self.masked_texture(bitmap, multipurpose, cutout)
+            whole = self.masked_texture(bitmap, multipurpose, cutout, channel)
         elif cutout:
             whole = self.textures.cutout_texture(bitmap)[0]
         else:
             whole = self.textures.texture(bitmap)
+        if tag.name == "weapons\\flamethrower\\bitmaps\\flamethrower":
+            triangles = split_painted_faces(vertices, triangles, (aw, ah))
         return self.atlas_windows(atlas, mask, whole, tag.name, vertices, triangles, cutout)
 
     def atlas_windows(self, atlas, mask, whole, name, vertices, triangles, cutout=False):

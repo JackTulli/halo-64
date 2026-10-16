@@ -265,9 +265,14 @@ int n64_uncached_reserve_take(void)
 taken again during it, it stayed wherever the heap had room then) */
 void n64_uncached_reserve_settle(void)
 {
+	n64_uncached_reserve_release();
+	n64_uncached_reserve_take();
+}
+
+void n64_uncached_reserve_release(void)
+{
 	free(uncached_reserve);
 	uncached_reserve = NULL;
-	n64_uncached_reserve_take();
 }
 
 int n64_uncached_reserve_missing(void)
@@ -429,7 +434,8 @@ static void game_main(void)
 int main(void)
 {
 	debug_init_isviewer();
-	debug_init_usblog();
+	/* USB debug writes to cartridge SDRAM. This content build has no reserved
+	USB scratch region; keep it offline until a bounded transport owns one. */
 	n64_exceptions_install();
 	dfs_init(DFS_DEFAULT_LOCATION);
 	joypad_init();

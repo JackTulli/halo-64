@@ -1362,13 +1362,20 @@ static void first_person_weapon_build_node_matrices(
 			}
 		}
 
+		{
+			real_vector3d weapon_forward = render.camera.forward, weapon_up = render.camera.up;
+#ifdef HALO_N64
+			extern void n64_golden_weapon_axes(int local, float *forward, float *up);
+			n64_golden_weapon_axes(local_player_index, (float *)&weapon_forward, (float *)&weapon_up);
+#endif
 		animation_graph_node_matrices_from_orientations(
 			weapon_definition->weapon.interface_definition.first_person_animations.index,
 			first_person_weapon->node_matrices,
 			first_person_weapon->node_orientations,
 			&render.camera.position,
-			&render.camera.forward,
-			&render.camera.up);
+			&weapon_forward,
+			&weapon_up);
+		}
 #ifdef HALO_LINUX
 		/* the pose between the last two ticks (render_interpolation.c) */
 		render_interpolation_first_person(

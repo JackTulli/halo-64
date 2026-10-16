@@ -476,9 +476,9 @@ boolean structure_render_surface_from_point_and_leaf(
 	real *s,
 	real *t)
 {
-#ifdef HALO_N64_CAMPAIGN
-	/* (the render surfaces are not in the campaign cartridge's leaves:
-	structure_bsp_definitions.h) */
+#if defined(HALO_N64) || defined(HALO_N64_CAMPAIGN)
+	/* Native MP and campaign leaves keep their cluster only; their render
+	surface references are not part of the cartridge format. */
 	return FALSE;
 #else
 	struct structure_bsp *structure = global_structure_bsp_get();

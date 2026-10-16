@@ -554,6 +554,56 @@ class LevelBuilder:
         self.texture_by_bitmap[key] = result
         return result
 
+    def environment_alpha(self, img, bump_datum, bump_scale=1.0):
+        """Environment alpha testing uses the bump map's alpha, not the
+        base map's (which can be an entirely opaque DXT1 specular map).
+        Keep it with the RGB before CI4/IA4 quantization. With no bump map,
+        retain the base alpha as a conservative fallback.
+        """
+        tag = self.map.tag(bump_datum)
+        images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+        if not images:
+            return img
+        alpha = decode(self.map, images[0], max(img.size)).getchannel("A")
+        scale = bump_scale or 1.0
+        if not math.isfinite(scale) or scale <= 0.0:
+            raise ValueError("invalid environment bump map scale")
+        if scale == 1.0:
+            alpha = alpha.resize(img.size, Image.LANCZOS)
+        else:
+            # The bump map repeats in base UV space. Sample pixel centres;
+            # wrapping also keeps a non-integral scale's last repeat correct.
+            source = alpha.load()
+            w, h = alpha.size
+            values = []
+            for y in range(img.height):
+                v = ((y + 0.5) / img.height * scale % 1.0) * h - 0.5
+                y0 = math.floor(v); fy = v - y0
+                for x in range(img.width):
+                    u = ((x + 0.5) / img.width * scale % 1.0) * w - 0.5
+                    x0 = math.floor(u); fx = u - x0
+                    values.append(round(sum(source[(x0 + dx) % w, (y0 + dy) % h] *
+                                            (fx if dx else 1 - fx) * (fy if dy else 1 - fy)
+                                            for dx in (0, 1) for dy in (0, 1))))
+            alpha = Image.new("L", img.size)
+            alpha.putdata(values)
+        img = img.copy()
+        img.putalpha(alpha)
+        return img
+
+    def environment_texture(self, base, bump, bump_scale=1.0):
+        """A coloured alpha-tested environment texture, keyed by its mask
+        as well as its RGB map; the same base can have different masks.
+        """
+        key = ("environment-cutout", base, bump, bump_scale or 1.0)
+        if key not in self.texture_by_bitmap:
+            tag = self.map.tag(base)
+            images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+            img = decode(self.map, images[0], 64) if images else None
+            self.texture_by_bitmap[key] = self.write_texture(
+                self.environment_alpha(img, bump, bump_scale), tag.name, cutout=True) if img is not None else -1
+        return self.texture_by_bitmap[key]
+
     def write_texture(self, img, tag_name, mask=None, fmt=None, cutout=False):
         """a texture from an image; with a mask (L, the image's size: a
         player's colour change), a CI4 texture's palette is split: entries
@@ -593,7 +643,13 @@ class LevelBuilder:
             paletted.save(png, transparency=transparency)
         else:
             img.save(png)
+        painted_png = png.read_bytes() if tag_name.startswith("weapons\\flamethrower\\bitmaps\\flamethrower window") else None
         name = self.make_sprite(png, fmt)
+        if painted_png is not None:
+            # Exact quantized inputs supplied to mksprite, outside DragonFS.
+            audit = self.out_dir.parent / "texture-audit"
+            audit.mkdir(exist_ok=True)
+            (audit / f"{name}.png").write_bytes(painted_png)
         rgb = img.convert("RGB")
         alpha = list(img.getchannel("A").getdata()) if img.mode == "RGBA" else None
         pixels = [p for i, p in enumerate(rgb.getdata()) if alpha is None or alpha[i] >= 128] or list(rgb.getdata())
@@ -613,7 +669,7 @@ class LevelBuilder:
         self.used_textures.add(name)
         return name
 
-    def grey_texture(self, bitmap_datum, alpha_test):
+    def grey_texture(self, bitmap_datum, alpha_test, alpha_source=None):
         """an environment texture in greyscale (I4; IA4 with a cut-out):
         GREYSCALE_TEXELS from an original image of up to 256 a side, as
         wide and high as tells the most of it (within twice the original's
@@ -622,7 +678,7 @@ class LevelBuilder:
         (the stretch undone; the renderer doubles, MATERIAL_DOUBLE: in the
         texture the doubling turned bright textures white, on the vertices
         bright light dark)."""
-        key = (bitmap_datum, alpha_test)
+        key = (bitmap_datum, alpha_test, alpha_source)
         if key in self.grey_by_bitmap:
             return self.grey_by_bitmap[key]
         tag = self.map.tag(bitmap_datum)
@@ -634,6 +690,8 @@ class LevelBuilder:
         if img is None:
             self.grey_by_bitmap[key] = (-1, 1.0)
             return self.grey_by_bitmap[key]
+        if alpha_test and alpha_source is not None:
+            img = self.environment_alpha(img, *alpha_source)
         if max(img.size) > 256:
             k = 256.0 / max(img.size)
             img = img.resize((max(1, int(img.width * k)), max(1, int(img.height * k))), Image.LANCZOS)
@@ -687,20 +745,26 @@ class LevelBuilder:
                 f = self.fields("ShaderEnvironment")
                 base = struct.unpack("<I", self.map.read(tag.address + f["base map"] + 12, 4))[0]
                 env_flags = struct.unpack("<H", self.map.read(tag.address + f["shader environment flags"], 2))[0]
+                bump = struct.unpack("<I", self.map.read(tag.address + f["bump map"] + 12, 4))[0]
+                bump_scale = struct.unpack("<f", self.map.read(tag.address + f["bump map scale"], 4))[0] or 1.0
                 if env_flags & 1:
                     flags |= MATERIAL_ALPHA_TEST
                 span = self.shader_span.get(shader_datum, 0.0)
-                if self.terrain_detail and span >= TERRAIN_REPEAT_UNITS:
+                # Terrain detail has no alpha channel. Alpha-tested grates
+                # and foliage must stay on the composed cutout path even
+                # when their BSP UV span would qualify as broad terrain.
+                if self.terrain_detail and not env_flags & 1 and span >= TERRAIN_REPEAT_UNITS:
                     first = self.terrain_materials(tag, base, span)
                     if first is not None:
                         self.material_by_shader[shader_datum] = first
                         return first
                 if self.greyscale and not self.base_needs_colour(base):
-                    texture, shade = self.grey_texture(base, bool(env_flags & 1))
+                    texture, shade = self.grey_texture(base, bool(env_flags & 1),
+                                                       (bump, bump_scale) if env_flags & 1 else None)
                     if texture >= 0:
                         flags |= MATERIAL_DOUBLE
                 else:
-                    texture = self.texture(base)
+                    texture = self.environment_texture(base, bump, bump_scale) if env_flags & 1 else self.texture(base)
                 overlay = self.overlay_material(tag, base) if texture >= 0 and not env_flags & 1 else None
                 if overlay is not None:
                     shade /= overlay[1]

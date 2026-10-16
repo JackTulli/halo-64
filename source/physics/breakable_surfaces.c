@@ -31,6 +31,9 @@ BREAKABLE_SURFACES.C
 struct breakable_surface_globals
 {
 	boolean enabled;
+#ifdef HALO_N64
+	_Alignas(long)
+#endif
 	byte breakable_surface_flags[MAXIMUM_STRUCTURE_BSPS_PER_SCENARIO][32];
 	struct breakable_surface_datum breakable_surfaces[MAXIMUM_STRUCTURE_BSPS_PER_SCENARIO][MAXIMUM_BREAKABLE_SURFACES_PER_MAP];
 };

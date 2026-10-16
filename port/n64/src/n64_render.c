@@ -13,6 +13,7 @@ units" everything here is drawn in), already lit.
 #include <libdragon.h>
 #include <malloc.h>
 #include <math.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -173,6 +174,11 @@ static struct
 	/* each batch's triangle strips (draw_batch), chunks of tiny3d index
 	buffers converted in place */
 	uint8_t *indices;
+	/* Large maps keep tables in RAM and stream visible geometry into a
+	bounded cache. A fence precedes reuse while the RSP may still read it. */
+	uint32_t geometry_rom, geometry_used;
+	uint8_t *geometry_cache;
+	uint32_t *geometry_offsets, *index_sizes;
 	sprite_t **sprites;
 	/* a view's batches in view, then in material order (draw_level) */
 	uint16_t *visible, *sorted;
@@ -283,6 +289,46 @@ static struct
 	int big_drawn, waiting, big_drawn_last, waiting_last;
 } tiles;
 
+/* Division first: malformed file offsets/counts cannot wrap validation. */
+static int file_span(unsigned long bytes, unsigned long offset, unsigned long count, unsigned long width)
+{
+	return width && offset <= bytes && count <= (bytes - offset) / width;
+}
+
+static int convert_level_strips(uint8_t *strip, unsigned long bytes)
+{
+	for (;;)
+	{
+		if (bytes < 8) return 0;
+		uint16_t count = ((uint16_t *)strip)[0], more = ((uint16_t *)strip)[1];
+		unsigned long step = 8 + ((count * 2UL + 7) & ~7UL);
+		if (step > bytes) return 0;
+		t3d_indexbuffer_convert((int16_t *)(strip + 8), count);
+		if (!more) return 1;
+		strip += step; bytes -= step;
+	}
+}
+
+static void unload_tiles(void)
+{
+	free(tiles.data);
+	free(tiles.resident);
+	free(tiles.batch_entry);
+	free(tiles.entry_slot);
+	free(tiles.entry_drawn);
+	free(tiles.slots);
+	free(tiles.slot_entry);
+	if (tiles.file) fclose(tiles.file);
+	memset(&tiles, 0, sizeof(tiles));
+}
+
+static unsigned long tile_bytes(unsigned code)
+{
+	unsigned w = code >> 4, h = code & 15;
+	/* The converter's 4..64 sides, at most1024 RGBA16 texels. */
+	return w >= 2 && w <= 6 && h >= 2 && h <= 6 && w + h <= 10 ? 2UL << (w + h) : 0;
+}
+
 /* ---------- the models file (tools/n64/models.py) */
 
 #define MODEL_SCALE 1024.0f
@@ -360,6 +406,7 @@ static struct
 	sprite_t **sprites;
 	unsigned short *texture_users;
 	unsigned long *texture_size;
+	unsigned long *texture_allocation;
 	unsigned long texture_bytes;
 	/* models that found no room, this frame and the last (drawn as nothing:
 	the FPS counter's) */
@@ -702,6 +749,7 @@ puts at the top of the heap the first time a frame asks for it) */
 
 /* the game's 320x240 z-buffer, its own, made with the buffers (below) */
 static surface_t game_zbuf;
+static int home_in_use;
 
 /* The game's display, and its z-buffer made right after its three buffers,
 in the same place (the menu keeps that place for them: GAME_DISPLAY_BYTES).
@@ -713,10 +761,21 @@ its scene) were still in memory, cleared and drew its depth over the first
 function it ran from there, bipeds_dispose_from_old_map) */
 static void game_display_init(void)
 {
-	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
+	static int first = 1;
+	unsigned long available;
+	void *home = n64_map_home_free_part(&available);
+	int buffers = available == 0 ? 2 : 3;
+	if (first && home && available >= GAME_DISPLAY_BYTES)
+	{
+		n64_display_lend(home, available);
+		home_in_use = 1;
+	}
+	display_init(RESOLUTION_320x240, DEPTH_16_BPP, buffers, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
 	if (game_zbuf.buffer)
 		surface_free(&game_zbuf);
 	game_zbuf = surface_alloc(FMT_RGBA16, 320, 240);
+	n64_display_lend(NULL, 0);
+	first = 0;
 	screen_width = 320;
 	screen_height = 240;
 }
@@ -739,11 +798,24 @@ from the heap's top): with its buffers in the maps' home, which has no map
 while the menu runs (n64_display_lend) */
 static surface_t menu_zbuf;
 /* display buffers in the maps' home now: no map may go there */
-static int home_in_use;
 
 int n64_render_home_in_use(void)
 {
 	return home_in_use;
+}
+
+void n64_render_prepare_map_image(void)
+{
+	rspq_wait();
+	game_display_close();
+	home_in_use = 0;
+	n64_render_unload_level();
+}
+
+void n64_render_finish_map_image(void)
+{
+	game_display_init();
+	display_mode = DISPLAY_GAME;
 }
 
 void n64_render_set_menu_display(int on)
@@ -765,6 +837,9 @@ void n64_render_set_menu_display(int on)
 	if (on)
 	{
 		unsigned long home_size;
+		/* All borrowed display buffers have closed. Give the title the
+		unused tail of a large map back before its transient allocations. */
+		n64_map_boot_complete();
 		void *home = n64_map_home_free_part(&home_size);
 
 		game_display_place = malloc(GAME_DISPLAY_BYTES);
@@ -1013,8 +1088,12 @@ void n64_render_initialize(void)
 			debug_fog_test = atoi(text);
 	}
 	renderer.identity = malloc_uncached(sizeof(T3DMat4FP));
+	if (!renderer.identity) n64_fatal("no memory for renderer identity matrix");
 	for (int i = 0; i < FRAMES_IN_FLIGHT; i++)
+	{
 		renderer.matrices[i] = malloc_uncached(sizeof(T3DMat4FP) * MATRICES_PER_FRAME);
+		if (!renderer.matrices[i]) n64_fatal("no memory for renderer frame matrices");
+	}
 	rdpq_text_register_font(FONT_BUILTIN_DEBUG_MONO, rdpq_font_load_builtin(FONT_BUILTIN_DEBUG_MONO));
 	/* the models' render modes, recorded now (the debug flags read): made
 	with the first model a game loaded they stayed for good wherever the
@@ -1078,10 +1157,8 @@ struct model_release
 	int count;
 };
 
-static void release_model(void *argument)
+static void release_model_contents(struct model_release *release)
 {
-	struct model_release *release = argument;
-
 	for (int i = 0; i < release->count; i++)
 	{
 		if (release->setups && release->setups[i])
@@ -1092,6 +1169,13 @@ static void release_model(void *argument)
 	free(release->setups);
 	free(release->blocks);
 	free(release->data);
+}
+
+static void release_model(void *argument)
+{
+	struct model_release *release = argument;
+
+	release_model_contents(release);
 	free(release);
 }
 
@@ -1099,16 +1183,26 @@ static void drop_model(int index)
 {
 	struct loaded_model *loaded = &models.loaded[index];
 	struct model_record *model = &models.models[index];
-	struct model_release *release;
+	struct model_release fallback, *release;
 
 	if (!loaded->data)
 		return;
 	release = malloc(sizeof(*release));
+	if (!release)
+		release = &fallback;
 	release->data = loaded->data;
 	release->setups = loaded->setups;
 	release->blocks = loaded->blocks;
 	release->count = model->far_first + model->far_count;
-	rdpq_call_deferred(release_model, release);
+	if (release == &fallback)
+	{
+		/* Reclaim the payload before texture releases need deferred-call
+		metadata. This path is outside block recording, like the deferred path. */
+		rspq_wait();
+		release_model_contents(release);
+	}
+	else
+		rdpq_call_deferred(release_model, release);
 	for (int b = 0; b < model->far_first + model->far_count; b++)
 		release_texture(models.batches[model->first_batch + b].texture);
 	models.loaded_bytes -= model->vertex_bytes + model->index_bytes;
@@ -1198,15 +1292,24 @@ enum { MODEL_MODE_TEXTURED, MODEL_MODE_GLOW, MODEL_MODE_UNTEXTURED, MODEL_MODE_C
 	MODEL_MODES_WITH_DEPTH,
 	/* the same, for skies: no depth */
 	NUMBER_OF_MODEL_MODES = MODEL_MODES_WITH_DEPTH * 2 };
-/* each mode without fog, then with (n64_render_set_fog) */
-static rspq_block_t *model_modes[2 * NUMBER_OF_MODEL_MODES];
+/* Keep every existing mode/key unchanged. Cloaked units need only three
+extra modes with and without fog; skies never inherit unit camouflage. */
+enum { MODEL_CLOAK_TEXTURED, MODEL_CLOAK_GLOW, MODEL_CLOAK_UNTEXTURED,
+	MODEL_CLOAK_KINDS, MODEL_CLOAK_FIRST = 2 * NUMBER_OF_MODEL_MODES,
+	MODEL_MODE_COUNT = MODEL_CLOAK_FIRST + 2 * MODEL_CLOAK_KINDS };
+static rspq_block_t *model_modes[MODEL_MODE_COUNT];
+typedef char verify_model_mode_sort_bits[MODEL_MODE_COUNT <= 32 ? 1 : -1];
 
-static int model_mode(sprite_t *sprite, int flags)
+static int model_mode(sprite_t *sprite, int flags, unsigned char opacity)
 {
 	int mode = !sprite ? MODEL_MODE_UNTEXTURED : (flags & MATERIAL_BLEND) ? MODEL_MODE_BLEND :
 		(flags & MATERIAL_GLOW) ? MODEL_MODE_GLOW : (flags & MATERIAL_ALPHA_TEST) ? MODEL_MODE_CUTOUT :
 		MODEL_MODE_TEXTURED;
 
+	if (opacity < 255 && !(flags & MATERIAL_SKY))
+		return MODEL_CLOAK_FIRST + (renderer.fog ? MODEL_CLOAK_KINDS : 0) +
+			(!sprite ? MODEL_CLOAK_UNTEXTURED : flags & (MATERIAL_GLOW | MATERIAL_BLEND) ?
+			MODEL_CLOAK_GLOW : MODEL_CLOAK_TEXTURED);
 	if (flags & MATERIAL_SKY)
 		mode += MODEL_MODES_WITH_DEPTH;
 	return renderer.fog ? mode + NUMBER_OF_MODEL_MODES : mode;
@@ -1214,21 +1317,36 @@ static int model_mode(sprite_t *sprite, int flags)
 
 static void record_model_modes(void)
 {
-	for (int mode = 0; mode < 2 * NUMBER_OF_MODEL_MODES; mode++)
+	for (int mode = 0; mode < MODEL_MODE_COUNT; mode++)
 	{
 		if (model_modes[mode])
 			continue;
 		int kind = mode % MODEL_MODES_WITH_DEPTH;
 		int depth = mode % NUMBER_OF_MODEL_MODES < MODEL_MODES_WITH_DEPTH;
+		int cloak = mode >= MODEL_CLOAK_FIRST;
+		int cloak_kind = (mode - MODEL_CLOAK_FIRST) % MODEL_CLOAK_KINDS;
 
 		rspq_block_begin();
 		rdpq_mode_begin();
 		rdpq_set_mode_standard();
-		rdpq_mode_zbuf(depth && debug_fog_test != 4, depth);
+		rdpq_mode_zbuf((cloak || depth) && debug_fog_test != 4, cloak ? false : depth);
 		rdpq_mode_persp(true);
-		rdpq_mode_fog(mode >= NUMBER_OF_MODEL_MODES ? RDPQ_FOG_STANDARD : 0);
+		rdpq_mode_fog((cloak ? mode >= MODEL_CLOAK_FIRST + MODEL_CLOAK_KINDS :
+			mode >= NUMBER_OF_MODEL_MODES) ? RDPQ_FOG_STANDARD : 0);
 		rdpq_mode_filter(FILTER_BILINEAR);
-		if (kind == MODEL_MODE_GLOW)
+		if (cloak)
+		{
+			/* Keep authored texture coverage and shaded armour, using PRIM
+			alpha for translucency; SHADE alpha remains available to fog. */
+			if (cloak_kind == MODEL_CLOAK_UNTEXTURED)
+				rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, SHADE), (0, 0, 0, PRIM)));
+			else if (cloak_kind == MODEL_CLOAK_GLOW)
+				rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, TEX0), (TEX0, 0, PRIM, 0)));
+			else
+				rdpq_mode_combiner(RDPQ_COMBINER1((TEX0, 0, SHADE, 0), (TEX0, 0, PRIM, 0)));
+			rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+		}
+		else if (kind == MODEL_MODE_GLOW)
 		{
 			rdpq_mode_combiner(RDPQ_COMBINER_TEX);
 			rdpq_mode_alphacompare(128);
@@ -1254,7 +1372,7 @@ static void record_model_modes(void)
 		else
 			rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
 		rdpq_mode_end();
-		if (kind == MODEL_MODE_BLEND)
+		if (!cloak && kind == MODEL_MODE_BLEND)
 			rdpq_set_prim_color(RGBA32(255, 255, 255, GLOW_ALPHA));
 		model_modes[mode] = rspq_block_end();
 	}
@@ -1280,6 +1398,42 @@ static rspq_block_t *record_setup(sprite_t *sprite, int flags)
 
 /* a model's data in memory (read from the cartridge, its textures read and
 its batches recorded the first time), or 0 */
+static unsigned long model_texture_allocation(int texture)
+{
+	if (!models.texture_allocation[texture])
+	{
+		char path[64];
+		int size, allocation = 0;
+		snprintf(path, sizeof(path), "rom:/tex/%.24s.sprite", models.textures[texture].name);
+		FILE *file = fopen(path, "rb");
+		if (file)
+		{
+			fseek(file, 0, SEEK_END); size = ftell(file); fseek(file, 0, SEEK_SET);
+			/* Public API's size-only probe: no decompression or allocation. */
+			asset_loadf_into(file, &size, NULL, &allocation);
+			fclose(file);
+		}
+		models.texture_allocation[texture] = allocation > 0 ? (unsigned long)allocation + 64 : 4096;
+	}
+	return models.texture_allocation[texture];
+}
+
+static unsigned long model_allocation(struct model_record const *model)
+{
+	int count = model->far_first + model->far_count;
+	unsigned long needed = model->vertex_bytes + model->index_bytes + count * 768 + MODEL_HEAP_MARGIN;
+	for (int b = 0; b < count; b++)
+	{
+		int texture = models.batches[model->first_batch + b].texture;
+		if (texture < 0 || texture >= models.header->texture_count || models.sprites[texture]) continue;
+		int previous;
+		for (previous = 0; previous < b; previous++)
+			if (models.batches[model->first_batch + previous].texture == texture) break;
+		if (previous == b) needed += model_texture_allocation(texture);
+	}
+	return needed;
+}
+
 static int load_model(int index)
 {
 	struct model_record *model = &models.models[index];
@@ -1294,10 +1448,11 @@ static int load_model(int index)
 	still in flight (their textures go with the last model using them),
 	past the cache's size or while the heap is short: the model, its
 	recordings (~1 KB a batch), its textures (~2 KB each) and a margin */
-	unsigned long needed = size + (model->far_first + model->far_count) * 3072 + MODEL_HEAP_MARGIN;
-
 	for (;;)
 	{
+		/* Count each shared texture once, using its actual asset buffer size.
+		Painted-panel subdivisions reuse textures across many batches. */
+		unsigned long needed = model_allocation(model);
 		int short_of_heap = n64_heap_free() < needed;
 
 		if (models.loaded_bytes + models.texture_bytes + size <= MODEL_CACHE_BYTES && !short_of_heap)
@@ -1351,7 +1506,7 @@ static int load_model(int index)
 	{
 		struct model_batch *batch = &models.batches[model->first_batch + b];
 		sprite_t *sprite = acquire_texture(batch->texture);
-		int run = models.runs[model->first_batch + b];
+		int run = models.runs ? models.runs[model->first_batch + b] : RUN_HEAD | 1;
 
 		/* (a run's batches all in its first's block: the rest have none,
 		mark_batch_runs) */
@@ -1456,12 +1611,13 @@ static void load_models(const char *map_name)
 	if (models.data)
 	{
 		rspq_wait();
-		for (int i = 0; i < models.header->model_count; i++)
+		for (int i = 0; models.loaded && i < models.header->model_count; i++)
 			drop_model(i);
 		rspq_wait();
 		free(models.sprites);
 		free(models.texture_users);
 		free(models.texture_size);
+		free(models.texture_allocation);
 		free(models.loaded);
 		free(models.by_tag);
 		free(models.runs);
@@ -1478,16 +1634,33 @@ static void load_models(const char *map_name)
 		debugf("n64: no models %s\n", models.path);
 		return;
 	}
-	/* the tables stay in memory; vertices_offset is where they end */
-	if (fread(&header, 1, sizeof(header), file) != sizeof(header) || memcmp(header.magic, "H64O", 4) || header.version != 4)
+	/* Tables are required; don't publish partially read model metadata. */
+	if (fseek(file, 0, SEEK_END)) { fclose(file); return; }
+	long file_size = ftell(file);
+	if (file_size < (long)sizeof(header) || fseek(file, 0, SEEK_SET) ||
+		fread(&header, 1, sizeof(header), file) != sizeof(header) ||
+		memcmp(header.magic, "H64O", 4) || header.version != 4 ||
+		header.vertices_offset < sizeof(header) || header.vertices_offset > (unsigned long)file_size ||
+		!file_span(header.vertices_offset, header.textures_offset, header.texture_count, sizeof(struct level_texture)) ||
+		!file_span(header.vertices_offset, header.models_offset, header.model_count, sizeof(struct model_record)) ||
+		!file_span(header.vertices_offset, header.regions_offset, header.region_count, sizeof(struct region_record)) ||
+		!file_span(header.vertices_offset, header.permutations_offset, header.permutation_count, sizeof(int16_t)) ||
+		!file_span(header.vertices_offset, header.geometries_offset, header.geometry_count, sizeof(struct geometry_record)) ||
+		!file_span(header.vertices_offset, header.batches_offset, header.batch_count, sizeof(struct model_batch)) ||
+		!file_span(header.vertices_offset, header.segments_offset, header.segment_count, sizeof(struct model_segment)))
 	{
 		fclose(file);
-		assertf(0, "%s was converted for another build", models.path);
+		debugf("n64: invalid/short model table %s\n", models.path);
 		return;
 	}
 	models.data = memalign(16, header.vertices_offset);
-	fseek(file, 0, SEEK_SET);
-	fread(models.data, 1, header.vertices_offset, file);
+	if (!models.data || fseek(file, 0, SEEK_SET) || fread(models.data, 1, header.vertices_offset, file) != header.vertices_offset)
+	{
+		free(models.data); models.data = NULL;
+		fclose(file);
+		debugf("n64: unavailable model table %s\n", models.path);
+		return;
+	}
 	fclose(file);
 	models.header = (struct models_header *)models.data;
 	models.textures = (struct level_texture *)(models.data + models.header->textures_offset);
@@ -1500,14 +1673,40 @@ static void load_models(const char *map_name)
 	models.sprites = calloc(models.header->texture_count, sizeof(sprite_t *));
 	models.texture_users = calloc(models.header->texture_count, sizeof(unsigned short));
 	models.texture_size = calloc(models.header->texture_count, sizeof(unsigned long));
+	models.texture_allocation = calloc(models.header->texture_count, sizeof(unsigned long));
 	models.loaded = calloc(models.header->model_count, sizeof(struct loaded_model));
+	if ((!models.sprites && models.header->texture_count) || (!models.texture_users && models.header->texture_count) ||
+		(!models.texture_size && models.header->texture_count) || (!models.texture_allocation && models.header->texture_count) ||
+		(!models.loaded && models.header->model_count))
+	{
+		debugf("n64: no memory for model cache tables\n");
+		load_models(NULL);
+		return;
+	}
+	/* All following table-indexed paths rely on these source ranges. */
+	for (int i = 0; i < models.header->model_count; i++)
+	{
+		const struct model_record *m = &models.models[i];
+		if (m->first_region + m->region_count > models.header->region_count ||
+			m->first_batch + m->far_first + m->far_count > models.header->batch_count ||
+			m->vertex_bytes > ULONG_MAX - m->index_bytes)
+		{ load_models(NULL); return; }
+	}
+	for (int b = 0; b < models.header->batch_count; b++)
+	{
+		const struct model_batch *part = &models.batches[b];
+		if (part->first_segment + part->segment_count > models.header->segment_count ||
+			part->texture < -1 || part->texture >= models.header->texture_count)
+		{ load_models(NULL); return; }
+	}
 	models.tag_count = 0;
 	for (int i = 0; i < models.header->model_count; i++)
 	{
 		if (models.models[i].tag_index + 1 > models.tag_count)
 			models.tag_count = models.models[i].tag_index + 1;
 	}
-	models.by_tag = calloc(models.tag_count, sizeof(struct model_record *));
+	models.by_tag = calloc(models.tag_count ? models.tag_count : 1, sizeof(struct model_record *));
+	if (!models.by_tag) { load_models(NULL); return; }
 	for (int i = 0; i < models.header->model_count; i++)
 		models.by_tag[models.models[i].tag_index] = &models.models[i];
 	mark_batch_runs();
@@ -1537,7 +1736,7 @@ void n64_render_unload_level(void)
 		free(level.cluster_group_count);
 		for (int i = 0; i < level.header->texture_count; i++)
 		{
-			if (level.sprites[i])
+			if (level.sprites && level.sprites[i])
 				sprite_free(level.sprites[i]);
 		}
 		free(level.sprites);
@@ -1551,19 +1750,10 @@ void n64_render_unload_level(void)
 			free(level.batch_chunk);
 			fclose(level.stream);
 		}
-		if (tiles.data)
-		{
-			free(tiles.data);
-			free(tiles.resident);
-			free(tiles.batch_entry);
-			free(tiles.entry_slot);
-			free(tiles.entry_drawn);
-			free(tiles.slots);
-			free(tiles.slot_entry);
-			if (tiles.file)
-				fclose(tiles.file);
-		}
-		memset(&tiles, 0, sizeof(tiles));
+		unload_tiles();
+		free(level.geometry_cache);
+		free(level.geometry_offsets);
+		free(level.index_sizes);
 		free(level.data);
 		memset(&level, 0, sizeof(level));
 	}
@@ -1590,58 +1780,59 @@ static void load_tiles(const char *level_path)
 {
 	char path[64];
 	struct tiles_header header;
-	size_t length = strlen(level_path);
-	size_t table;
+	size_t length = strlen(level_path), table;
 	FILE *file;
+	long file_size;
 
-	if (length < 4 || length + 3 > sizeof(path))
-		return;
+	if (length < 4 || length + 3 > sizeof(path)) return;
 	memcpy(path, level_path, length - 4);
 	strcpy(path + length - 4, ".tiles");
 	file = fopen(path, "rb");
-	if (!file)
-		return;
-	if (fread(&header, 1, sizeof(header), file) != sizeof(header) || memcmp(header.magic, "H64T", 4) ||
-		header.version != 1 || !header.entry_count)
-	{
-		fclose(file);
-		return;
-	}
+	if (!file) return;
+	if (fseek(file, 0, SEEK_END) || (file_size = ftell(file)) < (long)sizeof(header) ||
+		fseek(file, 0, SEEK_SET) || fread(&header, 1, sizeof(header), file) != sizeof(header) ||
+		memcmp(header.magic, "H64T", 4) || header.version != 1 || !header.entry_count ||
+		header.entry_count > INT16_MAX || header.entry_count > level.header->batch_count ||
+		header.detail_level != 1 || header.entries_offset < sizeof(header) || (header.entries_offset & 3) ||
+		!file_span((unsigned long)file_size, header.entries_offset, header.entry_count, sizeof(struct tile_entry)) ||
+		header.big_largest > 2048 ||
+		!file_span((unsigned long)file_size, header.resident_offset, header.resident_size, 1) ||
+		header.big_offset > (unsigned long)file_size)
+		goto failed;
 	table = header.entries_offset + header.entry_count * sizeof(struct tile_entry);
+	if (header.resident_offset < table || header.big_offset < header.resident_offset + header.resident_size)
+		goto failed;
 	tiles.data = malloc(table);
 	tiles.resident = memalign(16, header.resident_size ? header.resident_size : 16);
 	tiles.batch_entry = malloc((level.header->batch_count ? level.header->batch_count : 1) * sizeof(int16_t));
 	tiles.entry_slot = malloc(header.entry_count * sizeof(int16_t));
 	tiles.entry_drawn = calloc(header.entry_count, sizeof(unsigned long));
 	if (!tiles.data || !tiles.resident || !tiles.batch_entry || !tiles.entry_slot || !tiles.entry_drawn)
-	{
-		debugf("n64: no memory for the terrain tiles\n");
-		free(tiles.data);
-		free(tiles.resident);
-		free(tiles.batch_entry);
-		free(tiles.entry_slot);
-		free(tiles.entry_drawn);
-		memset(&tiles, 0, sizeof(tiles));
-		fclose(file);
-		return;
-	}
-	fseek(file, 0, SEEK_SET);
-	fread(tiles.data, 1, table, file);
-	fseek(file, header.resident_offset, SEEK_SET);
-	fread(tiles.resident, 1, header.resident_size, file);
-	/* (the RDP reads them) */
-	data_cache_hit_writeback(tiles.resident, header.resident_size);
-	tiles.header = (struct tiles_header *)tiles.data;
+		goto failed;
+	if (fseek(file, 0, SEEK_SET) || fread(tiles.data, 1, table, file) != table ||
+		fseek(file, header.resident_offset, SEEK_SET) ||
+		fread(tiles.resident, 1, header.resident_size, file) != header.resident_size)
+		goto failed;
 	tiles.entries = (struct tile_entry *)(tiles.data + header.entries_offset);
-	for (int b = 0; b < level.header->batch_count; b++)
-		tiles.batch_entry[b] = -1;
+	for (int b = 0; b < level.header->batch_count; b++) tiles.batch_entry[b] = -1;
 	for (int e = 0; e < header.entry_count; e++)
 	{
-		if (tiles.entries[e].batch < level.header->batch_count)
-			tiles.batch_entry[tiles.entries[e].batch] = (int16_t)e;
+		const struct tile_entry *entry = &tiles.entries[e];
+		unsigned long small = tile_bytes(entry->size), big = tile_bytes(entry->big_size);
+		if (entry->batch >= level.header->batch_count || tiles.batch_entry[entry->batch] >= 0 ||
+			!small || entry->shift_s > 10 || entry->shift_t > 10 || (entry->offset & 15) ||
+			!file_span(header.resident_size, entry->offset, small, 1) ||
+			(entry->big_size && (!big || big > header.big_largest || entry->big_shift_s > 10 ||
+			entry->big_shift_t > 10 || (entry->big_offset & 15) ||
+			!file_span((unsigned long)file_size - header.big_offset, entry->big_offset, big, 1))))
+			goto failed;
+		tiles.batch_entry[entry->batch] = (int16_t)e;
 		tiles.entry_slot[e] = -1;
 	}
-	/* (the detail map's level: 64x64 I4 halved that many times) */
+	/* Publish only complete metadata/pixels. Optional near-slot OOM keeps
+	   the already validated resident tiles, as upstream intended. */
+	tiles.header = (struct tiles_header *)tiles.data;
+	data_cache_hit_writeback(tiles.resident, header.resident_size);
 	tiles.tmem = ((64 >> header.detail_level) * (64 >> header.detail_level) / 2 + 7) & ~7;
 	tiles.near_squared = TILE_NEAR_UNITS * WORLD_SCALE * TILE_NEAR_UNITS * WORLD_SCALE;
 	tiles.slot_size = (header.big_largest + 15) & ~15UL;
@@ -1651,17 +1842,25 @@ static void load_tiles(const char *level_path)
 			(tiles.slots = memalign(16, tiles.slot_count * tiles.slot_size)) != NULL)
 			break;
 	}
-	if (!tiles.slots)
-		tiles.slot_count = 0;
-	tiles.slot_entry = malloc((tiles.slot_count ? tiles.slot_count : 1) * sizeof(int16_t));
-	for (int i = 0; i < tiles.slot_count; i++)
-		tiles.slot_entry[i] = -1;
+	if (!tiles.slots) tiles.slot_count = 0;
 	if (tiles.slot_count)
-		tiles.file = file;
-	else
-		fclose(file);
+	{
+		tiles.slot_entry = malloc(tiles.slot_count * sizeof(int16_t));
+		if (!tiles.slot_entry)
+		{
+			free(tiles.slots); tiles.slots = NULL; tiles.slot_count = 0;
+		}
+	}
+	for (int i = 0; i < tiles.slot_count; i++) tiles.slot_entry[i] = -1;
+	if (tiles.slot_count) tiles.file = file;
+	else fclose(file);
 	debugf("n64: terrain tiles: %d (%lu KB in memory), %d slots of %lu bytes for the near ones\n",
 		header.entry_count, (unsigned long)header.resident_size / 1024, tiles.slot_count, tiles.slot_size);
+	return;
+failed:
+	debugf("n64: terrain tiles unavailable (invalid/short file or no memory)\n");
+	fclose(file);
+	unload_tiles();
 }
 
 static int compare_batch_centers(const void *a, const void *b)
@@ -1779,41 +1978,60 @@ int n64_render_load_level(const char *map_name, int low)
 		debugf("n64: no level geometry %s\n", path);
 		return 0;
 	}
-	fseek(file, 0, SEEK_END);
-	size = ftell(file);
-	fseek(file, 0, SEEK_SET);
-	{
-		struct level_header header;
-
-		fread(&header, 1, sizeof(header), file);
-		fseek(file, 0, SEEK_SET);
-		assertf(!memcmp(header.magic, "H64L", 4) && (header.version == 4 || header.version == 5),
-			"%s was converted for another build", path);
-		/* (a streamed level: its tables alone, the clusters read as they
-		are drawn -- stream_chunk) */
-		if (header.version == 5)
-			size = header.vertices_offset;
-	}
-	level.data = memalign(16, size);
-	fread(level.data, 1, size, file);
+	if (fseek(file, 0, SEEK_END) || (size = ftell(file)) < 0 || fseek(file, 0, SEEK_SET))
+		n64_fatal("cannot seek native level geometry");
+	struct level_header disk_header;
+	if (size < (long)sizeof(disk_header) || fread(&disk_header, 1, sizeof(disk_header), file) != sizeof(disk_header) ||
+		memcmp(disk_header.magic, "H64L", 4) || (disk_header.version != 4 && disk_header.version != 5) ||
+		disk_header.vertices_offset < sizeof(disk_header) || disk_header.vertices_offset > (unsigned long)size ||
+		disk_header.indices_offset > (unsigned long)size || disk_header.indices_size > (unsigned long)size - disk_header.indices_offset)
+		n64_fatal("invalid native level geometry header");
+	if (!file_span(disk_header.vertices_offset, disk_header.textures_offset, disk_header.texture_count, sizeof(struct level_texture)) ||
+		!file_span(disk_header.vertices_offset, disk_header.materials_offset, disk_header.material_count, sizeof(struct level_material)) ||
+		!file_span(disk_header.vertices_offset, disk_header.clusters_offset, disk_header.cluster_count, sizeof(struct level_cluster)) ||
+		!file_span(disk_header.vertices_offset, disk_header.batches_offset, disk_header.batch_count, sizeof(struct level_batch)) ||
+		!file_span(disk_header.vertices_offset, disk_header.owners_offset, disk_header.owner_total, sizeof(uint16_t)) ||
+		!file_span((unsigned long)size, disk_header.vertices_offset, disk_header.vertices_size, 1))
+		n64_fatal("invalid native level table ranges");
+	/* Campaign v5 keeps upstream's chunk cache. Multiplayer v4 keeps the
+	   reviewed PC 64KiB DMA cache only when the whole map would crowd heap. */
+	int streamed = disk_header.version == 4 && (n64_heap_free() < 512 * 1024 || (unsigned long)size > n64_heap_free() - 512 * 1024);
+	unsigned long resident = streamed || disk_header.version == 5 ? disk_header.vertices_offset : (unsigned long)size;
+	level.data = memalign(16, resident);
+	if (!level.data) n64_fatal("no memory for native level tables");
+	if (fseek(file, 0, SEEK_SET) || fread(level.data, 1, resident, file) != resident) n64_fatal("short native level geometry read");
 	/* the RSP reads the vertices by DMA */
-	data_cache_hit_writeback_invalidate(level.data, size);
+	data_cache_hit_writeback_invalidate(level.data, resident);
 
 	level.header = (struct level_header *)level.data;
 	if (level.header->version == 5)
 	{
+		if (!file_span(resident, level.header->stream_offset, 1, 4) ||
+			!file_span(resident, level.header->stream_offset + 4, level.header->cluster_count, sizeof(struct level_cluster_chunks)))
+			n64_fatal("invalid native campaign stream table");
 		uint8_t *stream = level.data + level.header->stream_offset;
 
 		level.stream = file;
 		level.chunk_count = (int)*(uint32_t *)stream;
 		level.cluster_chunks = (struct level_cluster_chunks *)(stream + 4);
 		level.chunks = (struct level_chunk *)(stream + 4 + level.header->cluster_count * sizeof(struct level_cluster_chunks));
+		unsigned long chunk_offset = level.header->stream_offset + 4 + level.header->cluster_count * sizeof(struct level_cluster_chunks);
+		if (level.chunk_count < 0 || level.chunk_count > INT16_MAX ||
+			!file_span(resident, chunk_offset, level.chunk_count, sizeof(struct level_chunk)))
+			n64_fatal("invalid native campaign chunks");
 		level.resident = calloc(level.chunk_count ? level.chunk_count : 1, sizeof(uint8_t *));
 		level.resident_drawn = calloc(level.chunk_count ? level.chunk_count : 1, sizeof(unsigned long));
 		level.batch_chunk = malloc((level.header->batch_count ? level.header->batch_count : 1) * sizeof(uint16_t));
 		level.chunk_slot = malloc((level.chunk_count ? level.chunk_count : 1) * sizeof(int16_t));
+		if (!level.resident || !level.resident_drawn || !level.batch_chunk || !level.chunk_slot)
+			n64_fatal("no memory for campaign chunk tables");
 		for (int k = 0; k < level.chunk_count; k++)
 		{
+			if (!file_span(level.header->vertices_size, level.chunks[k].vertex_offset, level.chunks[k].vertex_size, 1) ||
+				!file_span(level.header->indices_size, level.chunks[k].index_offset, level.chunks[k].index_size, 1) ||
+				level.chunks[k].first_batch + level.chunks[k].batch_count > level.header->batch_count ||
+				level.chunks[k].vertex_size > ULONG_MAX - level.chunks[k].index_size - 15)
+				n64_fatal("invalid native campaign chunk range");
 			unsigned long chunk_size = level.chunks[k].vertex_size + level.chunks[k].index_size;
 
 			if (chunk_size > level.slot_size)
@@ -1835,6 +2053,7 @@ int n64_render_load_level(const char *map_name, int low)
 		if (!level.slots)
 			level.slot_count = 0;
 		level.slot_chunk = malloc((level.slot_count ? level.slot_count : 1) * sizeof(int16_t));
+		if (!level.slot_chunk) n64_fatal("no memory for campaign slot table");
 		for (int i = 0; i < level.slot_count; i++)
 			level.slot_chunk[i] = -1;
 		debugf("n64: level streamed: %d chunks, %d slots of %lu bytes\n", level.chunk_count, level.slot_count,
@@ -1849,43 +2068,62 @@ int n64_render_load_level(const char *map_name, int low)
 	level.clusters = (struct level_cluster *)(level.data + level.header->clusters_offset);
 	level.owners = (uint16_t *)(level.data + level.header->owners_offset);
 	level.batches = (struct level_batch *)(level.data + level.header->batches_offset);
-	level.vertices = (T3DVertPacked *)(level.data + level.header->vertices_offset);
-	level.indices = level.data + level.header->indices_offset;
 	if (level.stream)
 	{
+		memset(level.batch_chunk, 0xff, level.header->batch_count * sizeof(uint16_t));
 		for (int k = 0; k < level.chunk_count; k++)
 		{
 			for (int b = level.chunks[k].first_batch; b < level.chunks[k].first_batch + level.chunks[k].batch_count; b++)
 				level.batch_chunk[b] = (uint16_t)k;
 		}
+		for (int b = 0; b < level.header->batch_count; b++)
+			if (level.batch_chunk[b] == UINT16_MAX) n64_fatal("unmapped native campaign batch");
+	}
+	else if (streamed)
+	{
+		level.geometry_rom = dfs_rom_addr(path + 5);
+		level.geometry_cache = memalign(16, 64 * 1024);
+		level.geometry_offsets = malloc(level.header->batch_count * sizeof(uint32_t));
+		level.index_sizes = malloc(level.header->batch_count * sizeof(uint32_t));
+		if (!level.geometry_rom || !level.geometry_cache || !level.geometry_offsets || !level.index_sizes)
+			n64_fatal("no memory for the native geometry stream cache");
+		memset(level.geometry_offsets, 0xff, level.header->batch_count * sizeof(uint32_t));
+		for (int b = 0; b < level.header->batch_count; b++)
+		{
+			unsigned long next = b + 1 < level.header->batch_count ? level.batches[b + 1].index_offset : level.header->indices_size;
+			if (next <= level.batches[b].index_offset || next > level.header->indices_size)
+				n64_fatal("invalid native level strip order");
+			level.index_sizes[b] = next - level.batches[b].index_offset;
+		}
+		debugf("n64: level geometry streamed: %lu KB tables, 64 KB cache\n", resident / 1024);
+	}
+	else
+	{
+		level.vertices = (T3DVertPacked *)(level.data + level.header->vertices_offset);
+		level.indices = level.data + level.header->indices_offset;
 	}
 	level.visible = malloc(level.header->batch_count * sizeof(uint16_t));
 	level.sorted = malloc(level.header->batch_count * sizeof(uint16_t));
 	level.material_starts = malloc((level.header->material_count + 1) * sizeof(uint16_t));
+	if (!level.visible || !level.sorted || !level.material_starts)
+		n64_fatal("no memory for native level draw tables");
 	/* (a streamed level is culled by its chunks instead) */
 	if (!level.stream)
 		build_level_groups();
 	/* the strips' indices made into tiny3d's vertex cache addresses, once
 	(the RSP reads them by DMA: written back after) -- recorded blocks of
 	the triangles cost Sidewinder 275 KB, the indices ~40 */
-	for (int b = 0; b < level.header->batch_count && !level.stream; b++)
+	for (int b = 0; b < level.header->batch_count && !level.stream && !streamed; b++)
 	{
-		uint8_t *chunk = level.indices + level.batches[b].index_offset;
-
-		for (;;)
-		{
-			uint16_t count = ((uint16_t *)chunk)[0], more = ((uint16_t *)chunk)[1];
-
-			t3d_indexbuffer_convert((int16_t *)(chunk + 8), count);
-			if (!more)
-				break;
-			chunk += 8 + ((count * 2 + 7) & ~7);
-		}
+		unsigned long start = level.batches[b].index_offset;
+		unsigned long end = b + 1 < level.header->batch_count ? level.batches[b + 1].index_offset : level.header->indices_size;
+		if (end <= start || end > level.header->indices_size || !convert_level_strips(level.indices + start, end - start))
+			n64_fatal("invalid resident level strip");
 	}
-	if (!level.stream)
-		data_cache_hit_writeback(level.indices, level.header->indices_size);
+	if (!level.stream && !streamed) data_cache_hit_writeback(level.indices, level.header->indices_size);
 	debugf("n64: level strips ready, %lu KB of heap left\n", n64_heap_free() / 1024);
-	level.sprites = calloc(level.header->texture_count, sizeof(sprite_t *));
+	level.sprites = calloc(level.header->texture_count ? level.header->texture_count : 1, sizeof(sprite_t *));
+	if (!level.sprites) n64_fatal("no memory for native level texture table");
 	for (int i = 0; i < level.header->texture_count; i++)
 	{
 		snprintf(path, sizeof(path), "rom:/tex/%.24s.sprite", level.textures[i].name);
@@ -2008,6 +2246,13 @@ static void set_material(int index)
 
 	if (!level.material_blocks[fog])
 		level.material_blocks[fog] = calloc(level.header->material_count, sizeof(rspq_block_t *));
+	if (!level.material_blocks[fog])
+	{
+		/* Same native commands without a recording when its table cannot
+		   be allocated. Never dereference the failed allocation. */
+		record_material(index);
+		return;
+	}
 	if (!level.material_blocks[fog][index])
 	{
 		rspq_block_begin();
@@ -2303,23 +2548,22 @@ static int stream_chunk(int k)
 		level.slot_chunk[slot] = -1;
 	}
 	block = level.slots + slot * level.slot_size;
-	fseek(level.stream, level.header->vertices_offset + chunk->vertex_offset, SEEK_SET);
-	fread(block, 1, chunk->vertex_size, level.stream);
-	fseek(level.stream, level.header->indices_offset + chunk->index_offset, SEEK_SET);
-	fread(block + chunk->vertex_size, 1, chunk->index_size, level.stream);
+	/* Count a failed read too: corrupt/unavailable media cannot make a
+	   frame repeatedly retry unbounded chunks. Don't publish partial data. */
+	level.stream_reads_this_frame++;
+	if (fseek(level.stream, level.header->vertices_offset + chunk->vertex_offset, SEEK_SET) ||
+		fread(block, 1, chunk->vertex_size, level.stream) != chunk->vertex_size ||
+		fseek(level.stream, level.header->indices_offset + chunk->index_offset, SEEK_SET) ||
+		fread(block + chunk->vertex_size, 1, chunk->index_size, level.stream) != chunk->index_size)
+		return 0;
 	for (int b = chunk->first_batch; b < chunk->first_batch + chunk->batch_count; b++)
 	{
-		uint8_t *strip = block + chunk->vertex_size + (level.batches[b].index_offset - chunk->index_offset);
-
-		for (;;)
-		{
-			uint16_t count = ((uint16_t *)strip)[0], more = ((uint16_t *)strip)[1];
-
-			t3d_indexbuffer_convert((int16_t *)(strip + 8), count);
-			if (!more)
-				break;
-			strip += 8 + ((count * 2 + 7) & ~7);
-		}
+		unsigned long start = level.batches[b].index_offset;
+		unsigned long end = b + 1 < chunk->first_batch + chunk->batch_count ? level.batches[b + 1].index_offset : chunk->index_offset + chunk->index_size;
+		if (start < chunk->index_offset || end <= start || end > chunk->index_offset + chunk->index_size)
+			return 0;
+		if (!convert_level_strips(block + chunk->vertex_size + start - chunk->index_offset, end - start))
+			return 0;
 	}
 	/* (the RSP reads them by DMA) */
 	data_cache_hit_writeback(block, size);
@@ -2329,7 +2573,6 @@ static int stream_chunk(int k)
 	level.chunk_slot[k] = (int16_t)slot;
 	level.resident_bytes += level.slot_size;
 	level.stream_reads++;
-	level.stream_reads_this_frame++;
 	return 1;
 }
 
@@ -2374,8 +2617,9 @@ static uint8_t *stream_tile(int e)
 		tiles.slot_entry[slot] = -1;
 	}
 	block = tiles.slots + slot * tiles.slot_size;
-	fseek(tiles.file, tiles.header->big_offset + entry->big_offset, SEEK_SET);
 	tiles.reads_this_frame++;
+	if (fseek(tiles.file, tiles.header->big_offset + entry->big_offset, SEEK_SET))
+		return NULL;
 	if (fread(block, 1, bytes, tiles.file) != bytes)
 		return NULL;
 	/* (the RDP reads it) */
@@ -2446,13 +2690,70 @@ static void bind_tile(int b)
 	});
 }
 
+static struct
+{
+    unsigned long requests, hits, misses, wraps, bytes;
+    unsigned long long dma_ticks, convert_ticks, wait_ticks;
+} geometry_profile;
+static int geometry_profile_enabled = -1;
+
 static void draw_batch(int b)
 {
 	const struct level_batch *batch = &level.batches[b];
-	T3DVertPacked *vertices = level.vertices + batch->vertex_pair_offset;
-	uint8_t *chunk = level.indices + batch->index_offset;
+	T3DVertPacked *vertices = NULL;
+	uint8_t *chunk = NULL;
 
-	if (level.stream)
+	if (level.geometry_cache)
+	{
+		unsigned long profile_start = 0;
+		if (geometry_profile_enabled < 0)
+			geometry_profile_enabled = n64_debug_flag("debug_geometry_profile");
+		if (geometry_profile_enabled)
+		{
+			geometry_profile.requests++;
+			if (level.geometry_offsets[b] != 0xffffffff) geometry_profile.hits++;
+			else geometry_profile.misses++;
+		}
+		unsigned long vertex_bytes = ((batch->vertex_count + 1) / 2) * sizeof(T3DVertPacked);
+		unsigned long index_bytes = level.index_sizes[b];
+		unsigned long bytes = (vertex_bytes + index_bytes + 15) & ~15UL;
+		if (bytes > 64 * 1024) n64_fatal("native geometry batch exceeds stream cache");
+		if (level.geometry_offsets[b] == 0xffffffff)
+		{
+			if (level.geometry_used + bytes > 64 * 1024)
+			{
+				if (geometry_profile_enabled) profile_start = TICKS_READ();
+				rspq_wait();
+				if (geometry_profile_enabled)
+				{
+					geometry_profile.wraps++;
+					geometry_profile.wait_ticks += TICKS_READ() - profile_start;
+				}
+				level.geometry_used = 0;
+				memset(level.geometry_offsets, 0xff, level.header->batch_count * sizeof(uint32_t));
+			}
+			uint8_t *to = level.geometry_cache + level.geometry_used;
+			data_cache_hit_writeback_invalidate(to, bytes);
+			if (geometry_profile_enabled) profile_start = TICKS_READ();
+			dma_read(to, level.geometry_rom + level.header->vertices_offset + batch->vertex_pair_offset * sizeof(T3DVertPacked), vertex_bytes);
+			dma_read(to + vertex_bytes, level.geometry_rom + level.header->indices_offset + batch->index_offset, index_bytes);
+			if (geometry_profile_enabled)
+			{
+				geometry_profile.bytes += vertex_bytes + index_bytes;
+				geometry_profile.dma_ticks += TICKS_READ() - profile_start;
+				profile_start = TICKS_READ();
+			}
+			if (!convert_level_strips(to + vertex_bytes, index_bytes))
+				n64_fatal("invalid streamed level strip");
+			data_cache_hit_writeback(to + vertex_bytes, index_bytes);
+			if (geometry_profile_enabled) geometry_profile.convert_ticks += TICKS_READ() - profile_start;
+			level.geometry_offsets[b] = level.geometry_used;
+			level.geometry_used += bytes;
+		}
+		vertices = (T3DVertPacked *)(level.geometry_cache + level.geometry_offsets[b]);
+		chunk = (uint8_t *)vertices + vertex_bytes;
+	}
+	else if (level.stream)
 	{
 		int k = level.batch_chunk[b];
 		struct level_chunk *data = &level.chunks[k];
@@ -2460,6 +2761,11 @@ static void draw_batch(int b)
 		vertices = (T3DVertPacked *)(level.resident[k] + batch->vertex_pair_offset * sizeof(T3DVertPacked) -
 			data->vertex_offset);
 		chunk = level.resident[k] + data->vertex_size + (batch->index_offset - data->index_offset);
+	}
+	else
+	{
+		vertices = level.vertices + batch->vertex_pair_offset;
+		chunk = level.indices + batch->index_offset;
 	}
 	t3d_vert_load(vertices, 0, batch->vertex_count);
 	/* (measuring, "debug_level_parts=1": the vertices alone) */
@@ -2745,15 +3051,6 @@ void n64_render_view(const struct n64_view *view)
 	t3d_viewport_set_perspective(viewport, view->vertical_field_of_view, renderer.aspect,
 		view->z_near * WORLD_SCALE, view->z_far * WORLD_SCALE);
 	renderer.fov = view->vertical_field_of_view;
-	for (int k = 0; k < 3; k++)
-	{
-		renderer.forward[k] = view->forward[k];
-		renderer.up[k] = view->up[k];
-	}
-	/* right = forward x up */
-	renderer.right[0] = view->forward[1] * view->up[2] - view->forward[2] * view->up[1];
-	renderer.right[1] = view->forward[2] * view->up[0] - view->forward[0] * view->up[2];
-	renderer.right[2] = view->forward[0] * view->up[1] - view->forward[1] * view->up[0];
 	renderer.z_near = view->z_near;
 	renderer.z_far = view->z_far;
 	renderer.local_player = view->local_player_index;
@@ -2774,6 +3071,16 @@ void n64_render_view(const struct n64_view *view)
 		up = (T3DVec3){{0, 0, 1}};
 	}
 	t3d_viewport_look_at(viewport, &eye, &target, &up);
+	/* Paint and particles must project through the same orthonormal camera
+	   as world geometry. Incoming forward/up need not be perpendicular
+	   (notably pitched debug/chase views); Tiny3D corrects them here. */
+	for (int k = 0; k < 3; k++)
+	{
+		renderer.right[k] = viewport->matCamera.m[k][0];
+		renderer.up[k] = viewport->matCamera.m[k][1];
+		renderer.forward[k] = -viewport->matCamera.m[k][2];
+		renderer.eye[k] = eye.v[k] / WORLD_SCALE;
+	}
 	{
 		/* the frustum's far plane from the eye and its direction: tiny3d
 		takes it as the difference of two projection rows that agree to
@@ -2845,13 +3152,16 @@ static uint16_t *tinted_palette(sprite_t *sprite, unsigned long color)
 player's colour on a MATERIAL_CHANGE_COLOR texture (color 0xRRGGBB; white
 leaves it as it is) */
 static int current_model_mode = -1;
+static int current_model_opacity = -1;
 
 static void use_setup(struct loaded_model *loaded, int b, struct model_batch *batch, unsigned long color)
 {
 	/* (the texture and the flags: model batches use flags up to MATERIAL_BLEND) */
 	int key = (batch->texture << 12) | (batch->flags & 0xFFF);
 	sprite_t *sprite = debug_untextured || batch->texture < 0 ? NULL : models.sprites[batch->texture];
-	int mode = model_mode(batch->texture >= 0 ? sprite : NULL, batch->flags);
+	unsigned char opacity = (unsigned char)(color >> 24);
+	int mode = model_mode(batch->texture >= 0 ? sprite : NULL, batch->flags, opacity);
+	color &= 0xFFFFFF;
 
 	if (!(batch->flags & MATERIAL_CHANGE_COLOR))
 		color = 0xFFFFFF;
@@ -2861,6 +3171,16 @@ static void use_setup(struct loaded_model *loaded, int b, struct model_batch *ba
 	{
 		rspq_block_run(model_modes[mode]);
 		current_model_mode = mode;
+		current_model_opacity = -1;
+	}
+	if (mode >= MODEL_CLOAK_FIRST)
+	{
+		int alpha = batch->flags & MATERIAL_BLEND ? (opacity * GLOW_ALPHA + 127) / 255 : opacity;
+		if (alpha != current_model_opacity)
+		{
+			rdpq_set_prim_color(RGBA32(255, 255, 255, alpha));
+			current_model_opacity = alpha;
+		}
 	}
 	if (key != renderer.current_texture || (color == 0xFFFFFF && current_color != 0xFFFFFF))
 	{
@@ -2913,6 +3233,7 @@ static void draw_particles(int first_person)
 	view.chunky = renderer.unstretched;
 	view.chunky_scale = renderer.unstretched ?
 		(float)chunky_width(rect[2] - rect[0]) / (float)(rect[2] - rect[0]) : 1.f;
+	if (!first_person) n64_paint_draw(&view);
 	n64_particles_draw(&view);
 	/* (their mode and TMEM -- the whole of it, the palettes' half too --
 	are the models' no longer) */
@@ -3040,7 +3361,7 @@ static void queue_draw(int model_index, int b, unsigned long color, T3DMat4FP *m
 	struct model_record *model = &models.models[model_index];
 	struct model_batch *batch = &models.batches[model->first_batch + b];
 	sprite_t *sprite = debug_untextured || batch->texture < 0 ? NULL : models.sprites[batch->texture];
-	int mode = model_mode(batch->texture >= 0 ? sprite : NULL, batch->flags);
+	int mode = model_mode(batch->texture >= 0 ? sprite : NULL, batch->flags, (unsigned char)(color >> 24));
 	struct queued_draw *draw;
 
 	if (queued_count == MAXIMUM_QUEUED_DRAWS)
@@ -3048,7 +3369,9 @@ static void queue_draw(int model_index, int b, unsigned long color, T3DMat4FP *m
 	draw = &queued_draws[queued_count];
 	draw->order = ((uint32_t)!(batch->flags & MATERIAL_SKY) << 31) | ((uint32_t)mode << 26) |
 		((uint32_t)(batch->texture & 0xFFFF) << 10) | (batch->flags & 0x3FF);
-	draw->color = batch->flags & MATERIAL_CHANGE_COLOR ? color & 0xFFFFFF : 0xFFFFFF;
+	/* Alpha lives in the previously unused byte: no larger resident queue. */
+	draw->color = (color & 0xFF000000u) |
+		(batch->flags & MATERIAL_CHANGE_COLOR ? color & 0xFFFFFF : 0xFFFFFF);
 	draw->matrices = matrices;
 	draw->model = (uint16_t)model_index;
 	draw->batch = (uint16_t)b;
@@ -3252,6 +3575,18 @@ static void render_object(const struct n64_object *object)
 			{m[10] * WORLD_SCALE, m[11] * WORLD_SCALE, m[12] * WORLD_SCALE, 1.0f},
 		}};
 
+		if (!renderer.first_person && n < 64 && object->head_node >= 0 && object->head_node < node_count &&
+			(object->head_mask[n >> 5] & (1UL << (n & 31))))
+		{
+			/* Render-only 1.8x head hierarchy, about its animated pivot. Head
+			and helmet vertices share the transform; gameplay matrices stay intact. */
+			const float *head = object->node_matrices + object->head_node * 13;
+			for (int axis = 0; axis < 3; axis++)
+			{
+				for (int k = 0; k < 3; k++) matrix.m[axis][k] *= 1.8f;
+				matrix.m[3][axis] = (head[10 + axis] + (m[10 + axis] - head[10 + axis]) * 1.8f) * WORLD_SCALE;
+			}
+		}
 		/* (the last column is 0, 0, 0, 1: the 3x4 conversion, the same numbers) */
 		t3d_mat4_to_fixed_3x4(&matrices[n], &matrix);
 	}
@@ -3261,7 +3596,8 @@ static void render_object(const struct n64_object *object)
 		matrices[n] = matrices[0];
 converted_already:
 	renderer.objects++;
-	unsigned long color = ((unsigned long)object->tint[0] << 16) | ((unsigned long)object->tint[1] << 8) | object->tint[2];
+	unsigned long color = ((unsigned long)object->tint[3] << 24) | ((unsigned long)object->tint[0] << 16) |
+		((unsigned long)object->tint[1] << 8) | object->tint[2];
 
 	/* (a run of batches alike drawn as one: its first's block holds them
 	all, mark_batch_runs) */
@@ -3451,6 +3787,15 @@ void n64_render_frame_end(void)
 				debugf("render: level clusters %lu KB in memory, %lu read\n", level.resident_bytes / 1024,
 					level.stream_reads);
 			exceptions_before = n64_exceptions_emulated;
+		}
+		if (geometry_profile_enabled > 0)
+		{
+			debugf("geometry/120frames: requests %lu hit %lu miss %lu wrap %lu bytes %lu; dma %llu us convert/writeback %llu us wrap-wait %llu us\n",
+				geometry_profile.requests, geometry_profile.hits, geometry_profile.misses,
+				geometry_profile.wraps, geometry_profile.bytes,
+				TICKS_TO_US(geometry_profile.dma_ticks), TICKS_TO_US(geometry_profile.convert_ticks),
+				TICKS_TO_US(geometry_profile.wait_ticks));
+			memset(&geometry_profile, 0, sizeof(geometry_profile));
 		}
 		renderer.clusters = renderer.batches = renderer.triangles = renderer.objects = 0;
 	}

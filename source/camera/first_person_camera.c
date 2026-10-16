@@ -23,6 +23,9 @@ symbols in this file:
 /* ---------- headers */
 
 #include "first_person_camera.h"
+#ifdef HALO_N64
+#include "../../port/n64/src/n64.h"
+#endif
 #include "observer.h"
 #include "static_camera.h"
 
@@ -154,6 +157,17 @@ void first_person_camera_update(
 	if (camera->field_of_view != result->command.field_of_view)
 	{
 		result->transition_time = 0.18f;
+#ifdef HALO_N64
+		if (n64_golden_active(action->local_player_index))
+		{
+			/* More FOV travel takes longer; scopes retain Halo's authored FOV.
+			   This is an adaptation, not a replacement of weapon zoom stats. */
+			real distance = camera->field_of_view - result->command.field_of_view;
+			if (distance < 0.f) distance = -distance;
+			result->transition_time = 0.08f + distance * 0.25f;
+			if (result->transition_time > 0.35f) result->transition_time = 0.35f;
+		}
+#endif
 		result->field_4F = TRUE;
 		camera->field_of_view = result->command.field_of_view;
 	}

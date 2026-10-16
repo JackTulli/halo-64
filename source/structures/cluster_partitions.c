@@ -95,6 +95,10 @@ static long *code_00180fa0(
 
 /* ---------- globals */
 
+#ifdef HALO_N64
+extern struct cluster_partition light_cluster_partition;
+#endif
+
 /* ---------- public code */
 
 void reference_list_remove(
@@ -167,6 +171,17 @@ void cluster_partition_new(
 	char const *name)
 {
 	char cluster_name[256];
+	short maximum_count = 2048;
+
+#if defined(HALO_LINUX) || defined(HALO_N64)
+	maximum_count = HALO_PORT_MAXIMUM_CLUSTER_REFERENCES;
+#endif
+#ifdef HALO_N64
+	if (partition == &collideable_object_cluster_partition)
+		maximum_count = HALO_PORT_MAXIMUM_COLLIDEABLE_OBJECT_CLUSTER_REFERENCES;
+	else if (partition == &light_cluster_partition)
+		maximum_count = HALO_PORT_MAXIMUM_LIGHT_CLUSTER_REFERENCES;
+#endif
 
 	partition->cluster_first_data_references = game_state_malloc(
 		name,
@@ -174,20 +189,10 @@ void cluster_partition_new(
 		MAXIMUM_CLUSTERS_PER_STRUCTURE * sizeof(*partition->cluster_first_data_references));
 
 	sprintf(cluster_name, "cluster %s", name);
-#ifdef HALO_LINUX
-	/* the native builds' longer reference lists (halo_port_capacity.h): an
-	object or light that cannot be referenced drops out of its clusters */
-	partition->data_reference_data = reference_list_new(cluster_name, HALO_PORT_MAXIMUM_CLUSTER_REFERENCES);
-#else
-	partition->data_reference_data = reference_list_new(cluster_name, 2048);
-#endif
+	partition->data_reference_data = reference_list_new(cluster_name, maximum_count);
 
 	sprintf(cluster_name, "%s cluster", name);
-#ifdef HALO_LINUX
-	partition->cluster_reference_data = reference_list_new(cluster_name, HALO_PORT_MAXIMUM_CLUSTER_REFERENCES);
-#else
-	partition->cluster_reference_data = reference_list_new(cluster_name, 2048);
-#endif
+	partition->cluster_reference_data = reference_list_new(cluster_name, maximum_count);
 
 	if (!partition->cluster_first_data_references ||
 		!partition->cluster_reference_data ||

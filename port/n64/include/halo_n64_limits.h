@@ -17,7 +17,9 @@ here is only the Xbox's, kept for code that names it.
 /* ---------- game state */
 
 #define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x80061000
-#define HALO_PORT_GAME_STATE_CPU_SIZE 0x100000
+/* Native pools use about 432 KiB. Avoid a 1 MiB temporary ceiling at boot,
+which competes with the expanded map arena and initial display buffers. */
+#define HALO_PORT_GAME_STATE_CPU_SIZE 0x70000
 #define HALO_PORT_GAME_STATE_GPU_SIZE 0
 #define HALO_PORT_GAME_STATE_SIZE (HALO_PORT_GAME_STATE_CPU_SIZE+HALO_PORT_GAME_STATE_GPU_SIZE)
 
@@ -37,6 +39,13 @@ scenery near the players -- port/n64/game/n64_campaign.c) */
 #define HALO_PORT_OBJECT_MEMORY_POOL_SIZE 0x40000
 #endif
 #define HALO_PORT_MAXIMUM_CLUSTER_REFERENCES 512
+/* Timberland's large scenery spans several collision clusters per object.
+ * Reserve more references only for collideable objects. Native light_new
+ * and light_new_unattached both return NONE; their partition needs only a
+ * valid token pool. Restore a measured light capacity before enabling lights.
+ * Both list directions use the same capacity. Net game-state cost: 24 B. */
+#define HALO_PORT_MAXIMUM_COLLIDEABLE_OBJECT_CLUSTER_REFERENCES 1024
+#define HALO_PORT_MAXIMUM_LIGHT_CLUSTER_REFERENCES 1
 #define HALO_PORT_MAXIMUM_RENDERED_OBJECTS 64
 #define HALO_PORT_MAXIMUM_CACHED_OBJECT_RENDER_STATES 64
 #define HALO_PORT_MAXIMUM_AREA_OF_EFFECT_OBJECTS 32

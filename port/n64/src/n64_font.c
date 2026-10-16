@@ -40,11 +40,12 @@ struct n64_font *n64_font_load(const char *name)
 	FILE *file;
 	uint8_t header[10];
 
-	font = calloc(1, sizeof(*font));
+	font = n64_menu_alloc(sizeof(*font));
 	if (!font)
 		return NULL;
+	memset(font, 0, sizeof(*font));
 	snprintf(path, sizeof(path), "rom:/fonts/%s.sprite", name);
-	font->atlas = sprite_load(path);
+	font->atlas = n64_menu_sprite_load(path);
 	snprintf(path, sizeof(path), "rom:/fonts/%s.glyphs", name);
 	file = fopen(path, "rb");
 	if (!font->atlas || !file || fread(header, 1, sizeof(header), file) != sizeof(header) || memcmp(header, "H64F", 4))
@@ -52,8 +53,8 @@ struct n64_font *n64_font_load(const char *name)
 		if (file)
 			fclose(file);
 		if (font->atlas)
-			sprite_free(font->atlas);
-		free(font);
+			n64_menu_sprite_free(font->atlas);
+		n64_menu_free(font);
 		debugf("n64: no font %s\n", name);
 		return NULL;
 	}
@@ -88,8 +89,8 @@ void n64_font_free(struct n64_font *font)
 {
 	if (!font)
 		return;
-	sprite_free(font->atlas);
-	free(font);
+	n64_menu_sprite_free(font->atlas);
+	n64_menu_free(font);
 }
 
 int n64_font_height(const struct n64_font *font)

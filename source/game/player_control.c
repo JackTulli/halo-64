@@ -181,6 +181,9 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
+#ifdef HALO_N64
+#include "../../port/n64/src/n64.h"
+#endif
 #define limit2d limit2d_inline
 #include "game/game.h"
 #undef limit2d
@@ -673,6 +676,14 @@ static void handle_one_player_input(
 				player->zoom_level);
 		}
 
+#ifdef HALO_N64
+		if (n64_golden_active(local_player_index))
+		{
+			/* Held aim uses authored Halo scope levels and releases on R-up.
+			   It re-enters the scope after reload while R remains held. */
+			player->zoom_level = n64_golden_zoom(local_player_index, current_weapon_index);
+		}
+#endif
 		if (!director_inhibited_facing(local_player_index))
 		{
 #ifdef HALO_LINUX
@@ -689,7 +700,11 @@ static void handle_one_player_input(
 
 		if (unit->object.parent_object_index == NONE)
 		{
-			if (player_ui_autolevel_enabled(local_player_index) &&
+			if (
+#ifdef HALO_N64
+				!n64_golden_active(local_player_index) &&
+#endif
+				player_ui_autolevel_enabled(local_player_index) &&
 				fabs(player->throttle.i) > 0.5 &&
 				input.facing_delta.pitch < 0.0001f &&
 				player->magnetism_level < 0.0001f)
@@ -1105,6 +1120,14 @@ static void get_local_player_input_blob(
 				clamped_yaw = PIN(input_state->yaw * look_scale, -1.f, 1.f);
 				clamped_pitch = PIN(input_state->pitch * look_scale, -1.f, 1.f);
 
+#ifdef HALO_N64
+				if (player_control_camera_control_is_active() && n64_golden_active(local_player_index))
+				{
+					n64_golden_update(local_player_index, time_delta_sec, &input->facing_delta.yaw, &input->facing_delta.pitch,
+						&input->throttle.i, &input->throttle.j);
+				}
+				else
+#endif
 				if (player_control_camera_control_is_active())
 				{
 					long doubled_spin;

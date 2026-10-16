@@ -139,6 +139,42 @@ void rasterizer_psuedo_dynamic_screen_quad_draw(
 
 /* ---------- text */
 
+/* The native actor scan owns eligibility and the selected weapon. This only
+labels its real hold-to-pick-up action in the current split-screen viewport;
+B remains Xbox X in every preset, including both Golden schemes. */
+extern short n64_hud_original_action_icon(short x, short baseline, pixel32 color, short *bottom);
+void n64_hud_game_weapon_prompt(char const *name, int swap)
+{
+	real virtual_x = render.camera.viewport_bounds.x0 + 16;
+	real virtual_y = render.camera.viewport_bounds.y0 +
+		(render.camera.viewport_bounds.y1 - render.camera.viewport_bounds.y0) * 0.64f;
+	int x = (int)hud_x(virtual_x), y = (int)hud_y(virtual_y);
+	real text_scale = n64_render_layout_scale_x() * n64_render_hud_squeeze();
+	short icon_x, after_icon, icon_bottom = (short)virtual_y;
+	int name_y = y + 16;
+	/* Keep the existing HOLD / action / weapon flow and the original font.
+	   Pixel advance is measured after the existing lazy font load. */
+	n64_hud_text(x, y, 0xFF8CC0FFu, "HOLD ");
+	if (name_y < y + n64_hud_text_height() + 2)
+		name_y = y + n64_hud_text_height() + 2;
+	icon_x = (short)(virtual_x + n64_hud_text_width("HOLD ") / text_scale);
+	after_icon = n64_hud_original_action_icon(icon_x, (short)(virtual_y + 24), 0xFF8CC0FFu, &icon_bottom);
+	if (after_icon > icon_x)
+	{
+		real bottom_y = hud_y(icon_bottom);
+		int below_icon = (int)bottom_y;
+		if ((real)below_icon < bottom_y) below_icon++;
+		if (name_y < below_icon + 2) name_y = below_icon + 2;
+		n64_hud_text((int)hud_x(after_icon + 3), y, 0xFF8CC0FFu,
+			swap ? " TO SWAP FOR" : " TO PICK UP");
+	}
+	else
+		n64_hud_text((int)hud_x(icon_x), y, 0xFF8CC0FFu,
+			swap ? "B TO SWAP FOR" : "B TO PICK UP");
+	/* Follow the actual authored icon and original font at every HUD scale. */
+	n64_hud_text(x, name_y, 0xFFFFFFFFu, name);
+}
+
 static void draw_text(
 	rectangle2d const *bounds,
 	char const *text)

@@ -57,6 +57,7 @@ struct controller
 
 static struct controller controllers[PORT_COUNT];
 static DWORD reported_gamepads;
+static struct n64_pad golden_pads[4];
 static unsigned long last_poll_tick;
 
 int n64_test_input = 0;
@@ -85,7 +86,7 @@ static DWORD connected_gamepads(void)
 	int port;
 
 	if (n64_test_input)
-		return 0x3;
+		return 0xF;
 	poll();
 	for (port = 0; port < PORT_COUNT; port++)
 	{
@@ -196,7 +197,42 @@ void n64_look_speed(int local_player_index, float *yaw, float *pitch)
 	float c_speed = C_LOOK_SPEED * look_speed(controls->c_speed);
 
 	*yaw = controls->scheme == N64_SCHEME_NORTH ? c_speed : stick_speed;
-	*pitch = controls->scheme == N64_SCHEME_NORTH || controls->scheme == N64_SCHEME_GOLDENEYE ? c_speed : stick_speed;
+	*pitch = controls->scheme == N64_SCHEME_NORTH || controls->scheme == N64_SCHEME_GOLDENEYE ? c_speed : controls->scheme == N64_SCHEME_GOLDEN_STYLE ? c_speed / C_LOOK_SPEED : stick_speed;
+}
+
+int n64_golden_selected(int local)
+{
+	return local >= 0 && local < 4 && n64_controls[n64_gamepad_ports[local] & 3].scheme == N64_SCHEME_GOLDEN_STYLE;
+}
+
+void n64_golden_move(int local, float *forward, float *strafe)
+{
+	const struct n64_pad *pad = &golden_pads[n64_gamepad_ports[local & 3] & 3];
+	*forward = pad->stick_y >= -5 && pad->stick_y <= 5 ? 0.f :
+		pad->stick_y > 0 ? n64_min_f(1.f, (pad->stick_y - 5.f) / 70.f) : n64_max_f(-1.f, (pad->stick_y + 5.f) / 70.f);
+	*strafe = (pad->buttons & N64_BUTTON_C_RIGHT) ? -1.f : (pad->buttons & N64_BUTTON_C_LEFT) ? 1.f : 0.f;
+}
+
+unsigned short n64_golden_buttons(int local)
+{
+	return golden_pads[n64_gamepad_ports[local & 3] & 3].buttons;
+}
+
+int n64_golden_raw(int local, float *x, float *y, int *aim)
+{
+	int port;
+	const struct n64_pad *pad;
+	const struct n64_controls *controls;
+	if (!n64_golden_selected(local) || n64_input_blocked) return 0;
+	port = n64_gamepad_ports[local] & 3;
+	pad = &golden_pads[port];
+	controls = &n64_controls[port];
+	if (!pad->connected) return 0;
+	*aim = !!(pad->buttons & N64_BUTTON_R);
+	*x = pad->stick_x;
+	*y = *aim ? pad->stick_y : (pad->buttons & N64_BUTTON_C_UP) ? 80.f : (pad->buttons & N64_BUTTON_C_DOWN) ? -80.f : 0.f;
+	if (controls->inverted) *y = -*y;
+	return 1;
 }
 
 static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, XINPUT_GAMEPAD *gamepad)
@@ -207,8 +243,11 @@ static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, XINPUT_GAMEP
 	SHORT look_y;
 	int crouch;
 
+	golden_pads[n64_port & 3] = *pad;
+	if (controls->scheme == N64_SCHEME_GOLDEN_STYLE) grenade = N64_BUTTON_D_LEFT;
 	switch (controls->scheme)
 	{
+	case N64_SCHEME_GOLDEN_STYLE:
 	case N64_SCHEME_GOLDENEYE:
 		gamepad->sThumbRX = stick(pad->stick_x);
 		gamepad->sThumbLY = stick(pad->stick_y);
@@ -272,7 +311,7 @@ static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, XINPUT_GAMEP
 #endif
 	if (crouch)
 		gamepad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
-	if (b & N64_BUTTON_D_LEFT)
+	if (controls->scheme != N64_SCHEME_GOLDEN_STYLE && (b & N64_BUTTON_D_LEFT))
 		gamepad->wButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
 	if (b & N64_BUTTON_START)
 		gamepad->wButtons |= XINPUT_GAMEPAD_START;
@@ -284,6 +323,14 @@ static void test_gamepad(int port, XINPUT_GAMEPAD *gamepad)
 {
 	unsigned long seconds_x8 = (unsigned long)(n64_microseconds() / 125000);
 	unsigned long phase = seconds_x8 + port * 37;
+	if (n64_debug_flag("debug_weapon_showcase"))
+	{
+		/* Fixed pose, no grenades: inspect the held artwork and a clean burst. */
+		gamepad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] = ((phase % 64) >= 32 && (phase % 64) < 48) ? 255 : 0;
+		gamepad->bAnalogButtons[XINPUT_GAMEPAD_B] = (phase % 64) == 16 ? 255 : 0;
+		gamepad->bAnalogButtons[XINPUT_GAMEPAD_X] = (phase % 64) == 56 ? 255 : 0;
+		return;
+	}
 
 	gamepad->sThumbLY = 26000;
 	gamepad->sThumbLX = ((phase / 24) & 1) ? 12000 : -12000;
@@ -302,10 +349,24 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 	memset(state, 0, sizeof(*state));
 	if (port < 0)
 		return ERROR_DEVICE_NOT_CONNECTED;
+	golden_pads[n64_gamepad_ports[port] & 3].connected = 0;
 	if (n64_test_input)
 	{
-		if (port < 2 && !n64_input_blocked)
-			test_gamepad(port, &state->Gamepad);
+		if (port < 4 && !n64_input_blocked)
+		{
+			if (n64_golden_selected(port))
+			{
+				unsigned long phase = (unsigned long)(n64_microseconds() / 125000) + port * 7;
+				struct n64_pad pad = {0};
+				pad.connected = 1;
+				pad.stick_x = phase % 64 < 32 ? 35 : 70;
+				pad.stick_y = phase % 64 < 32 ? 20 : 0;
+				pad.buttons = phase % 64 < 32 ? N64_BUTTON_R : 0;
+				if (phase % 16 < 4) pad.buttons |= N64_BUTTON_Z;
+				pad_to_gamepad(n64_gamepad_ports[port], &pad, &state->Gamepad);
+			}
+			else test_gamepad(port, &state->Gamepad);
+		}
 	}
 	else
 	{

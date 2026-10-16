@@ -8,7 +8,7 @@ RAM and relocates (port/n64/src/n64_cache.c):
 
     header (64 bytes, big-endian)
         'H64M', version, name[32], image size, relocation count,
-        tag header offset, BSP header offset, reserved[2]
+        tag header offset, BSP header offset, format kind ('MP32'/'CP16'), reserved
     image (tag data, big-endian; pointers are image offsets)
     relocations (image offsets of every non-null pointer, u32 each)
 
@@ -25,7 +25,37 @@ from .repack import NONE, External, Policy, Repacker, swap_array
 from .xboxmap import XboxMap
 
 MAGIC = b"H64M"
-VERSION = 1
+VERSION = 2
+MAP_KIND_MULTIPLAYER = 0x4D503332  # MP32: original collision, native cluster-only leaves
+MAP_KIND_CAMPAIGN = 0x43503136     # CP16: upstream campaign's compact collision
+PC_MAPS = {"dangercanyon", "deathisland", "gephyrophobia", "icefields", "infinity", "timberland"}
+
+
+def validate_pc_maps(pc_expansion=False, pc_maps=None, campaign=False):
+    """The optional expansion reads only an explicitly staged Xbox-v5 set.
+
+    Retail PC-v7 inputs must first pass the installer's Invader normalization;
+    a sibling Timberland file never enables imports for a vanilla cartridge.
+    """
+    if not pc_expansion:
+        if pc_maps is not None:
+            raise ValueError("--pc-maps requires --pc-expansion")
+        return None
+    if campaign:
+        raise ValueError("campaign and PC expansion are separate cartridges")
+    if pc_maps is None:
+        raise ValueError("PC expansion requires --pc-maps with all six normalized Xbox-v5 maps")
+    folder = Path(pc_maps).expanduser().resolve()
+    for name in sorted(PC_MAPS):
+        path = folder / f"{name}.map"
+        with path.open("rb") as stream:
+            header = stream.read(0x800)
+        if (len(header) != 0x800 or header[:4] != b"daeh" or
+                struct.unpack_from("<I", header, 4)[0] != 5 or
+                header[0x20:0x40].split(b"\0")[0] != name.encode("ascii") or
+                struct.unpack_from("<H", header, 0x60)[0] != 1):
+            raise ValueError(f"{path}: expected a normalized Xbox-v5 multiplayer map named {name}")
+    return folder
 
 # Firefight's Covenant (port/n64/game/n64_firefight.c), imported into every
 # multiplayer map from a campaign map beside it (merge.py)
@@ -93,10 +123,18 @@ class N64Policy(Policy):
             return self.sounds.blob(tag)
         return None
 
+    def array_data(self, tag, address, name, count, path):
+        if name == "ScenarioStructureBSPLeaf":
+            size = self.defs.size(name)
+            cluster = next(o for o, f in self.defs.fields(name) if f.name == "cluster")
+            return b"".join(struct.pack(">h", struct.unpack("<h", self.map.read(address + i * size + cluster, 2))[0])
+                            for i in range(count))
+        return None
+
     # render data: the N64 draws its own level and models (level.py,
     # models.py); only Halo's renderer and lightmap lookups (left out) read
     # these
-    RENDER_BLOCKS = ("ScenarioStructureBSP.leaf surfaces[]", "ScenarioStructureBSP.surfaces[]",
+    RENDER_BLOCKS = ("ScenarioStructureBSP.nodes[]", "ScenarioStructureBSP.leaf surfaces[]", "ScenarioStructureBSP.surfaces[]",
                      "ScenarioStructureBSP.clusters[].subclusters[].surface indices[]",
                      "ScenarioStructureBSP.clusters[].surface indices[]", "ScenarioStructureBSP.lightmaps[].materials[]",
                      # the models' geometry: the N64's own (models.py)
@@ -275,14 +313,52 @@ class CampaignPolicy(N64Policy):
         return super().data(tag, path, parent, raw)
 
 
-def convert(path, output, filesystem=None, campaign=False):
+def open_map(path, *, campaign=False, pc_expansion=False, pc_maps=None):
+    """Load a map and its explicitly selected additive content for exporters."""
+    pc_folder = validate_pc_maps(pc_expansion, pc_maps, campaign)
     xmap = XboxMap(path)
-    bsp_tag, bsp_base, bsp_size = xmap.load_bsp(0)
+    xmap.load_bsp(0)
+    if pc_expansion and xmap.map_type != 1:
+        raise ValueError("PC expansion imports require a multiplayer target map")
+    if pc_folder is not None and xmap.name != "timberland":
+        from .merge import merge_tags, merge_empty_weapon_hud
+        pc_map = XboxMap(pc_folder / "timberland.map")
+        imported = merge_tags(xmap, pc_map, [
+            ("weap", "weapons\\flamethrower\\flamethrower"),
+            ("weap", "weapons\\plasma_cannon\\plasma_cannon"),
+            ("vehi", "vehicles\\rwarthog\\rwarthog")])
+        print(f"{xmap.name}: {len(imported)} additive PC tags")
+        hud = merge_empty_weapon_hud(xmap, pc_map, r"weapons\flamethrower\flamethrower")
+        if hud is not None:
+            print(f"{xmap.name}: additive PC Flamethrower HUD {hud.name}")
     source = Path(path).parent / f"{FIREFIGHT_SOURCE}.map"
-    if xmap.map_type == 1 and source.exists() and not campaign:
+    if (xmap.map_type == 1 and source.exists() and not campaign and
+            not (pc_expansion and xmap.name in PC_MAPS)):
         from .merge import merge_tags
         imported = merge_tags(xmap, XboxMap(source), FIREFIGHT_ROOTS)
         print(f"{xmap.name}: {len(imported)} Covenant tags from {FIREFIGHT_SOURCE}")
+    if pc_folder is not None:
+        from .pc_placements import AIRCRAFT_PLACEMENTS, map_placements
+        if map_placements(xmap.name) is not None:
+            from .pc_additions import add_original_map_content
+            donor = XboxMap(pc_folder / "timberland.map")
+            aircraft = (XboxMap(pc_folder / "deathisland.map")
+                        if xmap.name in AIRCRAFT_PLACEMENTS else None)
+            add_original_map_content(xmap, donor, aircraft)
+    return xmap
+
+
+def map_header(name, image_size, relocation_count, tag_header, bsp_header, campaign=False):
+    """The byte56 kind binds the payload to its collision/leaf compile ABI."""
+    name = name.encode()[:31]
+    kind = MAP_KIND_CAMPAIGN if campaign else MAP_KIND_MULTIPLAYER
+    return (MAGIC + struct.pack(">I", VERSION) + name + b"\0" * (32 - len(name)) +
+            struct.pack(">IIIIII", image_size, relocation_count, tag_header, bsp_header, kind, 0))
+
+
+def convert(path, output, filesystem=None, campaign=False, pc_expansion=False, pc_maps=None):
+    xmap = open_map(path, campaign=campaign, pc_expansion=pc_expansion, pc_maps=pc_maps)
+    bsp_tag, bsp_base, bsp_size = xmap.bsps[0]
     repacker = Repacker(xmap, None)
     if campaign:
         from .campaign import campaign_closure, encounter_table, mask_dropped_tags
@@ -345,10 +421,7 @@ def convert(path, output, filesystem=None, campaign=False):
 
     relocs = sorted(set(image.relocs))
     out = bytearray()
-    name = xmap.name.encode()[:31]
-    out += MAGIC + struct.pack(">I", VERSION) + name + b"\0" * (32 - len(name))
-    out += struct.pack(">IIII", len(image.data), len(relocs), header, bsp_header)
-    out += b"\0" * (64 - len(out))
+    out += map_header(xmap.name, len(image.data), len(relocs), header, bsp_header, campaign)
     out += image.data
     out += b"\0" * ((-len(out)) % 8)
     out += struct.pack(f">{len(relocs)}I", *relocs)
@@ -438,10 +511,15 @@ def main():
                         "levels/<map>.lvl and its textures to tex/<map>/")
     parser.add_argument("--campaign", action="store_true",
                         help="a campaign level for a cartridge of its own (tools/n64/campaign.py)")
+    parser.add_argument("--pc-expansion", action="store_true",
+                        help="the separate PC multiplayer expansion cartridge")
+    parser.add_argument("--pc-maps", type=Path,
+                        help="explicit folder containing all six normalized Xbox-v5 PC maps")
     parser.add_argument("--tags-only", action="store_true", help="the tag image alone (measuring)")
     args = parser.parse_args()
     xmap, repacker, size, relocs = convert(args.map, args.output, None if args.tags_only else args.filesystem,
-                                           campaign=args.campaign)
+                                           campaign=args.campaign, pc_expansion=args.pc_expansion,
+                                           pc_maps=args.pc_maps)
     print(f"{xmap.name}: {size / 1e6:.2f} MB, {len(relocs)} relocations, "
           f"{repacker.policy.stream_size / 1e6:.2f} MB of animation frames streamed")
     if args.filesystem and not args.tags_only and args.campaign:
@@ -470,7 +548,8 @@ def main():
         from .models import ModelConverter
         # Firefight's Covenant (imported: merge.py): always their lowest
         # level of detail, few triangles
-        covenant = [t.index for t in xmap.tags if getattr(t, "source", None) is not None and t.group_name == "mode"]
+        covenant = [t.index for t in xmap.tags if getattr(getattr(t, "source", None), "name", None) == FIREFIGHT_SOURCE
+                    and t.group_name == "mode"]
         lowest = ("super low", "low", "medium", "high", "super high")
         model_sets = []
         for quality, view_scale in VIEW_MODEL_QUALITIES:

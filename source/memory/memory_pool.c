@@ -96,6 +96,13 @@ static struct memory_pool_block *code_0010ddc0(
 	struct memory_pool *pool,
 	void **reference);
 
+#ifdef HALO_N64
+static boolean memory_pool_block_allocate_in_gap(
+    struct memory_pool *pool,
+    void **reference,
+    long actual_size);
+#endif
+
 /* ---------- globals */
 
 /* ---------- public code */
@@ -182,6 +189,11 @@ boolean memory_pool_block_allocate(
 		*reference = block+1;
 		return TRUE;
 	}
+#ifdef HALO_N64
+    /* Preserve tail placement; only reuse a hole after that path fails. */
+    if (memory_pool_block_allocate_in_gap(pool, reference, actual_size))
+        return TRUE;
+#endif
 	/*
 	The January object retains the private fit helper even though this caller
 	contains its exact expanded source shape.
@@ -310,6 +322,49 @@ long memory_pool_get_contiguous_free_size(
 }
 
 /* ---------- private code */
+
+#ifdef HALO_N64
+/* The blocks already follow address order. Reuse the first complete gap
+without moving any existing allocation or changing its owner reference. */
+static boolean memory_pool_block_allocate_in_gap(
+    struct memory_pool *pool,
+    void **reference,
+    long actual_size)
+{
+    byte *address = pool->base_address;
+    struct memory_pool_block *previous = NULL;
+    struct memory_pool_block *next;
+
+    if (actual_size > pool->free_size)
+        return FALSE;
+
+    for (next = pool->first_block; next; next = next->next_block)
+    {
+        if ((byte *)next - address >= actual_size)
+        {
+            struct memory_pool_block *block = (struct memory_pool_block *)address;
+
+            block->size = actual_size;
+            block->header_signature = BLOCK_HEADER_SIGNATURE;
+            block->reference = reference;
+            block->next_block = next;
+            block->previous_block = previous;
+            block->trailer_signature = BLOCK_TRAILER_SIGNATURE;
+            if (previous)
+                previous->next_block = block;
+            else
+                pool->first_block = block;
+            next->previous_block = block;
+            pool->free_size -= actual_size;
+            *reference = block + 1;
+            return TRUE;
+        }
+        address = (byte *)next + next->size;
+        previous = next;
+    }
+    return FALSE;
+}
+#endif
 
 static long code_0010dc10(
 	long size)

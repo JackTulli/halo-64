@@ -1,3 +1,6 @@
+#ifdef HALO_N64_PC_EXPANSION
+#include "n64_pc_content.h"
+#endif
 /*
 N64.H
 
@@ -61,6 +64,7 @@ int n64_render_view_models_hidden(void);
 /* a reserve for libdragon's uncached blocks (n64_main.c) */
 #define N64_UNCACHED_RESERVE (64 * 1024)
 int n64_uncached_reserve_take(void);
+void n64_uncached_reserve_release(void);
 void n64_uncached_reserve_settle(void);
 int n64_uncached_reserve_missing(void);
 int n64_uncached_reserve_spent(void);
@@ -127,7 +131,7 @@ void n64_particles_release(void);
 void n64_input_poll(void);
 void n64_input_get(int port, struct n64_pad *pad);
 /* the buttons pressed on a port since this was last asked (N64_BUTTON_*:
-START, A and B, gathered at every n64_input_poll, so that a press between
+START, A, B and D-pad, gathered at every n64_input_poll, so that a press between
 two frames is not missed), and all of them forgotten */
 unsigned short n64_input_take_pressed(int port);
 void n64_input_clear_pressed(void);
@@ -151,6 +155,7 @@ enum
 	N64_SCHEME_BUMPER_JUMPER, /* the standard one, R jumping and A throwing grenades */
 	N64_SCHEME_GOLDENEYE,     /* the stick turns and walks, C left and right strafe, C up and down look */
 	N64_SCHEME_NORTH,         /* the stick walks and strafes, the C buttons look */
+	N64_SCHEME_GOLDEN_STYLE,  /* optional free aim, held R and threshold turning */
 	N64_SCHEME_COUNT
 };
 
@@ -173,10 +178,48 @@ struct n64_controls
 
 extern struct n64_controls n64_controls[4];
 
+/* Shared by title Controls and the in-game, per-port Controls panels. */
+enum { CONTROL_SCHEME, CONTROL_CROUCH, CONTROL_LOOK, CONTROL_FIRE, CONTROL_STICK_SPEED, CONTROL_C_SPEED,
+	CONTROL_RUMBLE, CONTROL_COUNT };
+void n64_controls_step(int port, int row, int step, int cycle);
+void n64_controls_save(void);
+
 /* a local player's look speeds across and up and down (xdk_input.c; Halo's
 turning rates times them, source/game/player_control.c): the sensitivity of
 whichever turns that way in the player's scheme, the stick or the C buttons */
 void n64_look_speed(int local_player_index, float *yaw, float *pitch);
+int n64_golden_raw(int local_player_index, float *x, float *y, int *aim);
+int n64_golden_selected(int local_player_index);
+int n64_golden_active(int local_player_index);
+int n64_golden_manual(int local_player_index);
+void n64_golden_update(int local, float dt, float *yaw, float *pitch, float *forward, float *strafe);
+void n64_golden_reset(void);
+void n64_golden_ray(int local_player_index, float *direction);
+void n64_golden_move(int local, float *forward, float *strafe);
+void n64_golden_weapon_axes(int local, float *forward, float *up);
+int n64_golden_projectile(long player_index, const float *position, float *direction, long *target_object_index);
+unsigned short n64_golden_buttons(int local);
+int n64_golden_zoom(int local, long weapon_index);
+void n64_golden_cursor(int local_player_index, float *x, float *y);
+void n64_modifiers_set(int big_head, int paintball);
+int n64_big_head_enabled(void);
+int n64_paint_enabled(void);
+struct n64_paint_vertex { float position[3], uv[2]; };
+#define N64_PAINT_VERTICES 12
+void n64_paint_submit(const struct n64_paint_vertex *vertices, int count, int pattern);
+void n64_paint_reset(const char *map_name);
+void n64_decal_submit(const struct n64_paint_vertex *vertices, int count, const char *name,
+    float lifetime, float fade, const unsigned char color[4]);
+void n64_paint_update(float dt);
+struct n64_particle_view;
+void n64_paint_draw(const struct n64_particle_view *view);
+/* Shared immutable ink art and palette; no per-view mark search. */
+const unsigned char *n64_paint_mask(int pattern);
+const unsigned char *n64_paint_color(int color);
+int n64_paint_next_color(void);
+int n64_paint_effect(const char *name);
+void n64_paint_splash(const float position[3], float radius, int color);
+
 
 /* ---------- the renderer (n64_render.c)
 
@@ -211,7 +254,8 @@ struct n64_object
 	const float *node_matrices;
 	const unsigned char *region_permutations;
 	short region_count;
-	short pad;
+	short head_node; /* -1: unchanged; renderer only, collision never changes */
+	unsigned long head_mask[2];
 	float center[3];
 	float radius;
 	/* a player's colour (where the model's textures take it), else white */
@@ -341,6 +385,7 @@ enum
 	N64_PARTICLE_FIRST_PERSON = 1, /* in its local player's camera space */
 	N64_PARTICLE_THIRD_PERSON_ONLY = 2, /* not in its local player's view */
 	N64_PARTICLE_ADDITIVE = 4, /* its colour's alpha left out */
+	N64_PARTICLE_FLAME = 8, /* source cloud-fire shape, hot core and warm edge */
 };
 
 struct n64_particle_spawn
@@ -379,6 +424,9 @@ void n64_particles_load(const char *map_name);
 until the next call */
 const struct n64_fx_emitter *n64_fx_event(int effect_tag_index, int event_index, int *count);
 void n64_particle_spawn(const struct n64_particle_spawn *spawn);
+void n64_flame_trail(const float *position, const float *velocity);
+/* Short visual-only segment along the actual sniper projectile movement. */
+void n64_sniper_ribbon(const float *start, const float *end);
 /* explosions: the N64's own flash, fireball and smoke for the effects the
 converter marks (tools/n64/effects.py EXPLOSIONS), started by the effect
 code (source/effects/effects.c, HALO_N64) where the effect begins */
@@ -389,6 +437,7 @@ enum
 	N64_EXPLOSION_ROCKET,
 	N64_EXPLOSION_SHELL,
 	N64_EXPLOSION_NEEDLER,
+	N64_EXPLOSION_FUEL_ROD,
 	N64_EXPLOSION_KINDS
 };
 /* the kind of explosion an effect is (by its tag index), or -1 */
@@ -397,6 +446,8 @@ void n64_explosion(const float position[3], int kind);
 void n64_particles_update(float dt);
 /* the menu's setting: none made when off */
 void n64_particles_set_enabled(int on);
+void n64_particles_set_enhanced(int on);
+int n64_particles_enhanced(void);
 /* the views drawn (more views: fewer particles made) */
 void n64_particles_set_view_count(int views);
 void n64_particles_draw(const struct n64_particle_view *view);
@@ -423,6 +474,15 @@ void n64_text_draw_scaled(const struct n64_font *font, float x, int y, unsigned 
 
 /* ---------- the menu (n64_menu.c): split screen multiplayer's setup */
 
+enum n64_vehicle_selection
+{
+	N64_VEHICLES_MAP_DEFAULT = 0,
+	N64_VEHICLES_ROCKET_HOGS = 1,
+	N64_VEHICLES_ALL_MAP = 2,
+	N64_VEHICLES_ALL_ROCKET = 3,
+	N64_VEHICLES_COUNT
+};
+
 struct n64_menu_choice
 {
 	int game_type; /* n64_menu_game_variant */
@@ -446,17 +506,41 @@ struct n64_menu_choice
 	/* a campaign level (the campaign cartridge, HALO_N64_CAMPAIGN): the
 	map, the difficulty */
 	int campaign;
+	/* Session-only expansion choices; EEPROM v1 remains unchanged. */
+	int weapon_set;
+	int vehicle_set; /* enum n64_vehicle_selection; session only */
+	int enhanced_fx;
+	int big_head;
+	int paintball;
 };
+void n64_menu_memory_begin(void);
+void n64_map_boot_complete(void);
+void n64_render_prepare_map_image(void);
+void n64_render_finish_map_image(void);
+void n64_menu_memory_end(void);
+void *n64_menu_alloc(unsigned long size);
+void n64_menu_free(void *p);
+void *n64_menu_sprite_load(const char *path);
+void n64_menu_sprite_free(void *p);
 
 /* runs the menu until a game is chosen (after a game, its results first:
 lines of text); the choice keeps what was chosen last time */
 int n64_menu_run(struct n64_menu_choice *choice, const char *const *results, int result_count);
+/* One stable automatic bot roster is shared by lobby previews and spawn. */
+void n64_bots_prepare_lobby(void);
+const char *n64_bot_lobby_name(int index, int bot_count);
+int n64_bot_lobby_team(int index, const int *human_teams, int human_count);
+const char *n64_bots_display_name(long player_index);
+/* World-pose and movement cadence; non-bot units keep native single ticks. */
+int n64_bot_pose_interval(long unit_index);
+int n64_bot_move_interval(long unit_index);
 const char *n64_menu_map_folder(int map);
 int n64_menu_map_count(void);
 const char *n64_menu_map_name(int map);
 int n64_menu_map_from_folder(const char *folder);
 const char *n64_menu_game_variant(int game_type);
 int n64_menu_game_teams(int game_type);
+int n64_menu_game_bots(int game_type);
 
 /* ---------- the HUD (n64_hud.c): drawn by the game's own HUD code
 (port/n64/game/n64_hud_game.c passes its quads, text and blips on).
@@ -508,6 +592,9 @@ void n64_hud_set_inset(int pixels);
 int n64_hud_inset(void);
 void n64_hud_quad(const struct n64_hud_quad *quad);
 void n64_hud_text(int x, int y, unsigned long color, const char *text);
+float n64_hud_text_width(const char *text);
+int n64_hud_text_height(void);
+int n64_hud_ensure_sprite(int number);
 /* a motion sensor blip: centre in pixels, position and size in pixels */
 void n64_hud_blip(float x, float y, float width, float height, unsigned long color);
 
@@ -531,9 +618,11 @@ struct n64_pause_screen
 	const char *note; /* under the title: the teams' scores, Firefight's wave */
 	const struct n64_score_row *rows;
 	int row_count;
+	int selected; /* 0 Controls, 1 Main Menu */
 };
 
 void n64_hud_pause(const struct n64_pause_screen *screen);
+void n64_hud_pause_controls(const int *ports, int count, const int *selected_rows);
 
 #ifdef __cplusplus
 }

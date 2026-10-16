@@ -312,6 +312,13 @@ static sprite_t *hud_sprite(int number)
 	return hud.sprites[number];
 }
 
+/* Acquire through the existing per-map shared cache. A successful
+   preflight and subsequent draw reuse one sprite allocation and owner. */
+int n64_hud_ensure_sprite(int number)
+{
+	return hud_sprite(number) != NULL;
+}
+
 void n64_render_hud_phase(void);
 
 /* the views' recordings dropped (the display changed size: high detail), each
@@ -370,7 +377,7 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 	3 and 4 of each six, not four in a row); with two, each view's every
 	third */
 	{
-		int interval = hud.view_count > 2 ? 6 : hud.view_count == 2 ? 3 : HUD_INTERVAL;
+		int interval = n64_golden_selected(view) ? 1 : hud.view_count > 2 ? 6 : hud.view_count == 2 ? 3 : HUD_INTERVAL;
 		int turn = hud.view_count > 0 ? view * interval / hud.view_count : view;
 
 		if (hud.recordings[view] && (hud.view_frames[view]++ + turn) % interval)
@@ -849,6 +856,19 @@ void n64_hud_text(int x, int y, unsigned long color, const char *text)
 	n64_text_draw_scaled(font, (float)x, y + n64_font_ascent(font), color, text, n64_render_hud_squeeze());
 }
 
+/* The same small-font advance used by the existing HUD text renderer.
+   Call after n64_hud_text so its existing lazy font load has completed. */
+float n64_hud_text_width(const char *text)
+{
+	return hud_font ? n64_text_width(hud_font, text) * n64_render_hud_squeeze() :
+		(int)strlen(text) * 8;
+}
+
+int n64_hud_text_height(void)
+{
+	return hud_font ? n64_font_height(hud_font) : 8;
+}
+
 void n64_hud_blip(float x, float y, float width, float height, unsigned long color)
 {
 	float scale_x = width / BLIP_SIZE, scale_y = height / BLIP_SIZE;
@@ -982,7 +1002,7 @@ void n64_hud_pause(const struct n64_pause_screen *screen)
 	marker = cap + 3 * unit;
 	button_width = n64_text_width(hud_font, "MAIN MENU") + 2 * pad;
 	inner = marker + name_width + 3 * gap + score_width + kills_width + deaths_width;
-	inner = MAX(inner, button_width + gap + n64_text_width(hud_font, "START  RESUME"));
+	inner = MAX(inner, 2 * button_width + 2 * gap + n64_text_width(hud_font, "START RESUME"));
 	inner = MAX(inner, n64_text_width(hud_font, screen->note ? screen->note : ""));
 	x0 = (width - inner) * 0.5f - pad;
 	x1 = (width + inner) * 0.5f + pad;
@@ -1045,10 +1065,89 @@ void n64_hud_pause(const struct n64_pause_screen *screen)
 	}
 	y += 4 * unit;
 
-	/* the one button, chosen (A); START goes back to the game */
-	pause_box(x0 + pad, y, x0 + pad + button_width, y + box_height, PAUSE_CHOSEN);
-	pause_frame(x0 + pad, y, x0 + pad + button_width, y + box_height, unit, PAUSE_FRAME);
-	pause_text(x0 + pad + button_width * 0.5f, y + (box_height + cap) / 2, PAUSE_CENTRE, PAUSE_BRIGHT, "MAIN MENU");
-	pause_text(x1 - pad, y + (box_height + cap) / 2, PAUSE_RIGHT, PAUSE_DIM, "START  RESUME");
+	/* The native blue buttons now expose Controls without leaving the match. */
+	for (i = 0; i < 2; i++)
+	{
+		float bx = x0 + pad + i * (button_width + gap);
+		if (screen->selected == i)
+		{
+			pause_box(bx, y, bx + button_width, y + box_height, PAUSE_CHOSEN);
+			pause_frame(bx, y, bx + button_width, y + box_height, unit, PAUSE_FRAME);
+		}
+		pause_text(bx + button_width * 0.5f, y + (box_height + cap) / 2, PAUSE_CENTRE,
+			screen->selected == i ? PAUSE_BRIGHT : PAUSE_TEXT, i ? "MAIN MENU" : "CONTROLS");
+	}
+	pause_text(x1 - pad, y + (box_height + cap) / 2, PAUSE_RIGHT, PAUSE_DIM, "START RESUME");
+	hud.tmem_pixels = NULL;
+}
+
+/* Condense a long preset name inside its own column, using the same font. */
+static void pause_text_fit(float x, int y, int align, unsigned long color, const char *text, int maximum)
+{
+	int width = n64_text_width(hud_font, text);
+	float scale = width > maximum && width > 0 ? (float)maximum / width : 1.f;
+	float shown = width * scale;
+	if (align == PAUSE_RIGHT) x -= shown;
+	else if (align == PAUSE_CENTRE) x -= shown * 0.5f;
+	n64_text_draw_scaled(hud_font, pause_x(x), y, color, text, pause_squeeze * scale);
+}
+
+void n64_hud_pause_controls(const int *ports, int count, const int *selected_rows)
+{
+	static const char *const names[CONTROL_COUNT] = {"SCHEME", "CROUCH", "LOOK", "FIRE", "STICK", "C LOOK", "RUMBLE"};
+	static const char *const schemes[N64_SCHEME_COUNT] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH", "GOLDEN STYLE"};
+	int width = n64_render_screen_width(), height = n64_render_screen_height();
+	int unit = height >= 480 ? 2 : 1, cap, i, r;
+	int columns = count > 1 ? 2 : 1, rows = count > 2 ? 2 : 1;
+	int top = 23 * unit, bottom = height - 27 * unit;
+	if (count < 1 || count > 4) return;
+	if (!hud_font_loaded) { hud_font = n64_font_load("small"); hud_font_loaded = 1; }
+	hud.mode = _mode_none;
+	hud.tmem_pixels = NULL;
+	pause_middle = width * 0.5f;
+	pause_squeeze = n64_render_hud_squeeze();
+	rdpq_sync_pipe();
+	rdpq_set_scissor(0, 0, width, height);
+	pause_fill(0, 0, width, height, PAUSE_BACKDROP);
+	cap = n64_font_cap_height(hud_font);
+	/* Per-player headings identify this page; leave the top clear for the
+	user's optional FPS counter, which also appears in production. */
+	for (i = 0; i < count; i++)
+	{
+		int port = ports[i], x0 = (i % columns) * width / columns + 4 * unit;
+		int x1 = (i % columns + 1) * width / columns - 4 * unit;
+		int y0 = top + (i / columns) * (bottom - top) / rows;
+		int y1 = top + (i / columns + 1) * (bottom - top) / rows - 3 * unit;
+		int pitch = (y1 - y0 - cap - 7 * unit) / CONTROL_COUNT;
+		const struct n64_controls *controls;
+		char text[48];
+		if (port < 0 || port > 3) continue;
+		controls = &n64_controls[port];
+		pause_box(x0, y0, x1, y1, PAUSE_PANEL);
+		pause_frame(x0, y0, x1, y1, unit, PAUSE_FRAME);
+		snprintf(text, sizeof(text), "PLAYER %d  -  PORT %d", i + 1, port + 1);
+		pause_text_fit((x0 + x1) * 0.5f, y0 + cap + 2 * unit, PAUSE_CENTRE, PAUSE_BRIGHT, text, x1 - x0 - 8 * unit);
+		for (r = 0; r < CONTROL_COUNT; r++)
+		{
+			int y = y0 + cap + 5 * unit + r * pitch, selected = selected_rows[port] == r;
+			const char *value = text;
+			if (selected) pause_box(x0 + 2 * unit, y - unit, x1 - 2 * unit, y + pitch - unit, PAUSE_CHOSEN);
+			switch (r)
+			{
+			case CONTROL_SCHEME: value = schemes[controls->scheme < N64_SCHEME_COUNT ? controls->scheme : 0]; break;
+			case CONTROL_CROUCH: value = controls->toggle_crouch ? "TOGGLE" : "HOLD"; break;
+			case CONTROL_LOOK: value = controls->inverted ? "INVERTED" : "NORMAL"; break;
+			case CONTROL_FIRE: value = !controls->swap_fire ? "Z" : controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" :
+				controls->scheme == N64_SCHEME_GOLDEN_STYLE ? "D-LEFT" : "R"; break;
+			case CONTROL_STICK_SPEED: snprintf(text, sizeof(text), "%d", 5 + controls->stick_speed); break;
+			case CONTROL_C_SPEED: snprintf(text, sizeof(text), "%d", 5 + controls->c_speed); break;
+			default: value = controls->no_rumble ? "OFF" : "ON"; break;
+			}
+			pause_text_fit(x0 + 4 * unit, y + cap, PAUSE_LEFT, selected ? PAUSE_BRIGHT : PAUSE_TEXT, names[r], (x1 - x0 - 12 * unit) / 2);
+			pause_text_fit(x1 - 4 * unit, y + cap, PAUSE_RIGHT, selected ? PAUSE_BRIGHT : PAUSE_TEXT, value, (x1 - x0 - 12 * unit) / 2);
+		}
+	}
+	pause_text_fit(pause_middle, height - 15 * unit, PAUSE_CENTRE, PAUSE_TEXT, "OWN PAD: UP/DOWN ROW  LEFT/RIGHT CHANGE", width - 12 * unit);
+	pause_text_fit(pause_middle, height - 5 * unit, PAUSE_CENTRE, PAUSE_DIM, "A CYCLE   B BACK   START RESUME", width - 12 * unit);
 	hud.tmem_pixels = NULL;
 }

@@ -20,7 +20,7 @@ already there.
 #include "n64.h"
 
 #define CHUNK_SIZE 4096
-#define CHUNK_COUNT 48
+#define CHUNK_COUNT 16 /* 64 KiB; frames are unchanged, misses stream from ROM */
 
 #define MAXIMUM_GRAPHS 256
 
@@ -46,7 +46,7 @@ static struct
 } anim;
 
 /* the cache's chunks, in one block made at boot (n64_main.c): made at the
-first map's load, 48 blocks of 4 KB sat above its image, kept for good, and
+first map's load, cache blocks sat above its image, kept for good, and
 split the heap a later, bigger map needs in one piece (Sidewinder's
 2.8 MB: "no memory for the map") */
 void n64_animation_reserve(void)
