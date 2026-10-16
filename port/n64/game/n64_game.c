@@ -884,9 +884,10 @@ static struct
 	byte *image;
 	unsigned long image_size;
 	struct n64_map_header header;
-	/* the images' home (n64_map_home_reserve) */
+	/* the images' home (n64_map_home_reserve), and its size as reserved at
+	boot (the largest image) */
 	byte *home;
-	unsigned long home_size;
+	unsigned long home_size, home_reserved;
 } n64_map;
 
 /* The maps' images have a home of their own, made at boot (n64_main.c) from
@@ -927,7 +928,7 @@ void n64_map_home_reserve(
 	n64_map.home = memalign(64, largest);
 	if (!n64_map.home)
 		return;
-	n64_map.home_size = largest;
+	n64_map.home_size = n64_map.home_reserved = largest;
 	n64_display_set_home(n64_map.home, largest);
 	snprintf(line, sizeof(line), "n64: the maps' home, %lu KB", largest / 1024);
 	n64_log(line);
@@ -1001,7 +1002,15 @@ static void *n64_map_load(
 	n64_render_prepare_map_image();
 	/* The reclaimable RSP reserve may sit in the arena's released tail. */
 	n64_uncached_reserve_release();
-	unsigned long arena_size = MAX(n64_map.header.image_size, 3 * 1024 * 1024);
+	/* 3 MB, or the image, but never past the span reserved at boot: the
+	multiplayer cartridge's largest image is 2.6 MB, and growing past it
+	needed whatever lay after the arena to be free ("no memory to resize
+	map arena: 2664 -> 3072 KB" at a game's start on the user's console) */
+	unsigned long arena_size = 3 * 1024 * 1024;
+	if (arena_size > n64_map.home_reserved)
+		arena_size = n64_map.home_reserved;
+	if (arena_size < n64_map.header.image_size)
+		arena_size = n64_map.header.image_size;
 	arena_size = (arena_size + 63) & ~63UL;
 	if (n64_map.home_size != arena_size)
 	{
