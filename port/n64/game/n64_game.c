@@ -954,9 +954,17 @@ void *n64_map_home_free_part(
 void n64_map_boot_complete(void)
 {
 	/* Persistent pools were allocated above the largest arena. Release its
-	unused tail for the title; all transient users leave before it grows. */
+	unused tail for the title; all transient users leave before it grows.
+	Not on the campaign cartridge: its one level is the largest image
+	(3145 KB), the tail it would release is 73 KB, and the title left a
+	block in it, so the level could not grow the arena back ("no memory to
+	resize map arena: 3072 -> 3145 KB" on the user's console) */
 	unsigned long size = 3 * 1024 * 1024;
+#ifdef HALO_N64_CAMPAIGN
+	if (0)
+#else
 	if (n64_map.home && n64_map.home_size > size)
+#endif
 	{
 		void *home = (realloc)(n64_map.home, size);
 		if (home != n64_map.home) n64_fatal("map arena moved while shrinking");
