@@ -146,6 +146,10 @@ static void n64_game_start(
 	if (!n64_choice.firefight &&
 		(n64_choice.vehicle_set == N64_VEHICLES_ALL_MAP || n64_choice.vehicle_set == N64_VEHICLES_ALL_ROCKET))
 		variant.universal_variant.vehicle_set = 0;
+	/* NONE: Halo's own vehicle set 1 (game_engine.c's filter makes every map
+	vehicle NONE; Race's set "none"). Firefight keeps its own */
+	if (!n64_choice.firefight && n64_choice.vehicle_set == N64_VEHICLES_NONE)
+		variant.universal_variant.vehicle_set = 1;
 	game_set_game_variant(&variant);
 	n64_particles_set_enhanced(n64_choice.enhanced_fx);
 	n64_modifiers_set(!n64_choice.firefight && n64_choice.big_head, !n64_choice.firefight && n64_choice.paintball);

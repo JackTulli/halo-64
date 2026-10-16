@@ -762,10 +762,7 @@ static void read_pads(void)
 
 enum { SCREEN_RESULTS, SCREEN_TITLE, SCREEN_SETUP, SCREEN_SETTINGS, SCREEN_CONTROLS, SCREEN_CONTENT, SCREEN_TEAMS };
 enum { ROW_GAME_TYPE, ROW_MAP, ROW_SCORE, ROW_BOTS, ROW_OPTIONS, ROW_START, ROW_COUNT };
-enum { CONTENT_WEAPONS,
-#ifdef HALO_N64_PC_EXPANSION
-	CONTENT_VEHICLES,
-#endif
+enum { CONTENT_WEAPONS, CONTENT_VEHICLES,
 	CONTENT_FEEDBACK, CONTENT_BIG_HEAD, CONTENT_PAINTBALL, CONTENT_BACK, CONTENT_COUNT };
 static const char *const weapon_sets[] = {"MAP DEFAULT", "PISTOL + AR",
 #ifdef HALO_N64_PC_EXPANSION
@@ -773,10 +770,26 @@ static const char *const weapon_sets[] = {"MAP DEFAULT", "PISTOL + AR",
 #endif
 };
 #define WEAPON_SET_COUNT ((int)(sizeof(weapon_sets) / sizeof(weapon_sets[0])))
+static const char *const vehicle_sets[N64_VEHICLES_COUNT] = {"MAP DEFAULT", "ROCKET HOGS", "ALL MAP", "ALL + ROCKET", "NONE"};
+static const char *const vehicle_help[N64_VEHICLES_COUNT] = {"ORIGINAL GAME TYPE VEHICLES", "ROCKET WARTHOG AT ORIGINAL WARTHOG SPAWNS", "ALL VEHICLES AT THEIR AUTHORED MAP SPAWNS", "ALL MAP VEHICLES; ROCKET WARTHOG REPLACEMENTS", "NO VEHICLES IN MULTIPLAYER GAMES"};
+/* the VEHICLES row's choices on this cartridge, in order */
+static const int vehicle_choices[] = {N64_VEHICLES_MAP_DEFAULT,
 #ifdef HALO_N64_PC_EXPANSION
-static const char *const vehicle_sets[N64_VEHICLES_COUNT] = {"MAP DEFAULT", "ROCKET HOGS", "ALL MAP", "ALL + ROCKET"};
-static const char *const vehicle_help[N64_VEHICLES_COUNT] = {"ORIGINAL GAME TYPE VEHICLES", "ROCKET WARTHOG AT ORIGINAL WARTHOG SPAWNS", "ALL VEHICLES AT THEIR AUTHORED MAP SPAWNS", "ALL MAP VEHICLES; ROCKET WARTHOG REPLACEMENTS"};
+	N64_VEHICLES_ROCKET_HOGS, N64_VEHICLES_ALL_MAP, N64_VEHICLES_ALL_ROCKET,
 #endif
+	N64_VEHICLES_NONE};
+#define VEHICLE_CHOICE_COUNT ((int)(sizeof(vehicle_choices) / sizeof(vehicle_choices[0])))
+
+/* a vehicle set's place among this cartridge's choices (0 if it isn't one) */
+static int vehicle_choice(int set)
+{
+	for (int i = 0; i < VEHICLE_CHOICE_COUNT; i++)
+	{
+		if (vehicle_choices[i] == set)
+			return i;
+	}
+	return 0;
+}
 /* bots (port/n64/game/n64_bots.c): at most this many, whatever the
 players (each biped costs ~2.7 ms of a tick: many will be slow) */
 #define MAXIMUM_BOTS 8
@@ -1186,15 +1199,12 @@ static void draw_settings(int item)
 static void draw_content(const struct n64_menu_choice *c, int item)
 {
 	const char *help;
-#ifdef HALO_N64_PC_EXPANSION
-	int vehicle = c->vehicle_set >= 0 && c->vehicle_set < N64_VEHICLES_COUNT ? c->vehicle_set : N64_VEHICLES_MAP_DEFAULT;
-#endif
+	int vehicle = vehicle_choices[vehicle_choice(c->vehicle_set)];
+
 	page("CONTENT OPTIONS", "MULTIPLAYER");
 	setting_row(80, 560, 126 + CONTENT_WEAPONS * 42, item == CONTENT_WEAPONS, menu.large,
 		"WEAPONS", weapon_sets[c->weapon_set >= 0 && c->weapon_set < WEAPON_SET_COUNT ? c->weapon_set : 0]);
-#ifdef HALO_N64_PC_EXPANSION
 	setting_row(80, 560, 126 + CONTENT_VEHICLES * 42, item == CONTENT_VEHICLES, menu.large, "VEHICLES", vehicle_sets[vehicle]);
-#endif
 	setting_row(80, 560, 126 + CONTENT_FEEDBACK * 42, item == CONTENT_FEEDBACK, menu.large, "IMPACT FX", c->enhanced_fx ? "ENHANCED" : "ORIGINAL");
 	setting_row(80, 560, 126 + CONTENT_BIG_HEAD * 42, item == CONTENT_BIG_HEAD, menu.large, "BIG HEAD", c->big_head ? "ON" : "OFF");
 	setting_row(80, 560, 126 + CONTENT_PAINTBALL * 42, item == CONTENT_PAINTBALL, menu.large, "PAINTBALL", c->paintball ? "ON" : "OFF");
@@ -1208,9 +1218,7 @@ static void draw_content(const struct n64_menu_choice *c, int item)
 #else
         "STARTING WEAPONS FOR PLAYERS AND BOTS" :
 #endif
-#ifdef HALO_N64_PC_EXPANSION
 		item == CONTENT_VEHICLES ? vehicle_help[vehicle] :
-#endif
 		item == CONTENT_FEEDBACK ? "WEAPON, GRENADE AND IMPACT FEEDBACK" :
 		item == CONTENT_BIG_HEAD ? "LARGER HEADS; ORIGINAL HIT DETECTION" :
 		item == CONTENT_PAINTBALL ? "COLORED IMPACTS AT EACH WEAPON'S DECAL SIZE" : "BACK TO GAME SETUP";
@@ -1567,9 +1575,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 		c->map = 0;
 	if (c->weapon_set < 0 || c->weapon_set >= WEAPON_SET_COUNT)
 		c->weapon_set = 0;
-#ifndef HALO_N64_PC_EXPANSION
-	c->vehicle_set = N64_VEHICLES_MAP_DEFAULT;
-#endif
+	c->vehicle_set = vehicle_choices[vehicle_choice(c->vehicle_set)];
 	if (c->game_type < 0 || c->game_type >= GAME_TYPE_COUNT)
 		c->game_type = 0;
 	if (score_index < 0)
@@ -1668,9 +1674,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				if (pad->down) content = (content + 1) % CONTENT_COUNT;
 				int step = pad->left ? -1 : (pad->right || pad->pressed.a) ? 1 : 0;
 				if (step && content == CONTENT_WEAPONS) c->weapon_set = (c->weapon_set + WEAPON_SET_COUNT + step) % WEAPON_SET_COUNT;
-#ifdef HALO_N64_PC_EXPANSION
-				if (step && content == CONTENT_VEHICLES) c->vehicle_set = (c->vehicle_set + N64_VEHICLES_COUNT + step) % N64_VEHICLES_COUNT;
-#endif
+				if (step && content == CONTENT_VEHICLES)
+					c->vehicle_set = vehicle_choices[(vehicle_choice(c->vehicle_set) + VEHICLE_CHOICE_COUNT + step) % VEHICLE_CHOICE_COUNT];
 				if (step && content == CONTENT_FEEDBACK) c->enhanced_fx = !c->enhanced_fx;
 				if (step && content == CONTENT_BIG_HEAD) c->big_head = !c->big_head;
 				if (step && content == CONTENT_PAINTBALL) c->paintball = !c->paintball;

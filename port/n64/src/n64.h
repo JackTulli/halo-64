@@ -480,6 +480,8 @@ enum n64_vehicle_selection
 	N64_VEHICLES_ROCKET_HOGS = 1,
 	N64_VEHICLES_ALL_MAP = 2,
 	N64_VEHICLES_ALL_ROCKET = 3,
+	/* none at all (every cartridge: Halo's own game variant vehicle set 1) */
+	N64_VEHICLES_NONE = 4,
 	N64_VEHICLES_COUNT
 };
 
