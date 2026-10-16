@@ -101,6 +101,14 @@ MATERIAL_TILED = 4096
 WATER_SHADE = 0.7
 # a water shader without a tint of its own
 WATER_DEFAULT_COLOUR = (0.12, 0.16, 0.45)
+# chicago shaders drawn as water where LevelBuilder.chicago_water is set
+WATER_NAMES = ("water", "river", "stream")
+# and there, water whose own colour is grey (a30's: Halo's blue is the sky
+# in its reflection, which the N64 has not -- the user: "the water looks
+# grey not blue") is a river's blue, or a waterfall's paler one
+CAMPAIGN_WATER_COLOUR = (0.16, 0.30, 0.44)
+CAMPAIGN_WATERFALL_COLOUR = (0.42, 0.53, 0.62)
+WATER_GREY_SPREAD = 0.06
 
 # rock, earth, snow, wood (Halo's material types: dirt, sand, stone, snow,
 # wood, leaves, ice) with a detail map have it drawn over them in a second
@@ -499,6 +507,13 @@ class LevelBuilder:
         # (campaign.py: closer where the game is played), or None
         self.decimate_tolerance = None
         self.decimated = [0, 0]
+        # alpha-blended chicago shaders named as water (WATER_NAMES) drawn as
+        # water (MATERIAL_WATER), their colour their colour maps' mean: a30's
+        # rivers and waterfalls (a mask as their first map, the colour in
+        # their second) came out as slabs, as Battle Creek's creek did before
+        # its water was flat (the user: "fix all the water on the level like
+        # we did on beaver creek"); the campaign's level only
+        self.chicago_water = False
 
     def fields(self, struct_name):
         return {f.name: o for o, f in self.defs.fields(struct_name)}
@@ -774,7 +789,7 @@ class LevelBuilder:
                     return index
             elif group == "swat":
                 index = self.add_material(-1, MATERIAL_TRANSPARENT | MATERIAL_WATER | MATERIAL_UNTEXTURED)
-                self.water_colour[index] = self.water_tint(tag)
+                self.water_colour[index] = self.campaign_water(tag, self.water_tint(tag))
                 self.material_by_shader[shader_datum] = index
                 return index
             else:
@@ -783,6 +798,12 @@ class LevelBuilder:
                 if self.dropped_shader(tag):
                     index = self.add_material(-1, flags | MATERIAL_UNTEXTURED)
                     self.dropped.add(index)
+                    self.material_by_shader[shader_datum] = index
+                    return index
+                if self.chicago_water and group == "schi" and any(
+                        word in tag.name.split("\\")[-1].lower() for word in WATER_NAMES):
+                    index = self.add_material(-1, MATERIAL_TRANSPARENT | MATERIAL_WATER | MATERIAL_UNTEXTURED)
+                    self.water_colour[index] = self.campaign_water(tag, self.chicago_water_tint(tag))
                     self.material_by_shader[shader_datum] = index
                     return index
                 texture = self.first_map(tag)
@@ -863,6 +884,37 @@ class LevelBuilder:
             blend = struct.unpack("<H", self.map.read(tag.address + 44, 2))[0]
             return blend != 0
         return group != "swat"
+
+    def campaign_water(self, tag, colour):
+        """a water colour as the level has it: a grey one blue in a
+        campaign level (chicago_water; CAMPAIGN_WATER_COLOUR)"""
+        if not self.chicago_water or max(colour) - min(colour) >= WATER_GREY_SPREAD:
+            return colour
+        return CAMPAIGN_WATERFALL_COLOUR if "waterfall" in tag.name.lower() else CAMPAIGN_WATER_COLOUR
+
+    def chicago_water_tint(self, tag):
+        """a chicago water shader's colour: its maps' after the first (the
+        mask) averaged, x WATER_SHADE"""
+        f = self.fields("ShaderTransparentChicago")
+        mf = self.fields("ShaderTransparentChicagoMap")
+        size = self.defs.size("ShaderTransparentChicagoMap")
+        count, pointer, _ = struct.unpack("<iII", self.map.read(tag.address + f["maps"], 12))
+        means = []
+        for i in range(1, max(count, 0)):
+            datum = struct.unpack("<I", self.map.read(pointer + i * size + mf["map"] + 12, 4))[0]
+            bitmap = self.map.tag(datum) if datum != 0xFFFFFFFF else None
+            images = bitmap_images(self.map, bitmap, self.defs) if bitmap is not None else []
+            try:
+                img = decode(self.map, images[0], 1 << 16).convert("RGB") if images else None
+            except ValueError:
+                img = None
+            if img is not None:
+                n = img.width * img.height
+                means.append([sum(channel.getdata()) / n / 255.0 for channel in img.split()])
+        if not means:
+            return WATER_DEFAULT_COLOUR
+        colour = tuple(min(1.0, sum(m[k] for m in means) / len(means) * WATER_SHADE) for k in range(3))
+        return colour if max(colour) > 0.02 else WATER_DEFAULT_COLOUR
 
     def water_tint(self, tag):
         """a water shader's colour (MATERIAL_WATER)"""

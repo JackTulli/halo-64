@@ -67,10 +67,12 @@ working notebook.
   its own, read from the cartridge as you come near (a megatexture: the
   grass, dirt and paths of Halo's maps), and Blood Gulch's blue sky.
 - **A campaign cartridge** (`halo-campaign.z64`, a ROM of its own): the
-  level "Halo" with its Marines and Covenant driven by the N64's simplified
-  AI (Firefight's), squads and waves placed as you come near, checkpoints,
-  four difficulties and the warthog. No cutscenes or scripts yet, and the
-  level's second half (its other structure BSP) is not on it yet.
+  level "Halo" with its Covenant driven by the N64's simplified AI
+  (Firefight's; no Marines), squads and waves placed as you come near and
+  put away when you have gone far on, checkpoints, four difficulties, a
+  warthog by the Marine base, and lighter scenery. No cutscenes or scripts
+  yet, and the level's second half (its other structure BSP) is not on it
+  yet.
 
 No networking.
 
@@ -254,6 +256,10 @@ gamepad that has motors).
 | WIDESCREEN | off, or anamorphic 16:9 for a television that stretches the picture |
 | HUD INSET | moves the HUD in from the edges, for televisions that cut them off |
 | FPS COUNTER | frames a second and timings at the top of the screen |
+
+A multiplayer game's **CONTENT** screen (game setup) sets the WEAPONS
+players and bots start with, the VEHICLES (map default, or none at all),
+IMPACT FX (original or enhanced), BIG HEAD and PAINTBALL.
 
 ## How it runs on an N64
 

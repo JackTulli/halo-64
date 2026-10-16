@@ -106,6 +106,11 @@ class Policy:
         or None; address is the Xbox address of the struct instance"""
         return None
 
+    def override_bytes(self, tag, struct_name, field_name, address):
+        """the bytes (big-endian, the field's size) to store in a field of
+        any size instead of the map's, or None"""
+        return None
+
     def custom_tag(self, tag):
         """the bytes of a kept tag the N64 keeps in a form of its own (no
         pointers), or None to repack it"""
@@ -160,8 +165,13 @@ class Repacker:
             if f.kind == "pad":
                 self.image.put(dst, src)
             elif f.kind == "prim":
+                replaced = self.policy.override_bytes(tag, name, f.name, address)
                 value = self.policy.override(tag, name, f.name, address) if f.size in (2, 4) else None
-                if value is not None and f.size == 4:
+                if replaced is not None:
+                    if len(replaced) != fsize:
+                        raise ValueError(f"{name}.{f.name}: {len(replaced)} bytes for a {fsize}-byte field")
+                    self.image.put(dst, replaced)
+                elif value is not None and f.size == 4:
                     self.image.put_u32(dst, value)
                 elif value is not None:
                     self.image.put(dst, struct.pack(">H", value & 0xFFFF))

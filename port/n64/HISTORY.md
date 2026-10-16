@@ -5,6 +5,46 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+16 October: the PC expansion merged, its crashes fixed, a VEHICLES
+setting, and the campaign level tuned.
+
+- kaboggs' PC expansion (pull request 1): an optional third cartridge with
+  the six PC maps, Content options (BIG HEAD, PAINTBALL, IMPACT FX), the
+  GOLDEN STYLE controls, Halo's own bot names, shared effect records and
+  compressed maps (the multiplayer ROM 63.8 -> 43.4 MB), and safer
+  converters. Three crashes followed on the cartridges it was not tested
+  on. The multiplayer cartridge could not start a game ("no memory to
+  resize map arena: 2664 -> 3072 KB"): the arena was made at least 3 MB at
+  load, past the largest image (2.6 MB) reserved at boot -- it now never
+  grows past the boot reservation. The campaign stopped at boot in
+  effects_initialize: the game state ceiling had come down to the
+  multiplayer pools' 0x70000 -- the campaign keeps 1 MiB. And the campaign
+  level could not load ("3072 -> 3145 KB"): the arena trimmed to 3 MB after
+  boot, the title left a block in the freed tail -- the campaign no longer
+  trims.
+- VEHICLES on every cartridge's Content screen: MAP DEFAULT or NONE (the
+  PC cartridge's ROCKET HOGS, ALL MAP and ALL + ROCKET besides). NONE is
+  Halo's own game variant vehicle set 1, so no map vehicle is placed (Race
+  has its own "none"); Firefight keeps its own.
+- The campaign level (a30), after the user's play: its trees and boulders
+  thinned in the scenario's order (`tools/n64/campaign.py`
+  SCENERY_THINNING: one pine in four, one large boulder in four, one
+  gigantic in two, no small ones -- 293 scenery placements -> about 80);
+  the Covenant alone (no Marine squads or placed Marines,
+  CAMPAIGN_ALLIES); no squad that comes in a vehicle the N64 has not (the
+  Banshee pilots stood where their Banshees would be, outside the map;
+  DROPPED_SQUAD_WORDS) and each squad only at its starting locations inside
+  the map; one warthog, moved beside the Marine base's squad on flat
+  ground with no ledge near (CAMPAIGN_WARTHOG_BESIDE; a first try near the
+  start went over a cliff); its rivers and waterfalls (chicago shaders, a
+  mask their first map) drawn as Battle Creek's water is, and blue (a30's
+  water tints are grey: Halo's blue is the sky in its reflection); and an
+  actor 55 units from every player, not fighting, put away -- its squad
+  comes again when a player is back near (everything placed had kept
+  running after the players moved on, each biped ~3 ms of a tick).
+  `tools/n64/repack.py` gained override_bytes for a field of any size (the
+  moved warthog's position).
+
 15 October, late: libdragon's RSP crash screen given room. On the user's
 console a game stopped at "Out of memory" in display_init, under
 console_init, under __rsp_crash, under display_get: the CPU had waited

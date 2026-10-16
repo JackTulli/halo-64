@@ -60,6 +60,42 @@ DROPPED_PLACEMENTS = ("scenery\\emitters\\", "scenery\\waterfalls\\spray_emitter
 # the scenario has them: a30's warthog (the user: "by the base there should
 # be a warthog")
 CAMPAIGN_VEHICLES = ("vehicles\\warthog\\warthog",)
+# the scenery thinned (the user: "tone down the scenery ... less trees
+# rocks", then "further reducing the scenery"): of each family, one
+# placement in this many kept (0: none), in the scenario's order -- an
+# artist places a clump at a time, so one of each few of a clump stays.
+# a30: 115 + 30 pines, 93 large, 34 gigantic and 20 small boulders -> about
+# 37 pines, 24 large and 17 gigantic boulders, no small ones
+SCENERY_THINNING = (("scenery\\trees\\", 4), ("scenery\\rocks\\boulder_granite_large\\", 4),
+                    ("scenery\\rocks\\boulder_granite_gigantic\\", 2),
+                    ("scenery\\rocks\\boulder_granite_small\\", 0))
+# the Covenant alone (the user: "disable all the marines only covenant"): no
+# squad of the players' side, no Marine placed as a biped
+CAMPAIGN_ALLIES = False
+ALLY_WORDS = ("marine", "crewman", "keyes")
+# the campaign's one warthog (the user: "it needs to be by the base"; one
+# moved near the start went over a cliff and out of the map): on a map
+# listed here every vehicle placement the scenario has is left out and one
+# warthog placement is moved to flat ground beside the named squad's
+# starting locations -- a30's Marine base (first_marine/base_marine)
+CAMPAIGN_WARTHOG_BESIDE = {"a30": ("first_marine", "base_marine")}
+# its spot: BASE_WARTHOG_RADII from the squad's middle, its ground within
+# BASE_WARTHOG_LEVEL of the squad's (no cliff top or foot), its corners
+# within BASE_WARTHOG_FLAT, no ledge (BASE_WARTHOG_LEDGE) within 2.5 units, clear of the kept
+# objects and the squad's starting locations by BASE_WARTHOG_CLEARANCE
+BASE_WARTHOG_RADII = (2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 15.0)
+BASE_WARTHOG_LEVEL = 1.5
+# (a30 base ground rises up to 0.45 across a warthog; a drop of more than
+# 1.2 within 2.5 units of it is a ledge)
+BASE_WARTHOG_FLAT = 0.45
+BASE_WARTHOG_LEDGE = 1.2
+BASE_WARTHOG_CLEARANCE = 2.0
+# squads that come in a vehicle the N64 has not (Banshee pilots, a jeep's
+# crew, a dropship's) are left out: they stood where their vehicle would
+# be -- a30's banshee pilots outside the map (the user: "you have enemies
+# spawning outside the map")
+DROPPED_SQUAD_WORDS = ("banshee", "pilot", "jeep", "dropship", "driver", "gunner", "passenger", "pelican",
+                       "wraith")
 # placements the N64 makes as the players come near and deletes as they go
 # (n64_campaign.c), not at the start: a30's ~300 trees and boulders took
 # ~230 KB of Halo's 256 KB of object memory, and the encounters' actors (a
@@ -102,6 +138,15 @@ class Placements:
         self.kept = {}
         self.palette_use = {}
         self.dropped = 0
+        self.thinned = 0
+        # placements moved (address -> position): convert.py's CampaignPolicy
+        self.moved = {}
+        # every placement read: address -> (kind, palette name, its index,
+        # position, its "not placed" flags)
+        self.all = {}
+        # (CAMPAIGN_WARTHOG_BESIDE: the squad the one warthog stands by)
+        self.beside = CAMPAIGN_WARTHOG_BESIDE.get(xmap.name)
+        thinning = {}
         for kind, palette in PLACEMENTS.items():
             if kind not in fields or palette not in fields:
                 continue
@@ -128,11 +173,21 @@ class Placements:
                 if not 0 <= index < len(names):
                     continue
                 name = names[index]
+                self.all[address] = (kind, name, index, position, not_placed)
                 vehicle = kind == "vehicles"
-                if (any(name.startswith(d) for d in DROPPED_PLACEMENTS) or (vehicle and name not in CAMPAIGN_VEHICLES)
+                ally = kind == "bipeds" and not CAMPAIGN_ALLIES and any(w in name.lower() for w in ALLY_WORDS)
+                if ally or (any(name.startswith(d) for d in DROPPED_PLACEMENTS) or
+                        (vehicle and (name not in CAMPAIGN_VEHICLES or self.beside is not None))
                         or (not vehicle and not_placed & 1) or not self.inside(position)):
                     self.dropped += 1
                     continue
+                family = next((rule for rule in SCENERY_THINNING if name.startswith(rule[0])), None)
+                if kind == "scenery" and family is not None:
+                    seen = thinning[family[0]] = thinning.get(family[0], 0) + 1
+                    if family[1] == 0 or (seen - 1) % family[1]:
+                        self.dropped += 1
+                        self.thinned += 1
+                        continue
                 if vehicle:
                     not_placed &= ~1
                 if kind in STREAMED_PLACEMENTS:
@@ -140,6 +195,77 @@ class Placements:
                 self.kept[address] = not_placed
                 entries.add(index)
             self.palette_use[palette] = entries
+        self.base_warthog(xmap, defs)
+
+    def base_warthog(self, xmap, defs):
+        """the one warthog, by the squad CAMPAIGN_WARTHOG_BESIDE names"""
+        import math
+        if self.beside is None:
+            return
+        points = squad_locations(xmap, defs, *self.beside)
+        warthogs = [(a, entry) for a, entry in self.all.items()
+                    if entry[0] == "vehicles" and entry[1] in CAMPAIGN_VEHICLES]
+        if not points or not warthogs:
+            print(f"campaign: no warthog by {'/'.join(self.beside)}")
+            return
+        heights = sorted(point[2] for point in points)
+        centre = (sum(point[0] for point in points) / len(points), sum(point[1] for point in points) / len(points),
+                  heights[len(heights) // 2])
+        obstacles = [entry[3] for a, entry in self.all.items() if a in self.kept and entry[0] != "sound scenery"]
+        spot = self.flat_ground_near(centre, obstacles + list(points))
+        if spot is None:
+            print(f"campaign: no flat ground for a warthog by {'/'.join(self.beside)}")
+            return
+        address, (kind, name, index, position, not_placed) = warthogs[0]
+        self.kept[address] = not_placed & ~1
+        self.moved[address] = spot
+        self.palette_use.setdefault("vehicle palette", set()).add(index)
+        print(f"campaign: the warthog at {tuple(round(c, 1) for c in spot)}, by {'/'.join(self.beside)} "
+              f"({math.dist(spot[:2], centre[:2]):.1f} units from its middle)")
+
+    def open(self, point):
+        from .collision import NONE as COLLISION_NONE
+        return any(space.test_point(point) != COLLISION_NONE for space in self.spaces)
+
+    def ground(self, x, y, top, bottom):
+        """the height of the ground under (x, y) between top (open) and
+        bottom, or None"""
+        if not self.open((x, y, top)):
+            return None
+        z = top
+        while z > bottom:
+            z -= 0.05
+            if not self.open((x, y, z)):
+                return z + 0.05
+        return None
+
+    def flat_ground_near(self, centre, obstacles):
+        """a warthog's spot near centre (BASE_WARTHOG_RADII ...)"""
+        import math
+        if not self.spaces:
+            return None
+        corners = ((0.9, 0.0), (-0.9, 0.0), (0.0, 0.9), (0.0, -0.9))
+        for radius in BASE_WARTHOG_RADII:
+            for k in range(16):
+                angle = 2 * math.pi * k / 16
+                x, y = centre[0] + radius * math.cos(angle), centre[1] + radius * math.sin(angle)
+                ground = self.ground(x, y, centre[2] + 3.0, centre[2] - 3.0)
+                if ground is None or abs(ground - centre[2]) > BASE_WARTHOG_LEVEL:
+                    continue
+                heights = [self.ground(x + dx, y + dy, ground + 1.0, ground - 1.0) for dx, dy in corners]
+                if any(h is None or abs(h - ground) > BASE_WARTHOG_FLAT for h in heights):
+                    continue
+                ring = [self.ground(x + 2.5 * math.cos(j * math.pi / 4), y + 2.5 * math.sin(j * math.pi / 4),
+                                    ground + 1.5, ground - 1.5) for j in range(8)]
+                if any(h is None or abs(h - ground) > BASE_WARTHOG_LEDGE for h in ring):
+                    continue
+                if not all(self.open((x + dx, y + dy, ground + h)) for dx, dy in ((0.0, 0.0),) + corners
+                           for h in (0.3, 0.8, 1.5)):
+                    continue
+                if any(math.dist((x, y), o[:2]) < BASE_WARTHOG_CLEARANCE for o in obstacles):
+                    continue
+                return (x, y, ground + 0.3)
+        return None
 
     def inside(self, position):
         """a point in (or a little above, for one on or in the ground) the
@@ -148,6 +274,27 @@ class Placements:
         x, y, z = position
         return not self.spaces or any(space.test_point((x, y, z + dz)) != COLLISION_NONE
                                       for space in self.spaces for dz in (0.3, 1.0, 3.0, 6.0))
+
+
+def squad_locations(xmap, defs, encounter, squad):
+    """the starting locations of an encounter's squad, by name"""
+    sf = {f.name: o for o, f in defs.fields("Scenario")}
+    ef = {f.name: o for o, f in defs.fields("ScenarioEncounter")}
+    qf = {f.name: o for o, f in defs.fields("ScenarioSquad")}
+    lf = {f.name: o for o, f in defs.fields("ScenarioActorStartingLocation")}
+
+    def block(address, offset, name):
+        count, pointer, _ = struct.unpack("<iII", xmap.read(address + offset, 12))
+        return [pointer + i * defs.size(name) for i in range(max(count, 0))]
+
+    for e in block(xmap.scenario.address, sf["encounters"], "ScenarioEncounter"):
+        if xmap.read(e + ef["name"], 32).split(b"\0")[0].decode("latin-1") != encounter:
+            continue
+        for q in block(e, ef["squads"], "ScenarioSquad"):
+            if xmap.read(q + qf["name"], 32).split(b"\0")[0].decode("latin-1") == squad:
+                return [struct.unpack("<3f", xmap.read(l + lf["position"], 12))
+                        for l in block(q, qf["starting locations"], "ScenarioActorStartingLocation")]
+    return []
 
 
 class Closure:
@@ -381,7 +528,7 @@ def encounter_table(xmap, defs, kept, inside=None):
         if unit is None or unit.index not in kept:
             continue
         name = unit.name.lower()
-        team = 0 if ("marine" in name or "crewman" in name or "keyes" in name) else 1
+        team = 0 if any(word in name for word in ALLY_WORDS) else 1
         kind_of_palette[i] = len(kinds)
         kinds.append((unit.datum & 0xFFFFFFFF,
                       weapon.datum & 0xFFFFFFFF if weapon is not None and weapon.index in kept else NONE, team,
@@ -400,12 +547,22 @@ def encounter_table(xmap, defs, kept, inside=None):
             starts = block(q, qf["starting locations"], "ScenarioActorStartingLocation")
             if actor not in kind_of_palette or max(normal, insane) <= 0 or not starts:
                 continue
+            # (the players' side: CAMPAIGN_ALLIES)
+            if not CAMPAIGN_ALLIES and kinds[kind_of_palette[actor]][2] == 0:
+                continue
+            # (a vehicle's crew, with no vehicle: DROPPED_SQUAD_WORDS)
+            if any(word in (ename + b" " + qname).decode("latin-1").lower() for word in DROPPED_SQUAD_WORDS):
+                continue
             points = []
             for s in starts:
                 x, y, z = struct.unpack("<3f", xmap.read(s + lf["position"], 12))
                 facing = struct.unpack("<f", xmap.read(s + lf["facing"], 4))[0]
                 points.append((x, y, z, facing))
-            if inside is not None and not any(inside(p[:3]) for p in points):
+            # (only the starting locations inside: an actor comes at one in
+            # turn, and one outside stood outside the map)
+            if inside is not None:
+                points = [p for p in points if inside(p[:3])]
+            if not points:
                 continue
             first = len(locations)
             locations.extend(points)
@@ -416,7 +573,7 @@ def encounter_table(xmap, defs, kept, inside=None):
                 if digits.isdigit():
                     wave = int(digits)
             squads.append((qname[:31], ename[:31], kind_of_palette[actor], max(normal, 0), max(insane, 0),
-                           first, len(starts), e, flags & 0xFFFF, wave))
+                           first, len(points), e, flags & 0xFFFF, wave))
 
     out = bytearray(ENCOUNTER_MAGIC + struct.pack(">IIII", ENCOUNTER_VERSION, len(kinds), len(squads),
                                                     len(locations)))

@@ -278,6 +278,12 @@ class CampaignPolicy(N64Policy):
             return placement_not_placed(self.placements, address)
         return super().override(tag, struct_name, field_name, address)
 
+    def override_bytes(self, tag, struct_name, field_name, address):
+        # a warthog moved near the start (campaign.py Placements.start_warthog)
+        if struct_name == "ScenarioVehicle" and field_name == "position" and address in self.placements.moved:
+            return struct.pack(">3f", *self.placements.moved[address])
+        return None
+
     def replace_block(self, tag, path, count, pointer):
         from .collision import BLOCK_NAMES, compact_block_from_map
         lc = self.level_collision
@@ -368,7 +374,13 @@ def convert(path, output, filesystem=None, campaign=False, pc_expansion=False, p
         table, kinds, squads, locations = encounter_table(xmap, repacker.defs, kept, closure.placements.inside)
         print(f"{xmap.name}: {len(kept)} of {len(xmap.tags)} tags kept; {len(kinds)} actor kinds, "
               f"{len(squads)} squads, {len(locations)} starting locations; {len(closure.placements.kept)} "
-              f"placements kept, {closure.placements.dropped} left out")
+              f"placements kept, {closure.placements.dropped} left out ({closure.placements.thinned} "
+              f"scenery thinned)")
+        # (the user: "ensure the flying banshees don't spawn at all": no
+        # banshee on the cartridge, whatever the placements and squads)
+        flying = [t.name for t in xmap.tags if t.index in kept and t.group_name == "vehi" and "banshee" in t.name]
+        if flying:
+            raise ValueError(f"campaign: banshees kept ({', '.join(flying)})")
         from .campaign import level_collision, model_collisions
         collision = level_collision(xmap, repacker.defs, bsp_tag)
         models = model_collisions(xmap, repacker.defs, kept)
@@ -466,6 +478,7 @@ def write_campaign_assets(xmap, repacker, filesystem):
     from .models import ModelConverter
     builder = LevelBuilder(xmap, repacker.defs, xmap.name, filesystem, split_depth=0)
     builder.greyscale = builder.terrain_detail = True
+    builder.chicago_water = True
     # (no colour tiles, terrain_tiles.py: ~85 KB of a campaign level's heap,
     # which its models' cache and Halo's objects need -- the ground's colour
     # with its detail maps' tint on its vertices instead)

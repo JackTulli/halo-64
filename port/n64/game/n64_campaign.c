@@ -137,6 +137,14 @@ down, and whole squads never came */
 locations */
 #define ACTIVATION_DISTANCE 38.f
 #define ACTIVATION_HEIGHT 30.f
+/* an actor this far (horizontally) from every living player, and not
+fighting one, is put away -- deleted, its squad to come again from its
+starting locations once a player is back within ACTIVATION_DISTANCE of
+them (the user: "ensure the ai is shut down until the player is near":
+everything placed kept running after the players moved on, each biped ~3 ms
+of a tick); looked at every DORMANT_CHECK_TICKS */
+#define DORMANT_DISTANCE 55.f
+#define DORMANT_CHECK_TICKS 15
 /* how far an actor sees an enemy to start fighting, and how far it fights */
 #define ALERT_DISTANCE 22.f
 #define TARGET_DISTANCE 45.f
@@ -1577,6 +1585,33 @@ void n64_campaign_tick(
 		}
 		else
 			i++;
+	}
+	/* the actors the players left far behind: put away (DORMANT_DISTANCE) */
+	if (!(game_time_get() % DORMANT_CHECK_TICKS))
+	{
+		for (i = 0; i < campaign.actor_count; )
+		{
+			struct campaign_actor *actor = &campaign.actors[i];
+			real distance, height;
+
+			if (nearest_player(&object_get(actor->unit_index)->object.position, &distance, &height) != NONE &&
+				distance > DORMANT_DISTANCE && !actor->target_visible)
+			{
+				if (actor->squad >= 0 && actor->squad < MAXIMUM_SQUADS)
+				{
+					struct campaign_squad *squad = &campaign.squads[actor->squad];
+
+					squad->alive--;
+					squad->spawned--;
+					squad->complete = FALSE;
+					squad->active = FALSE;
+				}
+				object_delete(actor->unit_index);
+				campaign.actors[i] = campaign.actors[--campaign.actor_count];
+			}
+			else
+				i++;
+		}
 	}
 	/* new squads as the players come near (every few ticks) */
 	if (!(game_time_get() % 5))
