@@ -232,7 +232,9 @@ def prepare_filesystem(source_fs, packed_fs, map_names, *, stamp=None):
         # A recursively verified empty directory contains no data to overwrite.
         if ownership_path.is_file():
             prior = json.loads(ownership_path.read_text())
-            if prior.get('schema') != SCHEMA or prior.get('packed_fs') != str(target):
+            prior_root = prior.get('packed_fs')
+            if (prior.get('schema') != SCHEMA or not isinstance(prior_root, str)
+                    or not Path(prior_root).is_absolute() or Path(prior_root).resolve() != target):
                 raise ValueError('Output ownership receipt mismatch')
             expected = prior.get('output_files', {})
             if any(expected.get(p) != row for p, row in existing.items()):

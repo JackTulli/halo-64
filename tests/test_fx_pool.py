@@ -3,6 +3,7 @@
 Run from the repository root: python -m unittest discover -s tests -p test_fx_pool.py
 """
 from pathlib import Path
+import json
 import struct
 import tempfile
 import unittest
@@ -78,6 +79,28 @@ class FXPoolTests(unittest.TestCase):
         extra.write_bytes(b'user file')
         with self.assertRaises(ValueError):self.prepare()
         self.assertEqual(extra.read_bytes(), b'user file')
+
+    def test_receipt_accepts_equivalent_absolute_path_spelling(self):
+        self.prepare()
+        owner = self.output.with_name('packed.fx-pool.owner.json')
+        receipt = json.loads(owner.read_text())
+        # Forward slashes are also valid on Windows, where native str(Path)
+        # uses backslashes. A dot component exercises normalization elsewhere.
+        receipt['packed_fs'] = self.output.parent.as_posix() + '/./' + self.output.name
+        owner.write_text(json.dumps(receipt))
+        self.assertTrue(self.prepare()['source_unchanged'])
+
+    def test_receipt_rejects_different_relative_or_malformed_roots(self):
+        self.prepare()
+        owner = self.output.with_name('packed.fx-pool.owner.json')
+        receipt = json.loads(owner.read_text())
+        for root in (str(self.base/'different'), 'packed', '', None, 42):
+            with self.subTest(root=root):
+                receipt['packed_fs'] = root
+                owner.write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(ValueError, 'ownership receipt mismatch'):
+                    self.prepare()
+                self.assertEqual((self.output/'other.bin').read_bytes(), b'unchanged content\0')
 
     def test_unowned_nonempty_or_overlapping_output_is_refused(self):
         self.output.mkdir();(self.output/'keep').write_bytes(b'x')
