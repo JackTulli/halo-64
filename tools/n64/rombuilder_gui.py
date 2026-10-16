@@ -34,6 +34,15 @@ CARTRIDGE_TEXT = {
 }
 
 
+def pc_expansion_included():
+    """whether this copy can make the PC expansion cartridge: run from the
+    repository (its PC tools chosen in the window), or a package carrying the
+    PC conversion tools and the PC program (package_rombuilder.py's PC
+    options); a package without them shows the cartridge greyed out"""
+    root = payload_root()
+    return root is None or ((root / "pc-tools").is_dir() and (root / "elf" / "pc-expansion").is_dir())
+
+
 def settings_path():
     local = os.environ.get("LOCALAPPDATA")
     base = Path(local) / "Halo64RomBuilder" if local else Path.home() / ".config" / "halo64-rombuilder"
@@ -131,10 +140,15 @@ class App:
         choices = ttk.Frame(outer)
         choices.grid(row=6, column=0, sticky="ew", pady=(6, 10))
         self.choice = {}
+        pc_included = pc_expansion_included()
         for row, (key, (name, file, description)) in enumerate(CARTRIDGE_TEXT.items()):
-            var = tk.BooleanVar(value=self.settings.get(key, key != "pc_expansion"))
+            included = key != "pc_expansion" or pc_included
+            var = tk.BooleanVar(value=included and self.settings.get(key, key != "pc_expansion"))
             self.choice[key] = var
-            ttk.Checkbutton(choices, text=f"{name}   ({file})", variable=var, command=self.toggle_pc_inputs).grid(row=row * 2, column=0, sticky="w")
+            ttk.Checkbutton(choices, text=f"{name}   ({file})", variable=var, command=self.toggle_pc_inputs,
+                            state="normal" if included else "disabled").grid(row=row * 2, column=0, sticky="w")
+            if not included:
+                description += " (not in this download: it carries no PC conversion tools)"
             ttk.Label(choices, text=description, style="Small.TLabel", wraplength=670).grid(row=row * 2 + 1, column=0, sticky="w",
                                                                             padx=(28, 0), pady=(0, 6))
 

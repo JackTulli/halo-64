@@ -330,6 +330,28 @@ class BuilderTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_package_without_pc_tools_greys_out_the_pc_cartridge(self):
+        import tkinter as tk
+        from tools.n64 import rombuilder_gui as gui
+        payload = self.root / "payload-without-pc"
+        (payload / "elf" / "multiplayer").mkdir(parents=True)
+        root = gui.TkinterDnD.Tk() if gui.TkinterDnD is not None else tk.Tk()
+        root.withdraw()
+        try:
+            with patch.object(gui, "load_settings", return_value={"pc_expansion": True}), \
+                    patch.object(gui, "payload_root", return_value=payload):
+                self.assertFalse(gui.pc_expansion_included())
+                app = gui.App(root)
+                root.update_idletasks()
+                self.assertFalse(app.choice["pc_expansion"].get())
+                self.assertEqual(app.pc_panel.winfo_manager(), "")
+            (payload / "pc-tools").mkdir()
+            (payload / "elf" / "pc-expansion").mkdir()
+            with patch.object(gui, "payload_root", return_value=payload):
+                self.assertTrue(gui.pc_expansion_included())
+        finally:
+            root.destroy()
+
     def test_gui_worker_passes_selected_pc_source_and_tools(self):
         from tools.n64 import rombuilder_gui as gui
         app = object.__new__(gui.App)
