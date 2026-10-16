@@ -59,20 +59,22 @@ struct scenario_object_datum {
 _Static_assert(sizeof(struct scenario_object_datum) == 120, "synthetic row extent");
 struct object_placement_data {struct vector position,forward,up;int16_t variant_number;};
 struct scenario_object_palette_entry {struct {long index;} reference;};
-struct tag_block {struct scenario_object_palette_entry *entries;};
-struct scenario_stub {struct tag_block vehicle_palette;};
+struct tag_block {struct scenario_object_palette_entry *entries;long count;void *address;};
+struct scenario {struct tag_block vehicle_palette,vehicles;};
+struct object_type_definition {long placement_tag_block_element_size;};
+struct object_type_definition vehicle_data_definition={120};
 struct globals_stub {int initial_placement;};
 struct variant_stub {short game_engine_index;};
-static struct scenario_stub scenario;
+static struct scenario scenario;
 static struct globals_stub globals;
 static struct globals_stub *object_globals = &globals;
 static struct variant_stub variant;
-static struct {int firefight;} n64_choice;
+static struct {int firefight,vehicle_set;} n64_choice;
 static struct {char name[64];} n64_map;
 static int engine_running, existing_name, prepare_calls, allocation_calls, place_calls, name_calls;
 static long allocated_object;
 static int optional_content_enabled;
-static struct scenario_stub *global_scenario_get(void) {return &scenario;}
+static struct scenario *global_scenario_get(void) {return &scenario;}
 static int game_engine_running(void) {return engine_running;}
 static struct variant_stub *game_engine_get_variant(void) {return &variant;}
 /* The independent optional-content policy is an external dependency here. */
@@ -101,6 +103,8 @@ static void reset(const char *map,short engine,unsigned mask)
     strcpy(n64_map.name,map);variant.game_engine_index=engine;
     entry.reference.index=42;scenario.vehicle_palette.entries=&entry;other_palette.entries=&entry;
     globals.initial_placement=TRUE;engine_running=TRUE;n64_choice.firefight=FALSE;
+    n64_choice.vehicle_set=0;scenario.vehicles.count=0;scenario.vehicles.address=NULL;
+    scenario.vehicle_palette.count=1;vehicle_data_definition.placement_tag_block_element_size=120;
     existing_name=NONE;optional_content_enabled=TRUE;allocated_object=17;
 }
 static void expect(struct tag_block *palette,int admitted)
@@ -189,6 +193,44 @@ static void optional_gate(void)
     optional_content_enabled=FALSE;expect(&scenario.vehicle_palette,FALSE);expect(&other_palette,TRUE);
 #endif
 }
+static void crowded_pc_map(void)
+{
+#if defined(HALO_N64_PC_EXPANSION) && !defined(HALO_N64_CAMPAIGN)
+    struct scenario_object_datum rows[20];
+    struct scenario_object_palette_entry palette[6];
+    reset("icefields",game_engine_slayer,0x0f00);
+    for(int k=0;k<6;k++)palette[k].reference.index=100+(k%5);
+    scenario.vehicle_palette.entries=palette;scenario.vehicle_palette.count=6;
+    scenario.vehicles.address=rows;scenario.vehicles.count=20;n64_choice.vehicle_set=2;
+    for(int i=0;i<20;i++){
+        rows[i]=row;rows[i].palette_entry_index=i%5;
+        ((byte*)&rows[i])[88]=(i/5)%2;
+    }
+    for(int i=0;i<20;i++){
+        allocation_calls=0;
+        CHECK(object_new_from_scenario(&rows[i],&scenario.vehicle_palette)==(i<10?17:NONE));
+        CHECK(allocation_calls==(i<10));checks++;
+    }
+    /* Renewal uses stable authored rank, even with no live predecessor. */
+    CHECK(n64_game_scenario_vehicle_allowed(&rows[0]));
+    CHECK(!n64_game_scenario_vehicle_allowed(&rows[10]));
+    n64_choice.vehicle_set=3;CHECK(!n64_game_scenario_vehicle_allowed(&rows[10]));
+    /* Palette aliases refer to the same vehicle definition. */
+    rows[10].palette_entry_index=5;CHECK(!n64_game_scenario_vehicle_allowed(&rows[10]));
+    /* Ineligible earlier pads must not suppress the first eligible pad. */
+    rows[0].placement_flags=1;CHECK(n64_game_scenario_vehicle_allowed(&rows[10]));
+    rows[0].placement_flags=0;((byte*)&rows[0])[90]=2;
+    CHECK(n64_game_scenario_vehicle_allowed(&rows[10]));
+    ((byte*)&rows[0])[90]=15;
+    n64_choice.vehicle_set=0;CHECK(n64_game_scenario_vehicle_allowed(&rows[10]));
+    n64_choice.vehicle_set=2;strcpy(n64_map.name,"bloodgulch");
+    CHECK(n64_game_scenario_vehicle_allowed(&rows[10]));
+    strcpy(n64_map.name,"icefields");CHECK(!n64_game_scenario_vehicle_allowed(&row));
+    scenario.vehicles.count=513;CHECK(!n64_game_scenario_vehicle_allowed(&rows[0]));
+    scenario.vehicles.count=20;vehicle_data_definition.placement_tag_block_element_size=119;
+    CHECK(!n64_game_scenario_vehicle_allowed(&rows[0]));
+#endif
+}
 int main(int argc,char **argv)
 {
     CHECK(argc==2);
@@ -198,6 +240,7 @@ int main(int argc,char **argv)
     else if(!strcmp(argv[1],"lifecycle"))lifecycle();
     else if(!strcmp(argv[1],"guards"))build_guards();
     else if(!strcmp(argv[1],"optional"))optional_gate();
+    else if(!strcmp(argv[1],"crowding"))crowded_pc_map();
     else CHECK(FALSE);
     printf("PASS %s: %u placement checks\n",argv[1],checks);
     return 0;
@@ -264,6 +307,9 @@ class VehicleModePlacementTests(unittest.TestCase):
 
     def test_allowed_bits_are_distinct_from_defaults_and_other_game_types(self):
         self.run_case("modes")
+
+    def test_pc_all_map_limits_duplicate_pads_and_preserves_default(self):
+        self.run_case("crowding")
 
     def test_six_pc_maps_filter_and_thirteen_original_maps_bypass(self):
         self.run_case("maps")

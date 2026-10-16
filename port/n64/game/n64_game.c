@@ -26,6 +26,9 @@ units (it sees the game's headers):
 #include "saved games/game_state.h"
 #include "game/players.h"
 #include "objects/objects.h"
+#include "objects/object_types.h"
+#include "scenario/scenario.h"
+#include "scenario/scenario_definitions.h"
 #include "memory/data.h"
 #include "units/units.h"
 #include "items/weapons.h"
@@ -1131,6 +1134,13 @@ char const *n64_loaded_map_name(
 
 
 #if defined(HALO_N64_PC_EXPANSION) && !defined(HALO_N64_CAMPAIGN)
+static boolean n64_pc_vehicle_map(char const *name)
+{
+    return !strcmp(name, "dangercanyon") || !strcmp(name, "deathisland") ||
+        !strcmp(name, "gephyrophobia") || !strcmp(name, "icefields") ||
+        !strcmp(name, "infinity") || !strcmp(name, "timberland");
+}
+
 /* PC scenario vehicles store per-game-type allowed bits at bytes 90..91.
  * Xbox maps use zero here; keep their existing placement behavior. */
 static boolean n64_pc_vehicle_spawn_allowed(
@@ -1139,12 +1149,7 @@ static boolean n64_pc_vehicle_spawn_allowed(
     unsigned int spawn_flags)
 {
     unsigned int allowed_bit;
-    if (strcmp(map_name, "dangercanyon") &&
-        strcmp(map_name, "deathisland") &&
-        strcmp(map_name, "gephyrophobia") &&
-        strcmp(map_name, "icefields") &&
-        strcmp(map_name, "infinity") &&
-        strcmp(map_name, "timberland"))
+    if (!n64_pc_vehicle_map(map_name))
         return TRUE;
 
     switch (engine)
@@ -1164,9 +1169,49 @@ boolean n64_game_scenario_vehicle_allowed(
     byte const *row = placement;
     if (!game_engine_running() || n64_choice.firefight)
         return TRUE;
-    return n64_pc_vehicle_spawn_allowed(n64_map.name,
-        game_engine_get_variant()->game_engine_index,
-        ((unsigned int)row[90] << 8) | row[91]);
+    short engine = game_engine_get_variant()->game_engine_index;
+    if (!n64_pc_vehicle_spawn_allowed(n64_map.name, engine,
+            ((unsigned int)row[90] << 8) | row[91]))
+        return FALSE;
+    /* PC maps contain several optional pads for each vehicle at each base.
+     * ALL MAP must not instantiate all of them on the N64's 256 KiB object
+     * pool. Keep the first eligible pad per definition/team, without editing
+     * scenario rows or relying on live objects (which die and respawn).
+     * MAP DEFAULT, Xbox maps, scripted placements and Race retain their policy. */
+    if ((n64_choice.vehicle_set == 2 || n64_choice.vehicle_set == 3) &&
+        n64_pc_vehicle_map(n64_map.name) &&
+        (engine == game_engine_slayer || engine == game_engine_ctf ||
+         engine == game_engine_king || engine == game_engine_oddball))
+    {
+        extern struct object_type_definition vehicle_data_definition;
+        struct scenario *scenario = global_scenario_get();
+        struct scenario_object_datum const *current = placement;
+        long stride = vehicle_data_definition.placement_tag_block_element_size;
+        long i, definition;
+        if (stride != 120 || scenario->vehicles.count < 0 ||
+            scenario->vehicles.count > 512 || !scenario->vehicles.address ||
+            current->palette_entry_index < 0 ||
+            current->palette_entry_index >= scenario->vehicle_palette.count)
+            return FALSE;
+        definition = TAG_BLOCK_GET_ELEMENT(&scenario->vehicle_palette,
+            current->palette_entry_index, struct scenario_object_palette_entry)->reference.index;
+        for (i = 0; i < scenario->vehicles.count; i++)
+        {
+            byte const *other = (byte const *)scenario->vehicles.address + i * stride;
+            struct scenario_object_datum const *prior = (void const *)other;
+            if (other == row) return TRUE;
+            if (other[88] == row[88] && prior->palette_entry_index >= 0 &&
+                prior->palette_entry_index < scenario->vehicle_palette.count &&
+                !TEST_FLAG(prior->placement_flags, _scenario_object_placement_not_automatic_bit) &&
+                n64_pc_vehicle_spawn_allowed(n64_map.name, engine,
+                    ((unsigned int)other[90] << 8) | other[91]) &&
+                TAG_BLOCK_GET_ELEMENT(&scenario->vehicle_palette, prior->palette_entry_index,
+                    struct scenario_object_palette_entry)->reference.index == definition)
+                return FALSE;
+        }
+        return FALSE; /* The initial-placement row must belong to this block. */
+    }
+    return TRUE;
 }
 #endif
 

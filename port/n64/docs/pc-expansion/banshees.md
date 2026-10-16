@@ -29,3 +29,10 @@ takeoff, ceiling behavior, weapons, landing, exit and vehicle destruction/renewa
 The device-test filename for this iteration is `Halo64-DEV-v0.2.1.z64`.
 This is a local DEV subversion of the upstream v0.2.0 integration, not a claim
 that upstream released v0.2.1. Keep main, vanilla and older DEV ROMs/saves.
+
+On the six PC maps, ALL MAP and ALL + ROCKET keep the first game-type-eligible
+pad of each vehicle definition per team. This avoids filling the N64 object
+pool with alternate PC pads (Ice Fields otherwise creates 22 vehicles including
+the added aircraft). Original rows, MAP DEFAULT, Xbox-map policy, scripted
+placements and Race are preserved. Selection uses authored order, not live
+object counts, so destruction and renewal do not enable duplicate pads.
