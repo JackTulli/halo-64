@@ -279,8 +279,10 @@ class CampaignPolicy(N64Policy):
         return super().override(tag, struct_name, field_name, address)
 
     def override_bytes(self, tag, struct_name, field_name, address):
-        # a warthog moved near the start (campaign.py Placements.start_warthog)
-        if struct_name == "ScenarioVehicle" and field_name == "position" and address in self.placements.moved:
+        # a placement moved (campaign.py Placements: the warthog by the
+        # base, the level's edits)
+        from .campaign import PLACEMENT_STRUCTS
+        if struct_name in PLACEMENT_STRUCTS and field_name == "position" and address in self.placements.moved:
             return struct.pack(">3f", *self.placements.moved[address])
         return None
 
@@ -319,11 +321,16 @@ class CampaignPolicy(N64Policy):
         return super().data(tag, path, parent, raw)
 
 
-def open_map(path, *, campaign=False, pc_expansion=False, pc_maps=None):
+def open_map(path, *, campaign=False, pc_expansion=False, pc_maps=None, custom=False):
     """Load a map and its explicitly selected additive content for exporters."""
     pc_folder = validate_pc_maps(pc_expansion, pc_maps, campaign)
     xmap = XboxMap(path)
     xmap.load_bsp(0)
+    if custom:
+        # (a Custom Edition map's keyframe-compressed animations, made plain:
+        # animation_decompress.py; the stock maps have none)
+        from .animation_decompress import decompress_animations
+        decompress_animations(xmap)
     if pc_expansion and xmap.map_type != 1:
         raise ValueError("PC expansion imports require a multiplayer target map")
     if pc_folder is not None and xmap.name != "timberland":
@@ -362,8 +369,8 @@ def map_header(name, image_size, relocation_count, tag_header, bsp_header, campa
             struct.pack(">IIIIII", image_size, relocation_count, tag_header, bsp_header, kind, 0))
 
 
-def convert(path, output, filesystem=None, campaign=False, pc_expansion=False, pc_maps=None):
-    xmap = open_map(path, campaign=campaign, pc_expansion=pc_expansion, pc_maps=pc_maps)
+def convert(path, output, filesystem=None, campaign=False, pc_expansion=False, pc_maps=None, custom=False):
+    xmap = open_map(path, campaign=campaign, pc_expansion=pc_expansion, pc_maps=pc_maps, custom=custom)
     bsp_tag, bsp_base, bsp_size = xmap.bsps[0]
     repacker = Repacker(xmap, None)
     if campaign:
@@ -528,11 +535,16 @@ def main():
                         help="the separate PC multiplayer expansion cartridge")
     parser.add_argument("--pc-maps", type=Path,
                         help="explicit folder containing all six normalized Xbox-v5 PC maps")
+    parser.add_argument("--custom", action="store_true",
+                        help="a Custom Edition map made an Xbox map (tools/n64/ce_prepare.py) for the custom "
+                        "cartridge: its compressed animations decoded, its big static models reduced")
     parser.add_argument("--tags-only", action="store_true", help="the tag image alone (measuring)")
     args = parser.parse_args()
+    if args.custom and (args.campaign or args.pc_expansion):
+        parser.error("--custom is a cartridge of its own")
     xmap, repacker, size, relocs = convert(args.map, args.output, None if args.tags_only else args.filesystem,
                                            campaign=args.campaign, pc_expansion=args.pc_expansion,
-                                           pc_maps=args.pc_maps)
+                                           pc_maps=args.pc_maps, custom=args.custom)
     print(f"{xmap.name}: {size / 1e6:.2f} MB, {len(relocs)} relocations, "
           f"{repacker.policy.stream_size / 1e6:.2f} MB of animation frames streamed")
     if args.filesystem and not args.tags_only and args.campaign:
@@ -568,6 +580,7 @@ def main():
         for quality, view_scale in VIEW_MODEL_QUALITIES:
             suffix = f"-fp{quality}" if quality else ""
             models = ModelConverter(xmap, repacker.defs, xmap.name + suffix, args.filesystem)
+            models.reduce_open_shapes = args.custom
             models.lod_preferences = {i: lowest for i in covenant}
             models.budget_overrides = {i: 250 for i in covenant}
             models.first_person_budget = int(models.first_person_budget * view_scale)
@@ -576,6 +589,7 @@ def main():
             # the lighter models of 3-4 player games (the objects at half
             # their triangles, the first-person views at 350)
             low_models = ModelConverter(xmap, repacker.defs, f"{xmap.name}-low{suffix}", args.filesystem)
+            low_models.reduce_open_shapes = args.custom
             low_models.budget_scale = 0.5
             low_models.first_person_budget = int(350 * view_scale)
             low_models.first_person_deviation = 0.06

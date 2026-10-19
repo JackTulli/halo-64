@@ -18,6 +18,15 @@ so does a command line:
     python3 -m tools.n64.rombuilder <Xbox maps> -o <folder> --pc-expansion
         --pc-source <retail PC ISO or Maps folder> --pc-tools <trusted tools>
 
+    # a cartridge of Halo: Custom Edition maps (also requires Xbox data):
+    python3 -m tools.n64.rombuilder <Xbox maps> -o <folder> --custom-edition
+        <CE map or .zip of one>... [--ce-tools <Invader's tools and ogg2wav>]
+
+The Custom Edition maps are made Xbox maps first (tools/n64/ce_prepare.py,
+with Invader's tools: tools/n64/invader_lite), then converted as the others
+(convert.py --custom) for a cartridge whose program reads its maps' names
+from the cartridge (maps/custom.list: port.json "custom").
+
 Each conversion runs in a process of its own (the converters take ~800 MB
 each): this program again, "--worker <module> <arguments>", its output in a
 log file.
@@ -44,9 +53,14 @@ CARTRIDGES = {
     "multiplayer": {"rom": "halo-n64.z64", "elf": "multiplayer"},
     "campaign": {"rom": "halo-campaign.z64", "elf": "campaign"},
     "pc_expansion": {"rom": "halo-pc-expansion.z64", "elf": "pc-expansion"},
+    "custom": {"rom": "halo-custom-edition.z64", "elf": "custom"},
 }
 # what a conversion costs, roughly (the progress bar's shares)
-WEIGHTS = {"map": 10, "campaign map": 60, "ui": 6, "music": 4, "sounds": 2, "pack": 2, "rom": 1}
+WEIGHTS = {"map": 10, "campaign map": 60, "ce map": 20, "ui": 6, "music": 4, "sounds": 2, "pack": 2, "rom": 1}
+# the most Custom Edition maps a cartridge takes (n64_menu.c CUSTOM_MAP_LIMIT)
+CUSTOM_MAP_LIMIT = 24
+# a Custom Edition map's file at most (and so a .zip member's)
+CE_MAP_BYTES = 1 << 30
 # a converter's memory at most (three at a time took ~2.4 GB)
 CONVERSION_BYTES = 900 << 20
 MAX_ROM_BYTES = 64 << 20
@@ -83,7 +97,8 @@ def elf_files(cartridge):
     if root:
         folder = root / "elf" / CARTRIDGES[cartridge]["elf"]
     else:
-        folder = REPO / "build" / "n64" / ({"campaign": "campaign", "pc_expansion": "pc-expansion"}.get(cartridge, ""))
+        folder = REPO / "build" / "n64" / ({"campaign": "campaign", "pc_expansion": "pc-expansion",
+                                            "custom": "custom"}.get(cartridge, ""))
     return folder / "halo.elf.stripped", folder / "halo.elf.sym"
 
 
@@ -106,6 +121,16 @@ def tool(name):
         return str(root / "bin" / (name + ".exe" if sys.platform == "win32" else name))
     from .toolpaths import tool as toolchain_tool
     return toolchain_tool(name)
+
+
+def ce_tools_folder():
+    """the Custom Edition conversion's tools: the package's, or (from the
+    repository) N64_CE_TOOLS"""
+    root = payload_root()
+    if root:
+        return root / "ce-tools"
+    folder = os.environ.get("N64_CE_TOOLS")
+    return Path(folder) if folder else None
 
 
 def halo_font():
@@ -249,8 +274,15 @@ class RomBuilder:
     progress(fraction, step) report, cancel (a threading.Event) stops it"""
 
     def __init__(self, source, output, cartridges, work=None, jobs=None, font=None, log=print, progress=None,
-                 cancel=None, pc_source=None, pc_tools=None):
+                 cancel=None, pc_source=None, pc_tools=None, custom_maps=None, ce_tools=None):
         self.source = MapSource(source)
+        # the Custom Edition cartridge's maps as chosen (.map files, .zip
+        # files of them), its tools, and the maps once made Xbox maps
+        # ({"name", "display", "map"}, in order)
+        self.custom_inputs = [Path(p) for p in custom_maps or []]
+        self.ce_tools = Path(ce_tools) if ce_tools else ce_tools_folder()
+        self.custom = []
+        self.custom_folder = None
         self.pc_source = Path(pc_source) if pc_source is not None else None
         self.pc_tools = Path(pc_tools) if pc_tools is not None else None
         self.pc_maps = None
@@ -270,9 +302,14 @@ class RomBuilder:
         self.lock = threading.Lock()
         # (the title music, the same on every cartridge: converted once)
         self.music = None
+        # what the player should hear of when the build is done (Custom
+        # Edition maps left out)
+        self.notes = []
 
     # (what each cartridge needs)
     def maps_for(self, cartridge):
+        if cartridge == "custom":
+            return [m["name"] for m in self.custom]
         if cartridge in ("campaign", "pc_expansion"):
             return list(self.config[cartridge]["maps"])
         return list(self.config["maps"])
@@ -280,8 +317,10 @@ class RomBuilder:
     def needed_maps(self):
         names = {"ui"}
         for cartridge in self.cartridges:
-            names.update(self.config["maps"] if cartridge == "pc_expansion" else self.maps_for(cartridge))
-            if cartridge in ("multiplayer", "pc_expansion"):
+            # (the custom cartridge's: the multiplayer maps' tags stand in
+            # for Custom Edition's shared ones, ce_prepare.py)
+            names.update(self.config["maps"] if cartridge in ("pc_expansion", "custom") else self.maps_for(cartridge))
+            if cartridge in ("multiplayer", "pc_expansion", "custom"):
                 # (Firefight's Covenant come from a30, convert.py)
                 names.add("a30")
         return sorted(names)
@@ -309,6 +348,8 @@ class RomBuilder:
                 self.pc_tools = validate_tools(self.pc_tools or ((payload_root() / "pc-tools") if payload_root() else None))
             except (ValueError, OSError) as error:
                 raise BuildError(str(error)) from error
+        if "custom" in self.cartridges:
+            self.check_custom()
         missing = self.source.missing(self.needed_maps())
         if missing:
             raise BuildError("these maps are not in " + self.source.path.name + ": " + ", ".join(missing) +
@@ -318,6 +359,32 @@ class RomBuilder:
             for path in elf_files(cartridge):
                 if not path.is_file():
                     raise BuildError(f"the builder is missing its {cartridge} program ({path.name})")
+
+    def check_custom(self):
+        """the Custom Edition cartridge's maps and tools, before anything runs"""
+        from .ce_prepare import CEPrepareError, find_tools, read_ce_map
+        if "custom" not in self.config:
+            raise BuildError("this builder has no Custom Edition cartridge")
+        if not self.custom_inputs:
+            raise BuildError("the Custom Edition cartridge needs at least one Custom Edition map (.map or .zip)")
+        try:
+            find_tools(self.ce_tools)
+        except CEPrepareError as error:
+            raise BuildError(str(error)) from error
+        count = 0
+        for path in self.custom_inputs:
+            if not path.is_file():
+                raise BuildError(f"{path} is not a file")
+            if path.suffix.lower() == ".zip":
+                count += len(zip_maps(path))
+                continue
+            try:
+                read_ce_map(path)
+            except CEPrepareError as error:
+                raise BuildError(str(error)) from error
+            count += 1
+        if count > CUSTOM_MAP_LIMIT:
+            raise BuildError(f"{count} Custom Edition maps: a cartridge takes {CUSTOM_MAP_LIMIT} at most")
 
     def step(self, weight, text):
         with self.lock:
@@ -339,7 +406,9 @@ class RomBuilder:
         self.work.mkdir(parents=True, exist_ok=True)
         self.total = 0
         for cartridge in self.cartridges:
-            maps = self.maps_for(cartridge)
+            maps = self.maps_for(cartridge) if cartridge != "custom" else self.custom_inputs
+            if cartridge == "custom":
+                self.total += len(maps) * WEIGHTS["ce map"]
             self.total += len(maps) * WEIGHTS["campaign map" if cartridge == "campaign" else "map"]
             self.total += WEIGHTS["ui"] + WEIGHTS["music"] + WEIGHTS["sounds"] + WEIGHTS["pack"] + WEIGHTS["rom"]
         if self.source.disc:
@@ -357,6 +426,8 @@ class RomBuilder:
             maps = self.provide_maps()
             if "pc_expansion" in self.cartridges:
                 self.prepare_pc()
+            if "custom" in self.cartridges:
+                self.prepare_custom(maps)
             for cartridge in self.cartridges:
                 made.append(self.build(cartridge, maps))
         finally:
@@ -400,8 +471,61 @@ class RomBuilder:
                 raise BuildError("PC preparation returned a path outside its work folder")
         shutil.copy2(self.pc_maps.parent / "manifest.json", self.receipts / "pc-normalization.json")
 
+    def prepare_custom(self, maps):
+        """the Custom Edition maps made Xbox maps (ce_prepare.py, a few at a
+        time), in one folder with a30.map beside them (Firefight's Covenant,
+        convert.py)"""
+        from .ce_prepare import cartridge_name, read_ce_map
+        inputs = []
+        unpacked = self.input_stage / "ce-input"
+        for path in self.custom_inputs:
+            if path.suffix.lower() == ".zip":
+                inputs += unzip_maps(path, unpacked)
+            else:
+                inputs.append(path)
+        names, tasks, left_out = [], [], []
+        for path in inputs:
+            try:
+                header_name = read_ce_map(path)[0]
+            except ValueError as error:
+                left_out.append(f"{path.name}: {error}")
+                continue
+            name = base = cartridge_name(header_name or path.stem)
+            number = 2
+            while name in names:
+                name = f"{base[:20]}_{number}"
+                number += 1
+            names.append(name)
+            work = self.input_stage / "ce-preparation" / name
+            tasks.append((f"Making {path.name} an Xbox map", "ce_prepare",
+                          [str(path), "--xbox-maps", str(maps), "--tools", str(self.ce_tools), "--work", str(work),
+                           "--name", name], WEIGHTS["ce map"]))
+        failed = self.run_parallel(tasks, keep_going=True)
+        for (text, _, arguments, _), error in failed:
+            names.remove(arguments[arguments.index("--name") + 1])
+            reason = str(error).splitlines()
+            reason = next((line.split("error: ", 1)[1] for line in reversed(reason) if "error: " in line), reason[0])
+            left_out.append(f"{Path(arguments[0]).name}: {reason}")
+        for note in left_out:
+            self.log(f"left out: {note}")
+            self.notes.append(f"Left out of the Custom Edition cartridge -- {note}")
+        if not names:
+            raise BuildError("none of the Custom Edition maps could be converted:\n" + "\n".join(left_out))
+        self.custom_folder = self.input_stage / "custom-maps"
+        self.custom_folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            work = self.input_stage / "ce-preparation" / name
+            result = json.loads((work / "result.json").read_text(encoding="utf-8"))
+            made = Path(result["map"])
+            if result["name"] != name or not made.resolve().is_relative_to(work.resolve()):
+                raise BuildError(f"the Custom Edition conversion of {name} returned something unexpected")
+            shutil.move(str(made), str(self.custom_folder / f"{name}.map"))
+            self.custom.append({"name": name, "display": result["display"], "source": result["source"]})
+            self.log(f"{result['source']}: on the cartridge as {result['display']} ({name})")
+        shutil.copyfile(maps / "a30.map", self.custom_folder / "a30.map")
+
     def build(self, cartridge, maps):
-        config = self.config[cartridge] if cartridge in ("campaign", "pc_expansion") else self.config
+        config = self.config[cartridge] if cartridge in ("campaign", "pc_expansion", "custom") else self.config
         names = self.maps_for(cartridge)
         variant = self.input_stage / cartridge
         fsdir = variant / "filesystem"
@@ -410,20 +534,27 @@ class RomBuilder:
         for path in fsdir.iterdir():
             if path.is_file():
                 path.unlink()
-        label = {"campaign": "the campaign", "pc_expansion": "PC expansion"}.get(cartridge, "multiplayer")
+        label = {"campaign": "the campaign", "pc_expansion": "PC expansion",
+                 "custom": "Custom Edition"}.get(cartridge, "multiplayer")
         weight = WEIGHTS["campaign map" if cartridge == "campaign" else "map"]
         # the maps, a few at a time
         tasks = []
         for name in names:
-            source_maps = self.pc_maps if cartridge == "pc_expansion" and name not in self.config["maps"] else maps
+            source_maps = self.source_folder(cartridge, name, maps)
             arguments = [str(source_maps / f"{name}.map"), "-o", str(fsdir / "maps" / f"{name}.map"),
                          "--filesystem", str(fsdir)]
             if cartridge == "campaign":
                 arguments.append("--campaign")
+            elif cartridge == "custom":
+                arguments.append("--custom")
             elif cartridge == "pc_expansion":
                 arguments += ["--pc-expansion", "--pc-maps", str(self.pc_maps)]
             tasks.append((f"Converting {name} ({label})", "convert", arguments, weight))
         self.run_parallel(tasks)
+        if cartridge == "custom":
+            # (the program's list of its maps: n64_menu.c)
+            (fsdir / "maps" / "custom.list").write_text(
+                "".join(f"{m['name']}|{m['display']}\n" for m in self.custom), encoding="utf-8", newline="\n")
         if cartridge == "pc_expansion":
             for name in names:
                 self.run_worker(f"Compressing {name} ({label})", "compress_map",
@@ -449,7 +580,7 @@ class RomBuilder:
         paint_art = root / "art" / "paint-splatter-original.png" if root else REPO / "assets" / "paintball" / "paint-splatter-original.png"
         self.run_worker(f"Preparing paint ({label})", "paint_masks",
                         ["--map", str(paint_map), "--output", str(fsdir / "paint" / "masks.i4"), "--art", str(paint_art)])
-        decal_maps = [str((self.pc_maps if cartridge == "pc_expansion" and n not in self.config["maps"] else maps) / f"{n}.map") for n in names]
+        decal_maps = [str(self.source_folder(cartridge, n, maps) / f"{n}.map") for n in names]
         decal_args = ["--maps", *decal_maps, "--output", str(fsdir / "decals" / "materials.bank")]
         if cartridge == "pc_expansion":
             decal_args += ["--pc-expansion", "--pc-maps", str(self.pc_maps)]
@@ -491,6 +622,14 @@ class RomBuilder:
         self.step(WEIGHTS["rom"], f"{rom.name} made")
         self.log(f"{rom}: {rom.stat().st_size / (1 << 20):.1f} MB")
         return rom
+
+    def source_folder(self, cartridge, name, maps):
+        """the folder a cartridge's map is converted from"""
+        if cartridge == "custom":
+            return self.custom_folder
+        if cartridge == "pc_expansion" and name not in self.config["maps"]:
+            return self.pc_maps
+        return maps
 
     # ---------- processes
 
@@ -563,7 +702,10 @@ class RomBuilder:
             tail = "\n".join(text_out.splitlines()[-12:])
             raise BuildError(f"{text} failed (code {code}):\n{tail}")
 
-    def run_parallel(self, tasks):
+    def run_parallel(self, tasks, keep_going=False):
+        """the tasks, a few at a time; the first error stops them and is
+        raised, or (keep_going) each task's error is kept and the rest go on:
+        [(task, error)] returned"""
         errors = []
         queue = list(tasks)
         lock = threading.Lock()
@@ -571,17 +713,23 @@ class RomBuilder:
         def runner():
             while True:
                 with lock:
-                    if not queue or errors or self.cancel.is_set():
+                    if not queue or (errors and not keep_going) or self.cancel.is_set():
                         return
-                    text, module, arguments, weight = queue.pop(0)
+                    task = queue.pop(0)
+                text, module, arguments, weight = task
                 try:
                     self.run_worker(text, module, arguments)
                     self.step(weight, text.replace("Converting", "Converted"))
                 except Cancelled:
                     return
+                except BuildError as error:
+                    with lock:
+                        errors.append((task, error))
+                    if keep_going:
+                        self.step(weight, text)
                 except Exception as error:  # noqa: BLE001 (reported; the queue stops)
                     with lock:
-                        errors.append(error)
+                        errors.append((task, error))
 
         threads = [threading.Thread(target=runner, daemon=True) for _ in range(min(self.jobs, len(tasks)))]
         for t in threads:
@@ -589,8 +737,9 @@ class RomBuilder:
         for t in threads:
             t.join()
         self.check_cancel()
-        if errors:
-            raise errors[0]
+        if errors and not keep_going:
+            raise errors[0][1]
+        return errors
 
     def run_tool(self, text, command):
         self.check_cancel()
@@ -607,6 +756,50 @@ class RomBuilder:
         if code != 0:
             raise BuildError(f"{text} failed: {Path(command[0]).name} said:\n" +
                              output.decode("utf-8", "replace")[-1500:])
+
+
+# ---------- Custom Edition maps in .zip files (as maps sites give them)
+
+def zip_maps(path):
+    """the .map members of a .zip (the player's download: read as data,
+    names checked, sizes bounded)"""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = [m for m in archive.infolist() if not m.is_dir() and m.filename.lower().endswith(".map")]
+    except (zipfile.BadZipFile, OSError) as error:
+        raise BuildError(f"{path.name} is not a readable .zip file") from error
+    if not members:
+        raise BuildError(f"{path.name} has no Halo map (.map) in it")
+    for member in members:
+        if member.file_size > CE_MAP_BYTES:
+            raise BuildError(f"{path.name}: {member.filename} is too big for a Halo map")
+    return members
+
+
+def unzip_maps(path, folder):
+    """a .zip's maps written to a folder of their own (the file name alone,
+    never the member's path), their paths"""
+    import zipfile
+    out = []
+    target = folder / f"{len(list(folder.iterdir())) if folder.is_dir() else 0}"
+    target.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path) as archive:
+        for member in zip_maps(path):
+            name = "".join(c for c in Path(member.filename.replace("\\", "/")).name if c.isalnum() or c in " ._-")
+            name = name.strip(" .") or "map.map"
+            destination = target / name
+            if destination.exists():
+                destination = target / f"{len(out)}-{name}"
+            written = 0
+            with archive.open(member) as source, destination.open("wb") as stream:
+                for block in iter(lambda: source.read(1 << 20), b""):
+                    written += len(block)
+                    if written > CE_MAP_BYTES:
+                        raise BuildError(f"{path.name}: {member.filename} is too big for a Halo map")
+                    stream.write(block)
+            out.append(destination)
+    return out
 
 
 def default_work_folder():
@@ -631,7 +824,8 @@ def run_worker(arguments):
         os.environ.setdefault(key, value)
     import importlib
     import traceback
-    allowed = {"convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank", "compress_map", "fx_pool"}
+    allowed = {"convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank",
+               "compress_map", "fx_pool", "ce_prepare"}
     if module not in allowed:
         print(f"no such converter: {module}")
         return 2
@@ -669,18 +863,30 @@ def main():
     parser.add_argument("--pc-expansion", action="store_true", help="separate 19-map PC expansion cartridge")
     parser.add_argument("--pc-source", type=Path, help="your PC retail ISO or installed maps folder (PC expansion only)")
     parser.add_argument("--pc-tools", type=Path, help="trusted local Invader and FFmpeg tools (source runs only)")
+    parser.add_argument("--custom-edition", type=Path, nargs="+", metavar="MAP",
+                        help="a cartridge of these Halo Custom Edition maps (.map, or .zip files of them)")
+    parser.add_argument("--ce-tools", type=Path,
+                        help="Invader's tools and ogg2wav for the Custom Edition maps (default: the package's, "
+                        "or N64_CE_TOOLS)")
     parser.add_argument("--jobs", type=int)
     parser.add_argument("--work", type=Path)
     parser.add_argument("--font", type=Path)
     args = parser.parse_args()
-    cartridges = [c for c in ("multiplayer", "campaign", "pc_expansion") if getattr(args, c)] or ["multiplayer", "campaign"]
+    cartridges = [c for c in ("multiplayer", "campaign", "pc_expansion") if getattr(args, c)]
+    if args.custom_edition:
+        cartridges.append("custom")
+    cartridges = cartridges or ["multiplayer", "campaign"]
 
     def progress(fraction, step):
         print(f"[{fraction * 100:5.1f}%] {step}", flush=True)
 
     try:
-        RomBuilder(args.source, args.output, cartridges, work=args.work, jobs=args.jobs, font=args.font,
-                   pc_source=args.pc_source, pc_tools=args.pc_tools, log=lambda text: print("   ", text, flush=True), progress=progress).run()
+        builder = RomBuilder(args.source, args.output, cartridges, work=args.work, jobs=args.jobs, font=args.font,
+                   pc_source=args.pc_source, pc_tools=args.pc_tools, custom_maps=args.custom_edition,
+                   ce_tools=args.ce_tools, log=lambda text: print("   ", text, flush=True), progress=progress)
+        builder.run()
+        for note in builder.notes:
+            print(f"note: {note}", file=sys.stderr)
     except BuildError as error:
         print(f"error: {error}", file=sys.stderr)
         sys.exit(1)

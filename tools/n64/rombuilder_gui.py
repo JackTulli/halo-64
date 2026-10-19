@@ -1,7 +1,8 @@
 """Halo 64 ROM Builder: the Windows program around tools/n64/rombuilder.py.
 
 One window: drop Halo's Xbox disc image (or its maps folder) on it, tick
-the cartridges, choose where they go, Build. The build runs on a thread of
+the cartridges (and add Custom Edition maps for a cartridge of them: drop
+their .map or .zip files on it), choose where they go, Build. The build runs on a thread of
 its own (each conversion a process: rombuilder.py), its progress and log
 posted to the window through a queue. tkinterdnd2 gives the window its
 drag and drop (without it, the buttons still choose); sv_ttk its look.
@@ -18,7 +19,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .rombuilder import BuildError, Cancelled, MapSource, RomBuilder, payload_root
+from .rombuilder import BuildError, Cancelled, CUSTOM_MAP_LIMIT, MapSource, RomBuilder, payload_root
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -31,7 +32,19 @@ CARTRIDGE_TEXT = {
     "campaign": ("Campaign: Halo", "halo-campaign.z64", "the level \"Halo\" on a cartridge of its own"),
     "pc_expansion": ("PC expansion (optional)", "halo-pc-expansion.z64",
                      "six more PC maps, weapons and vehicles on a separate cartridge; also needs your Halo PC copy"),
+    "custom": ("Custom Edition maps", "halo-custom-edition.z64",
+               f"Halo Custom Edition multiplayer maps you add (up to {CUSTOM_MAP_LIMIT}) on a cartridge of their own"),
 }
+# what a Custom Edition map comes as
+CE_FILES = (".map", ".zip")
+
+
+def custom_included():
+    """whether this copy can make the Custom Edition cartridge: run from the
+    repository (its tools chosen in the window), or a package carrying the
+    Custom Edition tools and program"""
+    root = payload_root()
+    return root is None or ((root / "ce-tools").is_dir() and (root / "elf" / "custom").is_dir())
 
 
 def pc_expansion_included():
@@ -84,6 +97,8 @@ class App:
         self.source = None
         self.pc_source = None
         self.pc_tools = tk.StringVar(value=self.settings.get("pc_tools", ""))
+        self.ce_tools = tk.StringVar(value=self.settings.get("ce_tools", os.environ.get("N64_CE_TOOLS", "")))
+        self.custom_maps = [p for p in self.settings.get("custom_maps", []) if Path(p).is_file()]
         self.builder_thread = None
         self.cancel = threading.Event()
         self.messages = queue.Queue()
@@ -113,7 +128,8 @@ class App:
         ttk.Label(outer, text="HALO 64", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(outer, style="Subtitle.TLabel", wraplength=700, justify="left",
                   text="Makes the Halo 64 cartridges for your Nintendo 64 or emulator from your own copy of "
-                       "Halo: Combat Evolved for the original Xbox.").grid(row=1, column=0, sticky="w", pady=(0, 12))
+                       "Halo: Combat Evolved for the original Xbox, and Halo Custom Edition maps you add."
+                  ).grid(row=1, column=0, sticky="w", pady=(0, 12))
 
         # 1. Halo
         ttk.Label(outer, text="1   Your Halo", style="Section.TLabel").grid(row=2, column=0, sticky="w")
@@ -141,20 +157,26 @@ class App:
         choices.grid(row=6, column=0, sticky="ew", pady=(6, 10))
         self.choice = {}
         pc_included = pc_expansion_included()
-        for row, (key, (name, file, description)) in enumerate(CARTRIDGE_TEXT.items()):
-            included = key != "pc_expansion" or pc_included
-            var = tk.BooleanVar(value=included and self.settings.get(key, key != "pc_expansion"))
+        rows = {}
+        row = 0
+        for key, (name, file, description) in CARTRIDGE_TEXT.items():
+            included = (key != "pc_expansion" or pc_included) and (key != "custom" or custom_included())
+            var = tk.BooleanVar(value=included and self.settings.get(key, key not in ("pc_expansion", "custom")))
             self.choice[key] = var
             ttk.Checkbutton(choices, text=f"{name}   ({file})", variable=var, command=self.toggle_pc_inputs,
-                            state="normal" if included else "disabled").grid(row=row * 2, column=0, sticky="w")
+                            state="normal" if included else "disabled").grid(row=row, column=0, sticky="w")
             if not included:
-                description += " (not in this download: it carries no PC conversion tools)"
-            ttk.Label(choices, text=description, style="Small.TLabel", wraplength=670).grid(row=row * 2 + 1, column=0, sticky="w",
+                description += (" (not in this download: it carries no PC conversion tools)" if key == "pc_expansion"
+                                else " (not in this download: it carries no Custom Edition conversion tools)")
+            ttk.Label(choices, text=description, style="Small.TLabel", wraplength=670).grid(row=row + 1, column=0, sticky="w",
                                                                             padx=(28, 0), pady=(0, 6))
+            # (each optional cartridge's own inputs under it)
+            rows[key] = row + 2
+            row += 3
 
         # The PC source is part of the optional cartridge's existing flow.
         self.pc_panel = ttk.Frame(choices, padding=(28, 4, 0, 6))
-        self.pc_panel.grid(row=len(CARTRIDGE_TEXT) * 2, column=0, sticky="ew")
+        self.pc_panel.grid(row=rows["pc_expansion"], column=0, sticky="ew")
         ttk.Label(self.pc_panel, text="Your Halo: Combat Evolved for PC", style="Section.TLabel").grid(
             row=0, column=0, sticky="w")
         ttk.Label(self.pc_panel, text="Choose a PC retail ISO with loose maps, or the installed game's maps folder. "
@@ -172,6 +194,43 @@ class App:
             ttk.Label(tools_row, text="Local PC conversion tools:", style="Small.TLabel").pack(side="left")
             ttk.Entry(tools_row, textvariable=self.pc_tools, width=36).pack(side="left", padx=6)
             ttk.Button(tools_row, text="Browse…", command=self.choose_pc_tools).pack(side="left")
+
+        # the Custom Edition maps: a list, added by button or dropped
+        self.custom_panel = ttk.Frame(choices, padding=(28, 4, 0, 6))
+        self.custom_panel.grid(row=rows["custom"], column=0, sticky="ew")
+        self.custom_panel.columnconfigure(0, weight=1)
+        ttk.Label(self.custom_panel, text="Your Custom Edition maps", style="Section.TLabel").grid(
+            row=0, column=0, sticky="w")
+        ttk.Label(self.custom_panel, style="Small.TLabel", wraplength=660,
+                  text="Add Halo Custom Edition multiplayer maps (.map files, or the .zip files maps come in), or "
+                       "drag them onto this window. Each is made an Xbox map with your Xbox maps' tags filling in "
+                       "Custom Edition's shared ones; maps their authors protected can't be converted.").grid(
+            row=1, column=0, sticky="w", pady=(2, 6))
+        listing = ttk.Frame(self.custom_panel)
+        listing.grid(row=2, column=0, sticky="ew")
+        listing.columnconfigure(0, weight=1)
+        self.custom_list = tk.Listbox(listing, height=4, selectmode="extended", activestyle="none",
+                                      font=("Segoe UI", 9), bd=0, highlightthickness=1)
+        self.custom_list.grid(row=0, column=0, sticky="ew")
+        # (in the theme's colours: a plain tk widget keeps its own)
+        background = self.style.lookup("TFrame", "background") or "#1c1c1c"
+        foreground = self.style.lookup("TLabel", "foreground") or "#ffffff"
+        self.custom_list.configure(bg=background, fg=foreground, selectbackground="#2f5f86",
+                                   selectforeground=foreground, highlightbackground="#5a5a5a")
+        custom_buttons = ttk.Frame(listing)
+        custom_buttons.grid(row=0, column=1, sticky="n", padx=(8, 0))
+        ttk.Button(custom_buttons, text="Add maps…", command=self.choose_custom_maps).pack(fill="x")
+        ttk.Button(custom_buttons, text="Remove", command=self.remove_custom_maps).pack(fill="x", pady=(4, 0))
+        ttk.Button(custom_buttons, text="Clear", command=self.clear_custom_maps).pack(fill="x", pady=(4, 0))
+        self.custom_label = ttk.Label(self.custom_panel, text="", style="Small.TLabel", wraplength=660)
+        self.custom_label.grid(row=3, column=0, sticky="w", pady=(6, 0))
+        if payload_root() is None:
+            ce_row = ttk.Frame(self.custom_panel)
+            ce_row.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+            ttk.Label(ce_row, text="Local Custom Edition tools:", style="Small.TLabel").pack(side="left")
+            ttk.Entry(ce_row, textvariable=self.ce_tools, width=36).pack(side="left", padx=6)
+            ttk.Button(ce_row, text="Browse…", command=self.choose_ce_tools).pack(side="left")
+        self.show_custom_maps()
         self.toggle_pc_inputs()
 
         # 3. where they go
@@ -261,7 +320,12 @@ class App:
     def dropped(self, event):
         self.highlight(False)
         paths = self.root.tk.splitlist(event.data)
-        if paths:
+        # (Custom Edition maps and their .zip files: the custom cartridge's;
+        # anything else: Halo's Xbox disc image or maps folder)
+        custom = [p for p in paths if Path(p).is_file() and Path(p).suffix.lower() in CE_FILES]
+        if custom:
+            self.add_custom_maps(custom)
+        elif paths:
             self.set_source(paths[0])
         return "copy"
 
@@ -310,15 +374,87 @@ class App:
         self.source_label.configure(text=text, fg="#6ccb5f" if good else "#ff6b6b")
 
     def toggle_pc_inputs(self):
-        if not hasattr(self, "pc_panel"):
+        if not hasattr(self, "pc_panel") or not hasattr(self, "custom_panel"):
             return
-        if self.choice["pc_expansion"].get():
-            self.pc_panel.grid()
+        shown = 0
+        for key, panel in (("pc_expansion", self.pc_panel), ("custom", self.custom_panel)):
+            if self.choice[key].get():
+                panel.grid()
+                shown += 1
+            else:
+                panel.grid_remove()
+        if shown:
             # Keep the optional source controls and Build button visible.
-            height = min(920, self.root.winfo_screenheight() - 80)
+            height = min(760 + 170 * shown, self.root.winfo_screenheight() - 80)
             self.root.geometry(f"{max(760, self.root.winfo_width())}x{height}")
+
+    # ---------- the Custom Edition maps
+
+    def choose_custom_maps(self):
+        if self.busy():
+            return
+        paths = filedialog.askopenfilenames(title="Halo Custom Edition maps",
+                                            filetypes=[("Custom Edition maps", "*.map *.zip"), ("All files", "*.*")])
+        if paths:
+            self.add_custom_maps(paths)
+
+    def add_custom_maps(self, paths):
+        if self.busy():
+            return
+        known = {str(Path(p).resolve()).lower() for p in self.custom_maps}
+        for path in paths:
+            if str(Path(path).resolve()).lower() not in known:
+                self.custom_maps.append(str(path))
+                known.add(str(Path(path).resolve()).lower())
+        if self.choice["custom"].get() is False and custom_included():
+            self.choice["custom"].set(True)
+            self.toggle_pc_inputs()
+        self.show_custom_maps()
+
+    def remove_custom_maps(self):
+        if self.busy():
+            return
+        for index in reversed(self.custom_list.curselection()):
+            del self.custom_maps[index]
+        self.show_custom_maps()
+
+    def clear_custom_maps(self):
+        if self.busy():
+            return
+        self.custom_maps = []
+        self.show_custom_maps()
+
+    def show_custom_maps(self):
+        """the list, each map checked as it is shown (a Custom Edition
+        multiplayer map, not protected)"""
+        from .ce_prepare import CEPrepareError, read_ce_map
+        from .rombuilder import zip_maps
+        self.custom_list.delete(0, "end")
+        problems = 0
+        for path in map(Path, self.custom_maps):
+            try:
+                if path.suffix.lower() == ".zip":
+                    count = len(zip_maps(path))
+                    text = f"✔  {path.name}  ({count} map{'s' if count != 1 else ''} inside)"
+                else:
+                    text = f"✔  {path.name}  (\"{read_ce_map(path)[0]}\")"
+            except (BuildError, CEPrepareError, OSError) as error:
+                text = f"✖  {path.name}: {error}"
+                problems += 1
+            self.custom_list.insert("end", text)
+        if not self.custom_maps:
+            self.custom_label.configure(text="No Custom Edition maps added yet")
         else:
-            self.pc_panel.grid_remove()
+            self.custom_label.configure(text=f"{len(self.custom_maps)} file{'s' if len(self.custom_maps) != 1 else ''}"
+                                        + (f"; {problems} can't be used (remove {'it' if problems == 1 else 'them'})"
+                                           if problems else ""))
+
+    def choose_ce_tools(self):
+        if self.busy():
+            return
+        path = filedialog.askdirectory(title="Invader's tools and ogg2wav (tools/n64/invader_lite)")
+        if path:
+            self.ce_tools.set(path)
 
     def choose_pc_image(self):
         if self.busy():
@@ -390,6 +526,9 @@ class App:
         if "pc_expansion" in cartridges and not self.pc_source:
             messagebox.showinfo(TITLE, "Choose your Halo PC retail disc image or installed maps folder for the PC expansion.")
             return
+        if "custom" in cartridges and not self.custom_maps:
+            messagebox.showinfo(TITLE, "Add your Custom Edition maps (.map or .zip files) for the Custom Edition cartridge.")
+            return
         output = self.output.get().strip()
         if not output:
             messagebox.showinfo(TITLE, "Choose a folder for the ROMs.")
@@ -404,11 +543,13 @@ class App:
         self.cancel_button.configure(state="normal")
         self.started = time.time()
         self.builder_thread = threading.Thread(target=self.run_build, args=(self.source, output, cartridges, self.pc_source if "pc_expansion" in cartridges else None,
-                                                     self.pc_tools.get().strip() or None),
+                                                     self.pc_tools.get().strip() or None,
+                                                     list(self.custom_maps) if "custom" in cartridges else None,
+                                                     self.ce_tools.get().strip() or None),
                                                daemon=True)
         self.builder_thread.start()
 
-    def run_build(self, source, output, cartridges, pc_source=None, pc_tools=None):
+    def run_build(self, source, output, cartridges, pc_source=None, pc_tools=None, custom_maps=None, ce_tools=None):
         def log(text):
             self.messages.put(("log", text))
 
@@ -416,9 +557,10 @@ class App:
             self.messages.put(("progress", (fraction, step)))
 
         try:
-            builder = RomBuilder(source, output, cartridges, log=log, progress=progress, cancel=self.cancel, pc_source=pc_source, pc_tools=pc_tools)
+            builder = RomBuilder(source, output, cartridges, log=log, progress=progress, cancel=self.cancel, pc_source=pc_source, pc_tools=pc_tools,
+                                 custom_maps=custom_maps, ce_tools=ce_tools)
             made = builder.run()
-            self.messages.put(("done", made))
+            self.messages.put(("done", (made, list(builder.notes))))
         except Cancelled:
             self.messages.put(("cancelled", None))
         except BuildError as error:
@@ -446,9 +588,12 @@ class App:
                     if not self.cancel.is_set():
                         self.step.configure(text=step)
                 elif kind == "done":
-                    self.finished(True, "Your ROMs are ready: " + ", ".join(Path(p).name for p in value))
-                    self.outputs = value
+                    made, notes = value
+                    self.finished(True, "Your ROMs are ready: " + ", ".join(Path(p).name for p in made))
+                    self.outputs = made
                     self.open_button.grid()
+                    if notes:
+                        messagebox.showwarning(TITLE, "\n\n".join(notes)[:1500])
                 elif kind == "cancelled":
                     self.finished(False, "Stopped.")
                 elif kind == "failed":
@@ -500,6 +645,9 @@ class App:
             values["pc_tools"] = self.pc_tools.get().strip()
         if self.pc_source:
             values["pc_source"] = self.pc_source
+        if self.ce_tools.get().strip():
+            values["ce_tools"] = self.ce_tools.get().strip()
+        values["custom_maps"] = list(self.custom_maps)
         for key, var in self.choice.items():
             values[key] = var.get()
         save_settings(values)

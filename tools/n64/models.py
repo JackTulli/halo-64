@@ -89,6 +89,16 @@ FAR_CUTOUT_SHARE = 0.75
 # by the object's group: players matter most; what lies on the floor or
 # flies is small on screen
 GROUP_BUDGETS = {"bipd": 600, "vehi": 600, "weap": 250, "eqip": 250, "garb": 250, "proj": 150}
+# static objects (scenery, machines...) bigger than this many triangles are
+# pieces of the level (Custom Edition maps: Foundry's warehouse shell, pipes
+# and roof are machines): they keep this share of their triangles (not a
+# prop's budget) and have no far version
+STATIC_GROUPS = ("scen", "mach", "ctrl", "lifi", "plac", "ssce")
+BIG_STATIC_TRIANGLES = 2000
+BIG_STATIC_SHARE = 0.12
+# a part the simplifier left above this many times its target is simplified
+# again with decimate's open_edges (open shapes: pipes, open boxes)
+OPEN_EDGE_RETRY = 1.5
 # first-person textures: the atlas at this size (each window is a texture
 # load and a batch more: 256 cost the RSP/RDP ~15 ms a frame more than 128),
 # cut into windows of at most
@@ -224,6 +234,11 @@ def vertex_node(n0, n1, weight, node_count):
 
 
 class ModelConverter:
+    # the reductions for open shapes and big static models (OPEN_EDGE_RETRY,
+    # BIG_STATIC_TRIANGLES): Custom Edition maps' (convert.py --custom); the
+    # stock maps are converted as they always were
+    reduce_open_shapes = False
+
     def __init__(self, xmap, defs, map_name, out_dir):
         self.map = xmap
         self.defs = defs
@@ -274,6 +289,8 @@ class ModelConverter:
         self.budgets = {}
         self.first_person = set()
         self.hands = set()
+        # models static objects use (big ones: BIG_STATIC_TRIANGLES)
+        self.static = set()
         # models a unit (a player) uses keep their textures at any distance
         # (a player's colour)
         self.units = set()
@@ -290,6 +307,8 @@ class ModelConverter:
                 self.budgets[model.index] = max(self.budgets.get(model.index, 0), budget)
                 if tag.group_name in ("bipd", "vehi"):
                     self.units.add(model.index)
+                if tag.group_name in STATIC_GROUPS:
+                    self.static.add(model.index)
         # the first-person views: each weapon's model, and the hands
         wf = self.f("Weapon")
         for tag in self.map.tags:
@@ -592,8 +611,16 @@ class ModelConverter:
             # (the hands keep their budget alone: the bound kept them at
             # ~1,300 triangles)
             deviation = part_size(vertices, triangles) * self.first_person_deviation if detail and not hands else None
-            triangles = decimate(vertices, triangles, max(8, int(len(triangles) * keep)), cross_nodes=not detail,
-                                 max_deviation=deviation)
+            target = max(8, int(len(triangles) * keep))
+            simplified = decimate(vertices, triangles, target, cross_nodes=not detail,
+                                  max_deviation=deviation)
+            if (self.reduce_open_shapes and not hands and len(simplified) > OPEN_EDGE_RETRY * target and
+                    len(triangles) >= 64):
+                again = decimate(vertices, triangles, target, cross_nodes=not detail,
+                                 max_deviation=deviation, open_edges=True, new_vertices=True)
+                if len(again) < len(simplified):
+                    simplified = again
+            triangles = simplified
 
         groups = None
         if detail and texture >= 0 and DETAIL_WINDOWS:
@@ -918,6 +945,17 @@ class ModelConverter:
             geometry_map = {}
 
             budget = self.budgets.get(tag.index, MODEL_BUDGET)
+            big_static = set()
+            if (self.reduce_open_shapes and tag.index in getattr(self, "static", ()) and
+                    tag.index not in self.units and tag.index not in self.first_person):
+                part_size = self.defs.size("ModelGeometryPart")
+                biggest = 0
+                for gi in range(max(gc, 0)):
+                    pc, pp = self.block(gp + gi * gsize + gf["parts"])
+                    biggest = max(biggest, sum(self.part_triangle_count(pp + p * part_size) for p in range(pc)))
+                if biggest > BIG_STATIC_TRIANGLES:
+                    big_static.add(tag.index)
+                    self.no_far.add(tag.index)
 
             def geometry(gi):
                 if gi in geometry_map:
@@ -927,6 +965,8 @@ class ModelConverter:
                 part_size = self.defs.size("ModelGeometryPart")
                 total = sum(self.part_triangle_count(pp + p * part_size) for p in range(pc))
                 keep = min(1.0, budget / total) if total else 1.0
+                if tag.index in big_static:
+                    keep = max(keep, BIG_STATIC_SHARE)
                 for p in range(pc):
                     self.convert_part(pp + p * part_size, nodes_inverse, u_scale, v_scale,
                                       shaders, batches, vertex_data, index_data, keep,

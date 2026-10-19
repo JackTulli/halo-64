@@ -33,6 +33,21 @@ result drawable as it was:
 decimate(vertices, triangles, target, cross_nodes) takes vertices as (node, position,
 uv, ...) tuples and triangles as vertex index triples, and returns the
 simplified triangles (still indices into the same vertices).
+
+open_edges (off unless asked; tools/n64/models.py asks only where the
+simplifier otherwise kept too much): a vertex on a simple open boundary (two
+open edges meet there) may move along it, onto the vertex at the other end
+of one of its open edges; planes through the open edges, perpendicular to
+their triangles (BOUNDARY_WEIGHT), keep the boundary's shape in the error.
+Custom Edition models built of open shapes (pipes as open cylinders, beams
+as open boxes) have every vertex on an open edge, and kept every triangle.
+
+new_vertices (off unless asked, as open_edges): a moved corner with no
+vertex at the target position in its own texture island (flat-shaded
+models: every face an island of its own) gets a new vertex there, appended
+to vertices (a list), with its own texture coordinates and the rest, instead
+of the collapse being refused (the texture stretches a little over its
+triangles).
 """
 
 import heapq
@@ -67,9 +82,26 @@ def _normal(a, b, c):
 
 
 CROSS_NODE_COST = 8.0
+BOUNDARY_WEIGHT = 4.0
 
 
-def decimate(vertices, triangles, target, cross_nodes=False, max_deviation=None):
+def _boundary_quadric(a, b, c):
+    """the plane through the open edge a-b perpendicular to the triangle
+    a-b-c, as a quadric weighted by the edge's length squared"""
+    n = _normal(a, b, c)
+    e = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    px, py, pz = n[1] * e[2] - n[2] * e[1], n[2] * e[0] - n[0] * e[2], n[0] * e[1] - n[1] * e[0]
+    length = math.sqrt(px * px + py * py + pz * pz)
+    if length < 1e-12:
+        return None
+    px, py, pz = px / length, py / length, pz / length
+    d = -(px * a[0] + py * a[1] + pz * a[2])
+    w = BOUNDARY_WEIGHT * (e[0] * e[0] + e[1] * e[1] + e[2] * e[2])
+    return [w * v for v in (px * px, px * py, px * pz, px * d, py * py, py * pz, py * d, pz * pz, pz * d, d * d)]
+
+
+def decimate(vertices, triangles, target, cross_nodes=False, max_deviation=None, open_edges=False,
+             new_vertices=False):
     if len(triangles) <= target:
         return list(triangles)
     # weld by node and position
@@ -112,10 +144,29 @@ def decimate(vertices, triangles, target, cross_nodes=False, max_deviation=None)
             key = (x, y) if x < y else (y, x)
             edge_use[key] = edge_use.get(key, 0) + 1
     locked = set()
+    # (open_edges: each vertex's neighbours along open edges)
+    boundary = {}
     for (x, y), n in edge_use.items():
         if n == 1:
-            locked.add(x)
-            locked.add(y)
+            if open_edges:
+                boundary.setdefault(x, set()).add(y)
+                boundary.setdefault(y, set()).add(x)
+            else:
+                locked.add(x)
+                locked.add(y)
+    if open_edges:
+        for x, ys in boundary.items():
+            if len(ys) != 2:
+                locked.add(x)
+        for _, corners, _ in tris:
+            for i in range(3):
+                x, y, z = corners[i], corners[(i + 1) % 3], corners[(i + 2) % 3]
+                key = (x, y) if x < y else (y, x)
+                if edge_use.get(key) == 1:
+                    q = _boundary_quadric(positions[x], positions[y], positions[z])
+                    if q:
+                        quadric[x] = [a + b for a, b in zip(quadric[x], q)]
+                        quadric[y] = [a + b for a, b in zip(quadric[y], q)]
     groups_at = {}
     for g, position in enumerate(positions):
         groups_at.setdefault(tuple(round(c, 5) for c in position), []).append(g)
@@ -140,10 +191,11 @@ def decimate(vertices, triangles, target, cross_nodes=False, max_deviation=None)
         for h in neighbours:
             q = [x + y for x, y in zip(quadric[g], quadric[h])]
             k = 1.0 if nodes[h] == nodes[g] else CROSS_NODE_COST
-            # (g moves onto h, and h onto g, unless the mover is locked)
-            if g not in locked:
+            # (g moves onto h, and h onto g, unless the mover is locked; a
+            # vertex on an open boundary only along it)
+            if g not in locked and (g not in boundary or h in boundary[g]):
                 heapq.heappush(heap, (k * _error(q, positions[h]), g, h, version[g], version[h]))
-            if h not in locked:
+            if h not in locked and (h not in boundary or g in boundary[h]):
                 heapq.heappush(heap, (k * _error(q, positions[g]), h, g, version[h], version[g]))
 
     for g in range(len(members)):
@@ -210,6 +262,16 @@ def decimate(vertices, triangles, target, cross_nodes=False, max_deviation=None)
             for i in range(3):
                 if tri[1][i] == g and tri[0][i] not in replacements:
                     replacements[tri[0][i]] = replacement(tri[0][i], h)
+        if new_vertices:
+            for corner, r in replacements.items():
+                if r is None:
+                    old = vertices[corner]
+                    vertices.append((nodes[h], positions[h]) + tuple(old[2:]))
+                    r = len(vertices) - 1
+                    group_of.append(h)
+                    members[h].append(r)
+                    adjacent[r] = set()
+                    replacements[corner] = r
         if any(r is None for r in replacements.values()):
             continue
         for t in list(by_group[g]):
@@ -228,6 +290,16 @@ def decimate(vertices, triangles, target, cross_nodes=False, max_deviation=None)
             # the triangle's vertices now share it
             for x in tri[0]:
                 adjacent.setdefault(x, set()).update(tri[0])
+        if g in boundary:
+            # (g's other open edge now ends at h)
+            for k in boundary.pop(g) - {h}:
+                boundary[k].discard(g)
+                boundary[k].add(h)
+                boundary.setdefault(h, set()).add(k)
+            if h in boundary:
+                boundary[h].discard(g)
+                if len(boundary[h]) != 2:
+                    locked.add(h)
         by_group[g] = set()
         alive_group[g] = False
         quadric[h] = [x + y for x, y in zip(quadric[h], quadric[g])]

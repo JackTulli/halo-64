@@ -5,6 +5,12 @@ Windows Python that has pillow, tkinterdnd2, sv-ttk and pyinstaller:
         [--elf build/n64] [--invader ~/n64/invader]
         [--pc-expansion-elf build/n64/pc-expansion --pc-tools <trusted tools>
          --pc-tool-notices <matching licence/source-offer files>]
+        [--custom-elf build/n64/custom --ce-tools <invader-lite and ogg2wav for Windows>]
+
+The Custom Edition cartridge (--custom-elf, --ce-tools, together): its
+program (ninja target custom) and the tools that make Custom Edition maps
+Xbox maps, built by tools/n64/invader_lite/build.sh for Windows; their
+notices come from tools/n64/invader_lite.
 
 What goes in, beside Python and the converters (tools/n64): the payload --
 libdragon's tools for Windows (tools/n64/build_windows_tools.sh), each
@@ -28,9 +34,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent.parent
 NAME = "Halo64RomBuilder"
 TOOLS = ("mksprite", "audioconv64", "mkdfs", "n64tool", "ed64romconfig")
-CONVERTERS = ("convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank", "compress_map", "fx_pool")
+CONVERTERS = ("convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank",
+              "compress_map", "fx_pool", "ce_prepare", "animation_decompress")
 PC_ASSET_TOOLS = ("mkasset",)
 PC_TOOLS = tuple("invader-" + name for name in ("extract", "convert", "refactor", "bludgeon", "edit", "sound", "build")) + ("ffmpeg",)
+# the Custom Edition maps' tools (tools/n64/ce_prepare.py)
+CE_TOOLS = tuple("invader-" + name for name in ("extract", "convert", "refactor", "bludgeon", "edit", "sound", "build")) + ("ogg2wav",)
 
 NOTICES = """Halo 64 ROM Builder
 ===================
@@ -82,8 +91,19 @@ def main():
     parser.add_argument("--pc-expansion-elf", type=Path, help="optional distinct PC expansion program folder")
     parser.add_argument("--pc-tools", type=Path, help="trusted Windows Invader + FFmpeg executables and required DLLs")
     parser.add_argument("--pc-tool-notices", type=Path, help="licence/source-offer notices matching your supplied PC tool builds")
+    parser.add_argument("--custom-elf", type=Path, help="the Custom Edition cartridge's program folder (build/n64/custom)")
+    parser.add_argument("--ce-tools", type=Path, help="invader-lite's Windows tools and ogg2wav.exe (tools/n64/invader_lite)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
+    if bool(args.custom_elf) != bool(args.ce_tools):
+        parser.error("the Custom Edition cartridge needs --custom-elf and --ce-tools together")
+    if args.ce_tools:
+        for name in CE_TOOLS:
+            if not (args.ce_tools / f"{name}.exe").is_file():
+                parser.error(f"missing Custom Edition tool: {name}.exe")
+        for name in ("halo.elf.stripped", "halo.elf.sym"):
+            if not (args.custom_elf / name).is_file():
+                parser.error(f"missing the Custom Edition program's {name} (ninja -f build/n64/build.ninja custom)")
 
     palette = args.invader / "src" / "bitmap" / "p8" / "p8_palette"
     if not palette.is_file() or palette.stat().st_size != 1024:
@@ -120,6 +140,8 @@ def main():
         programs = [("multiplayer", args.elf), ("campaign", args.elf / "campaign")]
         if args.pc_expansion_elf:
             programs.append(("pc-expansion", args.pc_expansion_elf))
+        if args.custom_elf:
+            programs.append(("custom", args.custom_elf))
         for cartridge, folder in programs:
             target = payload / "elf" / cartridge
             target.mkdir(parents=True)
@@ -150,6 +172,16 @@ def main():
                 inventory.append({"name": binary.name, "bytes": binary.stat().st_size,
                                   "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()})
             (payload / "pc-tools.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+        if args.ce_tools:
+            ce_tools = payload / "ce-tools"
+            ce_tools.mkdir()
+            inventory = []
+            for name in CE_TOOLS:
+                binary = args.ce_tools / f"{name}.exe"
+                shutil.copy2(binary, ce_tools / binary.name)
+                inventory.append({"name": binary.name, "bytes": binary.stat().st_size,
+                                  "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()})
+            (payload / "ce-tools.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
         png, ico = make_icon(payload)
         notices = stage / "notices"
         notices.mkdir()
@@ -161,6 +193,14 @@ def main():
                 readme.write("\nOptional PC expansion: includes supplied libdragon mkasset, Invader executables and FFmpeg. "
                              "See pc-tools/ for their matching licences and source information. "
                              "Only code, tools and project-original paint art are bundled; supply your own Halo PC maps.\n")
+        if args.ce_tools:
+            lite = REPO / "tools" / "n64" / "invader_lite"
+            shutil.copy2(lite / "NOTICE", notices / "custom-edition-tools-NOTICE.txt")
+            with (notices / "README.txt").open("a", encoding="utf-8") as readme:
+                readme.write("\nThe Custom Edition cartridge: Invader's tools (GPL-3.0) built without its optional "
+                             "libraries as tools/n64/invader_lite in the halo-64 sources describes, and ogg2wav "
+                             "(stb_vorbis); see custom-edition-tools-NOTICE.txt for their licences and sources. "
+                             "No Custom Edition maps come with it: add your own.\n")
         libdragon_license = args.tools / "libdragon-LICENSE.md"
         if libdragon_license.is_file():
             shutil.copy2(libdragon_license, notices / "libdragon-LICENSE.md")
