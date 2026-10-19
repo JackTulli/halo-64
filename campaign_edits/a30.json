@@ -1,0 +1,163 @@
+{
+ "map": "a30",
+ "placements": {
+  "scenery:331": {
+   "position": [
+    -21.87,
+    26.06,
+    60.08
+   ]
+  }
+ },
+ "squads": {
+  "first_wave/wave_5_elite": {
+   "deleted": true
+  },
+  "first_wave/wave_3_elite": {
+   "deleted": true
+  },
+  "first_wave/wave_5_elite_2": {
+   "deleted": true
+  },
+  "first_wave/wave_5_grunt": {
+   "deleted": true
+  },
+  "first_wave/wave_3_grunt": {
+   "deleted": true
+  },
+  "first_wave/wave_1_lz_grunt": {
+   "deleted": true
+  },
+  "first_wave/wave_1_lz_elite": {
+   "deleted": true
+  },
+  "lz_search/grunt": {
+   "deleted": true
+  },
+  "lz_search/far_grunt": {
+   "deleted": true
+  },
+  "lz_search/elite": {
+   "deleted": true
+  },
+  "lz_search/pass_jackal": {
+   "locations": [
+    [
+     -1.11,
+     -89.91,
+     58.68,
+     0
+    ],
+    [
+     2.52,
+     -87,
+     58.08,
+     0
+    ],
+    [
+     -3.28,
+     -88.54,
+     58.78,
+     0
+    ],
+    [
+     -0.52,
+     -85.61,
+     58.3,
+     0
+    ]
+   ]
+  },
+  "cave_floor/thin_grunt": {
+   "deleted": true
+  },
+  "cave_floor/fat_grunt": {
+   "deleted": true
+  },
+  "cave_floor/plank_elite": {
+   "deleted": true
+  },
+  "cave_floor/fat_right_jackal": {
+   "deleted": true
+  },
+  "cave_floor/fat_elite": {
+   "deleted": true
+  },
+  "cave_floor/fat_left_jackal": {
+   "deleted": true
+  },
+  "first_wave/wave_2_jackal": {
+   "deleted": true
+  },
+  "first_wave/wave_6_grunt": {
+   "deleted": true
+  },
+  "first_wave/wave_6_jackal": {
+   "deleted": true
+  },
+  "first_wave/wave_2_elite": {
+   "deleted": true
+  },
+  "first_wave/wave_6_elite": {
+   "deleted": true
+  }
+ },
+ "new_squads": [
+  {
+   "key": "added/1",
+   "palette": 2,
+   "normal": 3,
+   "insane": 4,
+   "locations": [
+    [
+     28.89,
+     -91.27,
+     58.18,
+     0
+    ]
+   ]
+  },
+  {
+   "key": "added/2",
+   "palette": 3,
+   "normal": 3,
+   "insane": 4,
+   "locations": [
+    [
+     17.28,
+     43.97,
+     60.47,
+     0
+    ]
+   ]
+  },
+  {
+   "key": "added/3",
+   "palette": 3,
+   "normal": 3,
+   "insane": 4,
+   "locations": [
+    [
+     16.86,
+     45.26,
+     60.54,
+     0
+    ]
+   ]
+  },
+  {
+   "key": "added/4",
+   "palette": 5,
+   "normal": 3,
+   "insane": 4,
+   "locations": [
+    [
+     33.12,
+     40.93,
+     62.96,
+     0
+    ]
+   ]
+  }
+ ]
+}

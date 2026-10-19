@@ -15,7 +15,10 @@ difficulty, where they start. port/n64/game/n64_campaign.c places them as
 the players come near and drives them with the simplified AI.
 """
 
+import json
+import os
 import struct
+from pathlib import Path
 
 from .repack import NONE
 from .walk import Walker
@@ -96,6 +99,33 @@ BASE_WARTHOG_CLEARANCE = 2.0
 # spawning outside the map")
 DROPPED_SQUAD_WORDS = ("banshee", "pilot", "jeep", "dropship", "driver", "gunner", "passenger", "pelican",
                        "wraith")
+# the level's edits made in tools/n64/campaign_editor.html: <map>.json in
+# N64_CAMPAIGN_EDITS (default the repository's campaign_edits folder), read
+# by Placements and encounter_table --
+#     {"map": "a30",
+#      "placements": {"<kind>:<index>": {"position": [x, y, z]} | {"deleted": true}
+#                                         | {"kept": true, ...}},
+#      "squads": {"<encounter>/<squad>": {"deleted": true} | {"kept": true}
+#                                          | {"locations": [[x, y, z, facing], ...]}
+#                                          | {"normal": n, "insane": n}},
+#      "new_squads": [{"key": "added/1", "palette": <actor palette index>,
+#                      "normal": n, "insane": n, "locations": [[x, y, z, facing], ...]}]}
+# (<index>: the placement's in its scenario block; new squads' kinds are
+# the scenario's actor palette's, actor_kinds)
+EDITS_DIR = Path(os.environ.get("N64_CAMPAIGN_EDITS", Path(__file__).resolve().parents[2] / "campaign_edits"))
+
+
+def campaign_edits(map_name):
+    """a level's edits, or {}"""
+    path = EDITS_DIR / f"{map_name}.json"
+    if not path.is_file():
+        return {}
+    edits = json.loads(path.read_text(encoding="utf-8"))
+    if edits.get("map", map_name) != map_name:
+        raise ValueError(f"{path}: edits for {edits.get('map')}, not {map_name}")
+    return edits
+
+
 # placements the N64 makes as the players come near and deletes as they go
 # (n64_campaign.c), not at the start: a30's ~300 trees and boulders took
 # ~230 KB of Halo's 256 KB of object memory, and the encounters' actors (a
@@ -124,7 +154,7 @@ class Placements:
     has them (the streamed kinds not placed at the start, the vehicles
     placed); palette_use: palette name -> the entries they use"""
 
-    def __init__(self, xmap, defs, bsp_indices):
+    def __init__(self, xmap, defs, bsp_indices, apply_edits=True):
         from .collision import CollisionBSP
         self.spaces = []
         bo = {f.name: o for o, f in defs.fields("ScenarioStructureBSP")}
@@ -144,6 +174,8 @@ class Placements:
         # every placement read: address -> (kind, palette name, its index,
         # position, its "not placed" flags)
         self.all = {}
+        # placement ids (campaign_edits: "<kind>:<index>") -> addresses
+        self.by_id = {}
         # (CAMPAIGN_WARTHOG_BESIDE: the squad the one warthog stands by)
         self.beside = CAMPAIGN_WARTHOG_BESIDE.get(xmap.name)
         thinning = {}
@@ -174,6 +206,7 @@ class Placements:
                     continue
                 name = names[index]
                 self.all[address] = (kind, name, index, position, not_placed)
+                self.by_id[f"{kind}:{i}"] = address
                 vehicle = kind == "vehicles"
                 ally = kind == "bipeds" and not CAMPAIGN_ALLIES and any(w in name.lower() for w in ALLY_WORDS)
                 if ally or (any(name.startswith(d) for d in DROPPED_PLACEMENTS) or
@@ -196,6 +229,33 @@ class Placements:
                 entries.add(index)
             self.palette_use[palette] = entries
         self.base_warthog(xmap, defs)
+        if apply_edits:
+            self.apply_edits(campaign_edits(xmap.name))
+
+    def apply_edits(self, edits):
+        """the level's edits (campaign_edits): a placement deleted, kept
+        again or moved"""
+        for pid, edit in edits.get("placements", {}).items():
+            address = self.by_id.get(pid)
+            if address is None:
+                continue
+            kind, name, index, position, not_placed = self.all[address]
+            if edit.get("deleted"):
+                self.kept.pop(address, None)
+                self.moved.pop(address, None)
+                continue
+            if edit.get("kept") and address not in self.kept:
+                if kind == "vehicles" and name not in CAMPAIGN_VEHICLES:
+                    continue
+                if any(name.startswith(d) for d in DROPPED_PLACEMENTS):
+                    continue
+                flags = not_placed & ~1
+                if kind in STREAMED_PLACEMENTS:
+                    flags |= 1
+                self.kept[address] = flags
+                self.palette_use.setdefault(PLACEMENTS[kind], set()).add(index)
+            if "position" in edit and address in self.kept:
+                self.moved[address] = tuple(float(c) for c in edit["position"][:3])
 
     def base_warthog(self, xmap, defs):
         """the one warthog, by the squad CAMPAIGN_WARTHOG_BESIDE names"""
@@ -481,7 +541,29 @@ ENCOUNTER_MAGIC = b"H64E"
 ENCOUNTER_VERSION = 1
 
 
-def encounter_table(xmap, defs, kept, inside=None):
+def actor_kinds(xmap, defs, kept):
+    """the scenario's actor palette entries a squad can be made of (their
+    unit on the cartridge): (palette index, variant name, unit name, team --
+    0 the players', 1 the Covenant's)"""
+    sf = {f.name: o for o, f in defs.fields("Scenario")}
+    ap = {f.name: o for o, f in defs.fields("ScenarioActorPalette")}
+    av = {f.name: o for o, f in defs.fields("ActorVariant")}
+    count, pointer, _ = struct.unpack("<iII", xmap.read(xmap.scenario.address + sf["actor palette"], 12))
+    out = []
+    for i in range(max(count, 0)):
+        address = pointer + i * defs.size("ScenarioActorPalette")
+        variant = xmap.tag(struct.unpack("<I", xmap.read(address + ap["reference"] + 12, 4))[0])
+        if variant is None or variant.group_name != "actv":
+            continue
+        unit = xmap.tag(struct.unpack("<I", xmap.read(variant.address + av["unit"] + 12, 4))[0])
+        if unit is None or unit.index not in kept:
+            continue
+        team = 0 if any(word in unit.name.lower() for word in ALLY_WORDS) else 1
+        out.append((i, variant.name, unit.name, team))
+    return out
+
+
+def encounter_table(xmap, defs, kept, inside=None, report=None, apply_edits=True):
     """the N64's table of the encounters' squads (big-endian):
 
         'H64E', version, actor kind count, squad count, location count
@@ -496,7 +578,9 @@ def encounter_table(xmap, defs, kept, inside=None):
     Squads with no actor kind, no count or no starting location are left
     out (Halo's scripts move actors between those), and with inside (a
     point's test: Placements.inside) those with no starting location in
-    the BSPs on the cartridge."""
+    the BSPs on the cartridge. The level's edits (campaign_edits) delete a
+    squad, keep one again or move its starting locations; report, a list,
+    gets each squad the scenario has (kept or not, and why)."""
     walker = Walker(xmap, defs)
     del walker
     sf = {f.name: o for o, f in defs.fields("Scenario")}
@@ -534,6 +618,7 @@ def encounter_table(xmap, defs, kept, inside=None):
                       weapon.datum & 0xFFFFFFFF if weapon is not None and weapon.index in kept else NONE, team,
                       unit.name))
 
+    squad_edits = campaign_edits(xmap.name).get("squads", {}) if apply_edits else {}
     squads, locations = [], []
     for e, address in enumerate(block(scenario, sf["encounters"], "ScenarioEncounter")):
         ename = xmap.read(address + ef["name"], 32).split(b"\0")[0]
@@ -547,23 +632,43 @@ def encounter_table(xmap, defs, kept, inside=None):
             starts = block(q, qf["starting locations"], "ScenarioActorStartingLocation")
             if actor not in kind_of_palette or max(normal, insane) <= 0 or not starts:
                 continue
+            key = f"{ename.decode('latin-1')}/{qname.decode('latin-1')}"
+            edit = squad_edits.get(key, {})
+            entry = {"key": key, "kind": kinds[kind_of_palette[actor]][3], "team": kinds[kind_of_palette[actor]][2],
+                     "normal": max(normal, 0), "insane": max(insane, 0), "kept": False, "reason": ""}
+            if report is not None:
+                report.append(entry)
+            if edit.get("deleted"):
+                entry["reason"] = "deleted"
+                continue
             # (the players' side: CAMPAIGN_ALLIES)
-            if not CAMPAIGN_ALLIES and kinds[kind_of_palette[actor]][2] == 0:
+            if not CAMPAIGN_ALLIES and kinds[kind_of_palette[actor]][2] == 0 and not edit.get("kept"):
+                entry["reason"] = "Marines left out"
                 continue
             # (a vehicle's crew, with no vehicle: DROPPED_SQUAD_WORDS)
-            if any(word in (ename + b" " + qname).decode("latin-1").lower() for word in DROPPED_SQUAD_WORDS):
+            if (any(word in (ename + b" " + qname).decode("latin-1").lower() for word in DROPPED_SQUAD_WORDS)
+                    and not edit.get("kept")):
+                entry["reason"] = "a vehicle's crew"
                 continue
             points = []
             for s in starts:
                 x, y, z = struct.unpack("<3f", xmap.read(s + lf["position"], 12))
                 facing = struct.unpack("<f", xmap.read(s + lf["facing"], 4))[0]
                 points.append((x, y, z, facing))
+            entry["locations"] = [list(p) for p in points]
+            if "locations" in edit:
+                points = [tuple(float(c) for c in p[:4]) for p in edit["locations"] if len(p) >= 4]
+                inside_test = None
+            else:
+                inside_test = inside
             # (only the starting locations inside: an actor comes at one in
             # turn, and one outside stood outside the map)
-            if inside is not None:
-                points = [p for p in points if inside(p[:3])]
+            if inside_test is not None:
+                points = [p for p in points if inside_test(p[:3])]
             if not points:
+                entry["reason"] = "outside the map"
                 continue
+            entry["kept"] = True
             first = len(locations)
             locations.extend(points)
             wave = 0
@@ -572,8 +677,23 @@ def encounter_table(xmap, defs, kept, inside=None):
                 digits = text[5:].split("_")[0]
                 if digits.isdigit():
                     wave = int(digits)
-            squads.append((qname[:31], ename[:31], kind_of_palette[actor], max(normal, 0), max(insane, 0),
-                           first, len(points), e, flags & 0xFFFF, wave))
+            squads.append((qname[:31], ename[:31], kind_of_palette[actor], max(int(edit.get("normal", normal)), 0),
+                           max(int(edit.get("insane", insane)), 0), first, len(points), e, flags & 0xFFFF, wave))
+
+    # the squads added in the editor (campaign_edits "new_squads"): each its
+    # own encounter (after the scenario's), no wave
+    encounter_count = len(block(scenario, sf["encounters"], "ScenarioEncounter"))
+    for n, new in enumerate(campaign_edits(xmap.name).get("new_squads", []) if apply_edits else []):
+        palette = new.get("palette")
+        points = [tuple(float(c) for c in p[:4]) for p in new.get("locations", []) if len(p) >= 4]
+        if palette not in kind_of_palette or not points:
+            continue
+        name = str(new.get("key", f"added/{n + 1}")).split("/")[-1].encode("latin-1", "replace")[:31]
+        first = len(locations)
+        locations.extend(points)
+        normal = max(int(new.get("normal", 1)), 0)
+        squads.append((name, b"added", kind_of_palette[palette], normal, max(int(new.get("insane", normal)), 0),
+                       first, len(points), encounter_count + n, 0, 0))
 
     out = bytearray(ENCOUNTER_MAGIC + struct.pack(">IIII", ENCOUNTER_VERSION, len(kinds), len(squads),
                                                     len(locations)))

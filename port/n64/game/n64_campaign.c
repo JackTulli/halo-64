@@ -155,8 +155,19 @@ of a tick); looked at every DORMANT_CHECK_TICKS */
 moved down onto it */
 #define GROUND_SEARCH 30.f
 #define PATH_LIFETIME (5 * TICKS_PER_SECOND)
-#define TICKS_BETWEEN_PATHS 2
-#define SEARCH_SURFACES_PER_TICK 40
+/* the path searches kept to the ground around an actor (the user: "the ai
+must be pathfinding the whole level ... limit them to a box around them":
+a search was bounded to 2.5 times the target's distance plus 15 units of
+path -- most of a30 -- and one or another ran nearly every tick): a search
+only for a target within PATH_SEARCH_RANGE, bounded to PATH_SEARCH_LIMIT
+units of path, given up after PATH_SEARCH_TICKS (the actor then goes
+straight for it, as with no path); one at a time, SEARCH_SURFACES_PER_TICK
+surfaces a tick, TICKS_BETWEEN_PATHS between two */
+#define PATH_SEARCH_RANGE 24.f
+#define PATH_SEARCH_LIMIT 32.f
+#define PATH_SEARCH_TICKS 12
+#define TICKS_BETWEEN_PATHS 6
+#define SEARCH_SURFACES_PER_TICK 24
 #define TICKS_BETWEEN_CHATTER (2 * TICKS_PER_SECOND)
 #define CHECKPOINT_TICKS (2 * TICKS_PER_SECOND)
 #define RESPAWN_TICKS (3 * TICKS_PER_SECOND)
@@ -256,6 +267,7 @@ static struct
 	boolean searching;
 	long search_unit;
 	real_point3d search_goal;
+	short search_ticks;
 	long last_chatter;
 	/* the checkpoint, and how long the players have all been dead */
 	boolean has_checkpoint;
@@ -273,6 +285,20 @@ static struct path_state *campaign_path_state;
 /* D-pad right's taps (xdk_input.c): each doubles the players' speed, up to
 8 times, then back to 1 (for looking round a level quickly) */
 int n64_campaign_speed_requests;
+
+/* what the campaign's AI costs (n64_game_debug_line_2, the FPS counter's
+second campaign line: the user found its live AI far dearer than
+Firefight's): the CPU's count in each part, a second at a time */
+static struct
+{
+	unsigned long think, path, tick, move_start;
+	unsigned long ticks;
+	/* the last second's, in tenths of a millisecond a tick */
+	unsigned long think_shown, path_shown, tick_shown, move_shown;
+	long window_start;
+} campaign_time;
+extern unsigned long n64_ticks(void);
+extern unsigned long n64_part_time[8];
 static int campaign_speed = 1;
 
 /* ---------- small things */
@@ -750,7 +776,19 @@ static long nearest_enemy(
 	return best;
 }
 
+static void campaign_search_work(void);
+
+/* the search's next part, timed (campaign_time.path) */
 static void campaign_search_step(
+	void)
+{
+	unsigned long start = n64_ticks();
+
+	campaign_search_work();
+	campaign_time.path += n64_ticks() - start;
+}
+
+static void campaign_search_work(
 	void)
 {
 	struct campaign_actor *actor = NULL;
@@ -774,7 +812,15 @@ static void campaign_search_step(
 		return;
 	}
 	if (!path_state_find_continue(campaign_path_state, SEARCH_SURFACES_PER_TICK, &found))
+	{
+		/* (too long: given up, the actor goes straight) */
+		if (++campaign.search_ticks > PATH_SEARCH_TICKS)
+		{
+			campaign.searching = FALSE;
+			campaign.path_cooldown = TICKS_BETWEEN_PATHS;
+		}
 		return;
+	}
 	campaign.searching = FALSE;
 	campaign.path_cooldown = TICKS_BETWEEN_PATHS;
 	if (path_state_build_path(campaign_path_state, &actor->path) && actor->path.step_count > 0)
@@ -801,6 +847,14 @@ static void plan_path(
 		(campaign.searching && campaign.search_unit == actor->unit_index))
 	{
 		return;
+	}
+	/* (a target past PATH_SEARCH_RANGE: no search, straight for it) */
+	if (search && horizontal_distance(&object_get(actor->unit_index)->object.position,
+			&object_get(target_unit)->object.position) > PATH_SEARCH_RANGE)
+	{
+		search = FALSE;
+		if (!direct)
+			return;
 	}
 	start_surface = biped_find_pathfinding_surface_index(actor->unit_index, &start);
 	goal_surface = biped_find_pathfinding_surface_index(target_unit, &goal);
@@ -835,12 +889,13 @@ static void plan_path(
 	actor->path_valid = FALSE;
 	path_input_new(&input, 0.3f, FALSE, actor->unit_index);
 	path_input_set_start(&input, &start, start_surface);
-	path_input_set_search_bounds(&input, 2.5f * distance3d(&start, &goal) + 15.f);
+	path_input_set_search_bounds(&input, MIN(2.f * distance3d(&start, &goal) + 8.f, PATH_SEARCH_LIMIT));
 	path_state_new(&input, campaign_path_state, NULL);
 	path_state_destination(campaign_path_state, &goal, goal_surface, 40.f);
 	if (!path_state_find_begin(campaign_path_state))
 		return;
 	campaign.searching = TRUE;
+	campaign.search_ticks = 0;
 	campaign.search_unit = actor->unit_index;
 	campaign.search_goal = goal;
 	campaign_search_step();
@@ -901,7 +956,8 @@ static void stand(
 }
 
 static void think(
-	struct campaign_actor *actor)
+	struct campaign_actor *actor,
+	short interval)
 {
 	struct campaign_role const *role = &roles[actor->role];
 	struct unit_datum *unit = unit_get(actor->unit_index);
@@ -916,7 +972,6 @@ static void think(
 	word flags = 0;
 	real trigger = 0.f;
 	short difficulty = actor->team == _game_team_covenant ? campaign.difficulty : 1;
-	short interval = 2;
 
 	unit_get_camera_position(actor->unit_index, &eye);
 	/* hurt: the squad fights */
@@ -1263,7 +1318,10 @@ static void campaign_checkpoints(
 			!TEST_FLAG(biped->biped.flags, _biped_airborne_bit);
 		short i;
 
-		for (i = 0; i < campaign.actor_count && safe; i++)
+		/* (the first checkpoint whatever is near: with Covenant near the
+		start none came, and a player who died before getting clear of them
+		was never put back) */
+		for (i = 0; i < campaign.actor_count && safe && campaign.has_checkpoint; i++)
 		{
 			struct campaign_actor const *actor = &campaign.actors[i];
 
@@ -1298,7 +1356,15 @@ deleted, all of them the first time. A placement with no room is tried
 again a while later (each try Halo prints "OUT OF OBJECTS") */
 #define SCENERY_NEAR 58.f
 #define SCENERY_FAR 66.f
-#define SCENERY_CHECKS_PER_TICK 64
+/* sound scenery (a river's, birds' loops) is heard far nearer than it can
+be seen: made within SOUND_SCENERY_NEAR (20 to 24 of them were alive, ~1 ms
+of a tick's object updates) */
+#define SOUND_SCENERY_NEAR 30.f
+#define SOUND_SCENERY_FAR 36.f
+/* (a30 keeps ~180 streamed placements since the thinning: a full look every
+~8 ticks, a quarter second, is plenty at a walk; 64 a tick was 0.8% of the
+processor) */
+#define SCENERY_CHECKS_PER_TICK 24
 #define SCENERY_CHANGES_PER_TICK 6
 #define SCENERY_RETRY_TICKS (2 * TICKS_PER_SECOND)
 
@@ -1434,7 +1500,10 @@ static void stream_scenery(
 				scenery.made--;
 			}
 			distance = nearest_player_squared(&placement->position, players, player_count);
-			if (*object_index == NONE && distance < SCENERY_NEAR * SCENERY_NEAR && !scenery.wait)
+			real near = streamed_types[t] == _object_type_sound_scenery ? SOUND_SCENERY_NEAR : SCENERY_NEAR;
+			real far = streamed_types[t] == _object_type_sound_scenery ? SOUND_SCENERY_FAR : SCENERY_FAR;
+
+			if (*object_index == NONE && distance < near * near && !scenery.wait)
 			{
 				*object_index = object_new_from_scenario(placement, palette);
 				if (*object_index != NONE)
@@ -1443,7 +1512,7 @@ static void stream_scenery(
 					scenery.wait = SCENERY_RETRY_TICKS;
 				changes++;
 			}
-			else if (*object_index != NONE && distance > SCENERY_FAR * SCENERY_FAR)
+			else if (*object_index != NONE && distance > far * far)
 			{
 				object_delete(*object_index);
 				*object_index = NONE;
@@ -1521,7 +1590,51 @@ int n64_campaign_active(
 }
 
 /* a tick, before the game's own */
+static void campaign_tick_body(void);
+
 void n64_campaign_tick(
+	void)
+{
+	unsigned long start = n64_ticks();
+
+	campaign_tick_body();
+	campaign_time.tick += n64_ticks() - start;
+	campaign_time.ticks++;
+	/* a second's averages, in tenths of a ms a tick; the movement is
+	bipeds.c's count (n64_part_time[4]: every biped's biped_update_moving,
+	the players' too) */
+	if (game_time_get() - campaign_time.window_start >= TICKS_PER_SECOND)
+	{
+		unsigned long per = N64_TICKS_PER_SECOND / 10000UL * campaign_time.ticks;
+
+		if (per)
+		{
+			campaign_time.think_shown = campaign_time.think / per;
+			campaign_time.path_shown = campaign_time.path / per;
+			campaign_time.tick_shown = campaign_time.tick / per;
+			campaign_time.move_shown = (n64_part_time[4] - campaign_time.move_start) / per;
+		}
+		/* (the log too, every five seconds, with "debug_stats") */
+		if (!(game_time_get() % (5 * TICKS_PER_SECOND) < TICKS_PER_SECOND) || !n64_debug_flag("debug_stats"))
+			;
+		else
+		{
+			char line[96];
+
+			snprintf(line, sizeof(line), "campaign: ai %lu.%lu think %lu.%lu path %lu.%lu move %lu.%lu ms a tick, %d actors",
+				campaign_time.tick_shown / 10, campaign_time.tick_shown % 10, campaign_time.think_shown / 10,
+				campaign_time.think_shown % 10, campaign_time.path_shown / 10, campaign_time.path_shown % 10,
+				campaign_time.move_shown / 10, campaign_time.move_shown % 10, campaign.actor_count);
+			n64_log(line);
+		}
+		campaign_time.think = campaign_time.path = campaign_time.tick = 0;
+		campaign_time.ticks = 0;
+		campaign_time.move_start = n64_part_time[4];
+		campaign_time.window_start = game_time_get();
+	}
+}
+
+static void campaign_tick_body(
 	void)
 {
 	short i;
@@ -1622,12 +1735,51 @@ void n64_campaign_tick(
 	if (campaign.path_cooldown > 0)
 		campaign.path_cooldown--;
 	campaign_search_step();
-	/* each actor thinks every other tick (half of them each tick) */
+	/* each actor thinks every other tick, every third with five or more
+	(Firefight's rule: the user found the campaign's AI dearer than
+	Firefight's), every fourth with ANIMATIONS HALF RATE; staggered, its
+	timers counting the ticks between */
+	{
+		extern int n64_half_animation_rate;
+		short interval = n64_half_animation_rate ? 4 : campaign.actor_count >= 5 ? 3 : 2;
+
+		for (i = 0; i < campaign.actor_count; i++)
+		{
+			if ((game_time_get() + i) % interval == 0)
+			{
+				unsigned long start = n64_ticks();
+
+				think(&campaign.actors[i], interval);
+				campaign_time.think += n64_ticks() - start;
+			}
+		}
+	}
+}
+
+/* bipeds.c's (biped_update, by way of n64_bots.c n64_bot_move_interval): a
+campaign actor more than CAMPAIGN_FULL_MOVE_DISTANCE from every living
+player moves and runs its physics every other tick, twice as far (the bots'
+way); near one, every tick. Its movement and physics were ~6.5 ms of a
+fight's tick (a profile, 2026-10-16) */
+#define CAMPAIGN_FULL_MOVE_DISTANCE 8.f
+int n64_campaign_move_interval(
+	long unit_index)
+{
+	real distance, height;
+	short i;
+
+	if (!campaign.active)
+		return 1;
 	for (i = 0; i < campaign.actor_count; i++)
 	{
-		if ((game_time_get() + i) % 2 == 0)
-			think(&campaign.actors[i]);
+		if (campaign.actors[i].unit_index == unit_index)
+			break;
 	}
+	if (i == campaign.actor_count)
+		return 1;
+	if (nearest_player(&object_get(unit_index)->object.position, &distance, &height) == NONE)
+		return 2;
+	return distance > CAMPAIGN_FULL_MOVE_DISTANCE ? 2 : 1;
 }
 
 /* the HUD's and the pause menu's line (n64_render_game.c, n64_game.c) */
@@ -1648,6 +1800,29 @@ int n64_campaign_status(
 /* the FPS counter's line of the game's own (n64_render.c draw_counter): a
 campaign's objects, the share of Halo's object memory in use, its actors
 and the scenery near the players. 0: none (the multiplayer cartridge) */
+/* the FPS counter's second campaign line: the AI's costs, ms a tick (AI:
+the campaign's whole tick; THINK: the actors' minds; PATH: the path
+searches; MOVE: every biped's movement and physics) */
+int n64_game_debug_line_2(
+	char *text,
+	int size)
+{
+#ifdef HALO_N64_CAMPAIGN
+	if (!campaign.active || !game_in_progress())
+		return 0;
+	snprintf(text, size, "AI %lu.%lu THINK %lu.%lu PATH %lu.%lu MOVE %lu.%lu",
+		campaign_time.tick_shown / 10, campaign_time.tick_shown % 10,
+		campaign_time.think_shown / 10, campaign_time.think_shown % 10,
+		campaign_time.path_shown / 10, campaign_time.path_shown % 10,
+		campaign_time.move_shown / 10, campaign_time.move_shown % 10);
+	return 1;
+#else
+	(void)text;
+	(void)size;
+	return 0;
+#endif
+}
+
 int n64_game_debug_line(
 	char *text,
 	int size)

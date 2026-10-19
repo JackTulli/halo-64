@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Halo 64 Level Editor</title>
+<!--
+The campaign level editor (tools/n64/campaign_editor.py makes its data):
+a top-down view of a campaign level's ground with the placements and the
+encounters' squads the N64 keeps or leaves out; drag them, delete them or
+keep them again, and save the edits as campaign_edits/<map>.json, which the
+campaign's conversion reads (tools/n64/campaign.py campaign_edits).
+Open this file in a browser; no server, nothing to install.
+-->
+<style>
+  :root {
+    --bg: #101418; --panel: #171c22; --panel-2: #1e252d; --line: #2c353f;
+    --text: #e3e8ee; --muted: #8b97a5; --accent: #7cc4ff; --warn: #f2994a;
+    --enemy: #eb5757; --ally: #56a8f5; --weapon: #f2c94c; --equip: #6fcf97;
+    --vehicle: #56ccf2; --scenery: #9aa0a6; --device: #bb6bd9; --start: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; height: 100vh; overflow: hidden; }
+  #side { width: 320px; min-width: 260px; background: var(--panel); border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; overflow: hidden; }
+  #side header { padding: 12px 14px 8px; border-bottom: 1px solid var(--line); }
+  #side h1 { font-size: 15px; margin: 0 0 2px; letter-spacing: .02em; }
+  #side .sub { color: var(--muted); font-size: 12px; }
+  .section { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .section h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+    margin: 0 0 8px; font-weight: 600; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+  button, label.button { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+  button:hover, label.button:hover { border-color: var(--accent); }
+  button.primary { background: #1f4e78; border-color: #2f6ea3; }
+  button:disabled { opacity: .45; cursor: default; }
+  input[type=file] { display: none; }
+  .layers { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+  .layers label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+  #selection .row { display: flex; justify-content: space-between; gap: 8px; }
+  #selection .row span:first-child { color: var(--muted); }
+  #selection .name { font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+  .note { color: var(--warn); font-size: 12px; margin-top: 4px; }
+  #lists { flex: 1; overflow: auto; padding: 6px 0; }
+  .item { padding: 4px 14px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+  .item:hover { background: var(--panel-2); }
+  .item.selected { background: #22384d; }
+  .item.off { opacity: .45; text-decoration: line-through; }
+  .item .meta { color: var(--muted); margin-left: auto; font-size: 12px; white-space: nowrap; }
+  #foot { padding: 10px 14px; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: center; }
+  #status { color: var(--muted); font-size: 12px; margin-right: auto; }
+  #stage { flex: 1; position: relative; }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  #hud { position: absolute; left: 10px; bottom: 10px; background: rgba(16,20,24,.8); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font: 12px ui-monospace, Consolas, monospace; color: var(--muted);
+    pointer-events: none; }
+  #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  #empty .card { max-width: 560px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 20px; }
+  #empty h2 { margin: 0 0 8px; font-size: 16px; }
+  #empty ol { padding-left: 18px; margin: 8px 0; }
+  #empty code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  #help { color: var(--muted); font-size: 12px; }
+  .addrow { display: flex; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+  .addrow label { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
+  select, input[type=number] { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 6px; font: inherit; }
+  select { width: 100%; }
+  input[type=number] { width: 52px; }
+  .counts { display: flex; align-items: center; gap: 4px; }
+  .counts button { padding: 0 7px; }
+  @media (max-width: 720px) { body { flex-direction: column; } #side { width: 100%; height: 45vh; } }
+</style>
+</head>
+<body>
+<div id="side">
+  <header>
+    <h1>Halo 64 Level Editor</h1>
+    <div class="sub" id="mapname">No level loaded</div>
+  </header>
+  <div class="section">
+    <div class="buttons">
+      <label class="button">Load level…<input type="file" id="levelFile" accept=".json"></label>
+      <label class="button">Load edits…<input type="file" id="editsFile" accept=".json"></label>
+    </div>
+  </div>
+  <div class="section">
+    <h2>Show</h2>
+    <div class="layers" id="layers"></div>
+  </div>
+  <div class="section">
+    <h2>Add a squad</h2>
+    <div class="addrow"><select id="addKind"></select></div>
+    <div class="addrow">
+      <label>easy/normal <input type="number" id="addNormal" min="0" max="20" value="3"></label>
+      <label>heroic/legendary <input type="number" id="addInsane" min="0" max="20" value="4"></label>
+    </div>
+    <div class="buttons"><button id="addSquad" disabled>Add at the middle of the view</button></div>
+  </div>
+  <div class="section" id="selectionBox">
+    <h2>Selected</h2>
+    <div id="selection"><span class="sub">Click an item or a squad's point.</span></div>
+  </div>
+  <div id="lists"></div>
+  <div id="foot">
+    <span id="status">Nothing changed</span>
+    <button id="resetAll" disabled>Reset all</button>
+    <button id="save" class="primary" disabled>Save edits</button>
+  </div>
+</div>
+<div id="stage">
+  <canvas id="view"></canvas>
+  <div id="hud"></div>
+  <div id="empty"><div class="card">
+    <h2>Load a campaign level</h2>
+    <ol>
+      <li>Make the level's data in Ubuntu, from the repository:<br>
+        <code>python3 -m tools.n64.campaign_editor build/xbox/disc/maps/a30.map -o a30-level.json</code></li>
+      <li><b>Load level…</b> that file (or drop it here). Load an earlier <b>edits</b> file to go on with it.</li>
+      <li>Drag items and squad points; <b>Delete</b> removes the selected one, <b>Keep</b> brings back one the
+        converter left out. Shift-drag moves a whole squad. <b>Add a squad</b> puts a new one in the middle of
+        the view: drag it where it goes, add points to it, set its counts.</li>
+      <li><b>Save edits</b> as <code>campaign_edits/a30.json</code> in the repository, then rebuild:
+        <code>~/n64/tools/build.sh</code>.</li>
+    </ol>
+    <div id="help">Drag empty ground to pan, wheel to zoom. Orange rings mark points high above the ground or
+      under it.</div>
+  </div></div>
+</div>
+<script>
+"use strict";
+const LAYERS = [
+  ["enemies", "Covenant", "--enemy"], ["allies", "Marines", "--ally"],
+  ["weapons", "Weapons", "--weapon"], ["equipment", "Pickups", "--equip"],
+  ["vehicles", "Vehicles", "--vehicle"], ["scenery", "Scenery", "--scenery"],
+  ["devices", "Devices", "--device"], ["removed", "Removed", "--muted"],
+];
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const canvas = document.getElementById("view"), ctx = canvas.getContext("2d");
+let level = null, edits = null, grid = null, ground = null, fileHandle = null;
+let view = { cx: 0, cy: 0, scale: 1 };
+let layers = { enemies: true, allies: false, weapons: true, equipment: true, vehicles: true, scenery: true,
+               devices: true, removed: false };
+let selected = null, drag = null, hover = null;
+
+// ---------- the layers' checkboxes
+const layerBox = document.getElementById("layers");
+for (const [key, label, colour] of LAYERS) {
+  const el = document.createElement("label");
+  el.innerHTML = `<input type="checkbox" ${layers[key] ? "checked" : ""}><span class="dot" style="background:var(${colour})"></span>${label}`;
+  el.querySelector("input").addEventListener("change", e => { layers[key] = e.target.checked; renderLists(); draw(); });
+  layerBox.appendChild(el);
+}
+
+// ---------- loading
+function readFile(file) { return file.text().then(t => JSON.parse(t)); }
+document.getElementById("levelFile").addEventListener("change", e => e.target.files[0] && readFile(e.target.files[0]).then(loadLevel).catch(fail));
+document.getElementById("editsFile").addEventListener("change", e => e.target.files[0] && readFile(e.target.files[0]).then(loadEdits).catch(fail));
+document.getElementById("stage").addEventListener("dragover", e => e.preventDefault());
+document.getElementById("stage").addEventListener("drop", e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file) readFile(file).then(data => data.vertices ? loadLevel(data) : loadEdits(data)).catch(fail);
+});
+function fail(error) { alert("Could not read that file: " + error.message); }
+
+function loadLevel(data) {
+  if (!data.vertices || !data.triangles || !data.placements) throw new Error("not a level file from campaign_editor.py");
+  level = data;
+  edits = { map: data.map, placements: {}, squads: {}, new_squads: [] };
+  try {
+    const draft = localStorage.getItem("halo64-edits-" + data.map);
+    if (draft && confirm("Go on with the edits you had not saved for " + data.map + "?")) edits = JSON.parse(draft);
+  } catch (error) { /* (no storage: a fresh start) */ }
+  edits.new_squads = edits.new_squads || [];
+  fillKinds();
+  fileHandle = null;
+  document.getElementById("empty").style.display = "none";
+  document.getElementById("mapname").textContent = `${data.map}: ${data.squads.filter(s => s.kept).length} squads, ` +
+    `${data.placements.filter(p => p.kept).length} placements kept`;
+  buildGround();
+  const [x0, y0, , x1, y1] = data.bounds;
+  view.cx = (x0 + x1) / 2; view.cy = (y0 + y1) / 2;
+  view.scale = Math.min(canvas.clientWidth / (x1 - x0), canvas.clientHeight / (y1 - y0)) * 0.95;
+  selected = null;
+  renderLists(); renderSelection(); changed(false);
+  draw();
+}
+
+function loadEdits(data) {
+  if (!level) throw new Error("load the level first");
+  if (data.map && data.map !== level.map) throw new Error(`these edits are for ${data.map}, not ${level.map}`);
+  edits = { map: level.map, placements: data.placements || {}, squads: data.squads || {},
+            new_squads: data.new_squads || [] };
+  renderLists(); renderSelection(); changed(false);
+  draw();
+}
+
+// ---------- the ground: drawn once into an image; heights through a grid
+function buildGround() {
+  const v = level.vertices, t = level.triangles, [x0, y0, , x1, y1] = level.bounds;
+  // (coloured across the ground's own heights, not the shell's)
+  const [z0, z1] = level.zrange || [level.bounds[2], level.bounds[5]];
+  const tris = [];
+  for (let i = 0; i < t.length; i += 3) {
+    const a = t[i] * 3, b = t[i + 1] * 3, c = t[i + 2] * 3;
+    const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2];
+    const wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
+    const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    tris.push({ a, b, c, z: (v[a + 2] + v[b + 2] + v[c + 2]) / 3, nz: Math.abs(nz / len) });
+  }
+  tris.sort((p, q) => p.z - q.z);
+  const size = 4096, span = Math.max(x1 - x0, y1 - y0), s = size / span;
+  const off = document.createElement("canvas");
+  off.width = Math.ceil((x1 - x0) * s); off.height = Math.ceil((y1 - y0) * s);
+  const g = off.getContext("2d");
+  const stops = [[0, [31, 58, 52]], [0.35, [72, 112, 62]], [0.65, [150, 140, 100]], [1, [226, 220, 204]]];
+  for (const tri of tris) {
+    const h = (tri.z - z0) / Math.max(1, z1 - z0);
+    let k = 1;
+    while (k < stops.length - 1 && h > stops[k][0]) k++;
+    const [h0, c0] = stops[k - 1], [h1, c1] = stops[k], f = Math.min(1, Math.max(0, (h - h0) / (h1 - h0)));
+    const shade = 0.5 + 0.5 * tri.nz;
+    const rgb = c0.map((c, i) => Math.round((c + (c1[i] - c) * f) * shade));
+    g.fillStyle = g.strokeStyle = `rgb(${rgb})`;
+    g.beginPath();
+    g.moveTo((v[tri.a] - x0) * s, (y1 - v[tri.a + 1]) * s);
+    g.lineTo((v[tri.b] - x0) * s, (y1 - v[tri.b + 1]) * s);
+    g.lineTo((v[tri.c] - x0) * s, (y1 - v[tri.c + 1]) * s);
+    g.closePath(); g.fill(); g.lineWidth = 0.6; g.stroke();
+  }
+  ground = { image: off, x0, y1, s };
+  // (a grid of 4-unit cells listing the triangles over each)
+  const cell = 4, cols = Math.ceil((x1 - x0) / cell) + 1, rows = Math.ceil((y1 - y0) / cell) + 1;
+  const cells = Array.from({ length: cols * rows }, () => []);
+  for (let i = 0; i < t.length; i += 3) {
+    const a = t[i] * 3, b = t[i + 1] * 3, c = t[i + 2] * 3;
+    const cx0 = Math.floor((Math.min(v[a], v[b], v[c]) - x0) / cell), cx1 = Math.floor((Math.max(v[a], v[b], v[c]) - x0) / cell);
+    const cy0 = Math.floor((Math.min(v[a + 1], v[b + 1], v[c + 1]) - y0) / cell), cy1 = Math.floor((Math.max(v[a + 1], v[b + 1], v[c + 1]) - y0) / cell);
+    for (let y = cy0; y <= cy1; y++) for (let x = cx0; x <= cx1; x++) cells[y * cols + x].push(i);
+  }
+  grid = { cell, cols, rows, cells, x0, y0 };
+}
+
+// the heights of the ground at (x, y), every surface over it
+function heightsAt(x, y) {
+  const v = level.vertices, t = level.triangles;
+  const cx = Math.floor((x - grid.x0) / grid.cell), cy = Math.floor((y - grid.y0) / grid.cell);
+  if (cx < 0 || cy < 0 || cx >= grid.cols || cy >= grid.rows) return [];
+  const out = [];
+  for (const i of grid.cells[cy * grid.cols + cx]) {
+    const a = t[i] * 3, b = t[i + 1] * 3, c = t[i + 2] * 3;
+    const d = (v[b + 1] - v[c + 1]) * (v[a] - v[c]) + (v[c] - v[b]) * (v[a + 1] - v[c + 1]);
+    if (Math.abs(d) < 1e-9) continue;
+    const l1 = ((v[b + 1] - v[c + 1]) * (x - v[c]) + (v[c] - v[b]) * (y - v[c + 1])) / d;
+    const l2 = ((v[c + 1] - v[a + 1]) * (x - v[c]) + (v[a] - v[c]) * (y - v[c + 1])) / d;
+    const l3 = 1 - l1 - l2;
+    if (l1 >= -1e-4 && l2 >= -1e-4 && l3 >= -1e-4) out.push(l1 * v[a + 2] + l2 * v[b + 2] + l3 * v[c + 2]);
+  }
+  return out;
+}
+// the ground under a point: the highest surface at most half a unit above it
+function groundBelow(x, y, z) {
+  let best = null;
+  for (const h of heightsAt(x, y)) if (h <= z + 0.5 && (best === null || h > best)) best = h;
+  return best;
+}
+// the ground nearest to a height (a moved point keeps to its own level)
+function groundNear(x, y, z) {
+  let best = null;
+  for (const h of heightsAt(x, y)) if (best === null || Math.abs(h - z) < Math.abs(best - z)) best = h;
+  return best;
+}
+
+// ---------- the items: placements and squads as the edits leave them
+function placementState(p) {
+  const e = edits.placements[p.id] || {};
+  const kept = e.deleted ? false : (p.kept || !!e.kept);
+  return { kept, position: e.position || p.position, edited: !!edits.placements[p.id] };
+}
+// (a squad added here: one of edits.new_squads, its kind an actor palette entry)
+function isNew(s) { return edits.new_squads.includes(s); }
+function kindRecord(s) { return (level.kinds || []).find(k => k.palette === s.palette) || { name: "?", unit: "?", team: 1 }; }
+function kindOf(s) { return isNew(s) ? kindRecord(s).unit : s.kind; }
+function teamOf(s) { return isNew(s) ? kindRecord(s).team : s.team; }
+function allSquads() { return level.squads.concat(edits.new_squads); }
+function squadState(s) {
+  if (isNew(s)) return { kept: true, locations: s.locations, edited: true, normal: s.normal, insane: s.insane };
+  const e = edits.squads[s.key] || {};
+  const kept = e.deleted ? false : (s.kept || (!!e.kept && s.locations.length > 0));
+  return { kept, locations: e.locations || s.locations, edited: !!edits.squads[s.key],
+           normal: e.normal !== undefined ? e.normal : s.normal, insane: e.insane !== undefined ? e.insane : s.insane };
+}
+function layerOf(p) {
+  if (p.kind === "weapons") return "weapons";
+  if (p.kind === "equipment") return "equipment";
+  if (p.kind === "vehicles") return "vehicles";
+  if (p.kind === "scenery") return "scenery";
+  if (p.kind === "bipeds") return "allies";
+  return "devices";
+}
+const colourOf = { enemies: "--enemy", allies: "--ally", weapons: "--weapon", equipment: "--equip",
+                   vehicles: "--vehicle", scenery: "--scenery", devices: "--device" };
+function visiblePlacement(p) { const st = placementState(p); return layers[layerOf(p)] && (st.kept || layers.removed); }
+function visibleSquad(s) { const st = squadState(s); return layers[teamOf(s) === 0 ? "allies" : "enemies"] && (st.kept || layers.removed); }
+
+// how far a point is above the ground below it (null: no ground)
+function gap(x, y, z) { const g = groundBelow(x, y, z); return g === null ? null : z - g; }
+function odd(x, y, z) { const d = gap(x, y, z); return d === null || d > 2 || d < -0.5; }
+
+// ---------- drawing
+function toScreen(x, y) { return [(x - view.cx) * view.scale + canvas.width / 2 / devicePixelRatio,
+                                   (view.cy - y) * view.scale + canvas.height / 2 / devicePixelRatio]; }
+function toWorld(sx, sy) { return [(sx - canvas.width / 2 / devicePixelRatio) / view.scale + view.cx,
+                                    view.cy - (sy - canvas.height / 2 / devicePixelRatio) / view.scale]; }
+
+function markers() {
+  // every drawn point: {kind: "placement"|"squad", ref, index, x, y, z, r, colour, kept}
+  const out = [];
+  if (!level) return out;
+  for (const p of level.placements) {
+    if (!visiblePlacement(p)) continue;
+    const st = placementState(p), layer = layerOf(p);
+    const r = layer === "vehicles" ? 8 : layer === "scenery" ? 3.5 : 5;
+    out.push({ kind: "placement", ref: p, x: st.position[0], y: st.position[1], z: st.position[2], r,
+               colour: css(colourOf[layer]), kept: st.kept });
+  }
+  for (const s of allSquads()) {
+    if (!visibleSquad(s)) continue;
+    const st = squadState(s);
+    st.locations.forEach((l, i) => out.push({ kind: "squad", ref: s, index: i, x: l[0], y: l[1], z: l[2], r: 4.5,
+      colour: css(teamOf(s) === 0 ? "--ally" : "--enemy"), kept: st.kept }));
+  }
+  return out;
+}
+
+function draw() {
+  const w = canvas.clientWidth, h = canvas.clientHeight, dpr = devicePixelRatio || 1;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, w, h);
+  if (!level) return;
+  const [gx, gy] = toScreen(ground.x0, ground.y1);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(ground.image, gx, gy, ground.image.width / ground.s * view.scale, ground.image.height / ground.s * view.scale);
+
+  // squads: a faint line from each point to the squad's middle, its label
+  for (const s of allSquads()) {
+    if (!visibleSquad(s)) continue;
+    const st = squadState(s);
+    if (!st.locations.length) continue;
+    const mx = st.locations.reduce((a, l) => a + l[0], 0) / st.locations.length;
+    const my = st.locations.reduce((a, l) => a + l[1], 0) / st.locations.length;
+    const [sx, sy] = toScreen(mx, my);
+    ctx.strokeStyle = st.kept ? "rgba(235,87,87,.35)" : "rgba(160,160,160,.25)";
+    if (teamOf(s) === 0) ctx.strokeStyle = "rgba(86,168,245,.35)";
+    ctx.lineWidth = 1;
+    for (const l of st.locations) { const [lx, ly] = toScreen(l[0], l[1]); ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(lx, ly); ctx.stroke(); }
+    if (view.scale > 2.2 || (selected && selected.ref === s)) {
+      ctx.font = "11px system-ui, sans-serif"; ctx.fillStyle = st.kept ? "#fff" : "#999";
+      ctx.fillText(`${kindOf(s)} ×${st.normal}/${st.insane}`, sx + 6, sy - 6);
+    }
+  }
+  for (const m of markers()) {
+    const [sx, sy] = toScreen(m.x, m.y);
+    if (sx < -20 || sy < -20 || sx > w + 20 || sy > h + 20) continue;
+    ctx.globalAlpha = m.kept ? 1 : 0.4;
+    ctx.beginPath(); ctx.arc(sx, sy, m.r, 0, Math.PI * 2);
+    ctx.fillStyle = m.kept ? m.colour : "transparent"; ctx.fill();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = m.kept ? "rgba(0,0,0,.6)" : m.colour; ctx.stroke();
+    if (!m.kept) { ctx.beginPath(); ctx.moveTo(sx - m.r, sy - m.r); ctx.lineTo(sx + m.r, sy + m.r); ctx.stroke(); }
+    if (m.kept && m.kind !== "placement" || m.ref.kind === "vehicles" || m.ref.kind === "weapons" || m.ref.kind === "equipment") {
+      if (odd(m.x, m.y, m.z)) { ctx.beginPath(); ctx.arc(sx, sy, m.r + 4, 0, Math.PI * 2); ctx.strokeStyle = css("--warn"); ctx.lineWidth = 2; ctx.stroke(); }
+    }
+    const isSelected = selected && selected.ref === m.ref && (m.kind !== "squad" || selected.kind !== "squad" || true);
+    if (isSelected) { ctx.beginPath(); ctx.arc(sx, sy, m.r + 7, 0, Math.PI * 2); ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke(); }
+    ctx.globalAlpha = 1;
+  }
+  // the players' starts
+  for (const st of level.starts) {
+    const [sx, sy] = toScreen(st[0], st[1]);
+    ctx.fillStyle = css("--start"); ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? 3.5 : 8;
+      ctx.lineTo(sx + r * Math.cos(a), sy + r * Math.sin(a));
+    }
+    ctx.closePath(); ctx.fill(); ctx.strokeStyle = "#000"; ctx.lineWidth = 1; ctx.stroke();
+  }
+}
+
+// ---------- the pointer: select, drag, pan, zoom
+function hit(sx, sy) {
+  const all = markers();
+  for (let i = all.length - 1; i >= 0; i--) {
+    const [mx, my] = toScreen(all[i].x, all[i].y);
+    if (Math.hypot(mx - sx, my - sy) <= all[i].r + 3) return all[i];
+  }
+  return null;
+}
+canvas.addEventListener("mousedown", e => {
+  if (!level) return;
+  const r = canvas.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top;
+  const m = e.button === 0 ? hit(sx, sy) : null;
+  if (m) {
+    selected = { kind: m.kind, ref: m.ref, index: m.index };
+    drag = { mode: e.shiftKey && m.kind === "squad" ? "squad" : "item", start: toWorld(sx, sy), moved: false,
+             original: m.kind === "squad" ? squadState(m.ref).locations.map(l => l.slice()) : placementState(m.ref).position.slice() };
+    renderSelection(); renderLists();
+  } else {
+    drag = { mode: "pan", sx, sy, cx: view.cx, cy: view.cy };
+  }
+  canvas.classList.add("dragging");
+  draw();
+});
+window.addEventListener("mousemove", e => {
+  if (!level) return;
+  const r = canvas.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top;
+  const [wx, wy] = toWorld(sx, sy);
+  const hs = heightsAt(wx, wy);
+  document.getElementById("hud").textContent =
+    `x ${wx.toFixed(1)}  y ${wy.toFixed(1)}  ground ${hs.length ? Math.max(...hs).toFixed(1) : "—"}  zoom ${view.scale.toFixed(2)} px/unit`;
+  if (!drag) return;
+  if (drag.mode === "pan") {
+    view.cx = drag.cx - (sx - drag.sx) / view.scale; view.cy = drag.cy + (sy - drag.sy) / view.scale;
+  } else {
+    const dx = wx - drag.start[0], dy = wy - drag.start[1];
+    drag.moved = drag.moved || Math.hypot(dx, dy) * view.scale > 2;
+    if (!drag.moved) return;
+    moveSelected(dx, dy, false);
+  }
+  draw();
+});
+window.addEventListener("mouseup", () => {
+  if (drag && drag.mode !== "pan" && drag.moved) {
+    const [dx, dy] = drag.last || [0, 0];
+    moveSelected(dx, dy, true);
+  }
+  drag = null; canvas.classList.remove("dragging"); draw();
+});
+canvas.addEventListener("wheel", e => {
+  if (!level) return;
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top;
+  const before = toWorld(sx, sy);
+  view.scale = Math.min(80, Math.max(0.2, view.scale * Math.exp(-e.deltaY * 0.0015)));
+  const after = toWorld(sx, sy);
+  view.cx += before[0] - after[0]; view.cy += before[1] - after[1];
+  draw();
+}, { passive: false });
+
+// moving: x and y follow the pointer, the height the ground at the same level
+function moveSelected(dx, dy, final) {
+  drag.last = [dx, dy];
+  const s = selected;
+  if (s.kind === "placement") {
+    const o = drag.original, x = o[0] + dx, y = o[1] + dy;
+    const below = groundBelow(o[0], o[1], o[2]), lift = below === null ? 0 : Math.min(1, Math.max(0, o[2] - below));
+    const g = groundNear(x, y, below === null ? o[2] : below);
+    const z = g === null ? o[2] : g + lift;
+    const e = edits.placements[s.ref.id] = Object.assign({}, edits.placements[s.ref.id] || {});
+    e.position = [round(x), round(y), round(z)];
+    if (!s.ref.kept) e.kept = true;
+  } else {
+    const locations = drag.original.map((l, i) => {
+      if (drag.mode !== "squad" && i !== s.index) return l.slice();
+      const x = l[0] + dx, y = l[1] + dy, g = groundNear(x, y, l[2]);
+      return [round(x), round(y), round(g === null ? l[2] : g + 0.1), l[3]];
+    });
+    if (isNew(s.ref)) s.ref.locations = locations;
+    else {
+      const e = edits.squads[s.ref.key] = Object.assign({}, edits.squads[s.ref.key] || {});
+      e.locations = locations;
+    }
+  }
+  if (final) { renderSelection(); renderLists(); changed(true); }
+}
+function round(v) { return Math.round(v * 100) / 100; }
+
+// ---------- the side panel
+function renderSelection() {
+  const box = document.getElementById("selection");
+  if (!selected || !level) { box.innerHTML = '<span class="sub">Click an item or a squad\'s point.</span>'; return; }
+  const s = selected, rows = [];
+  let title, kept, edited, point, buttons = "", extra = "";
+  if (s.kind === "placement") {
+    const st = placementState(s.ref);
+    title = s.ref.name; kept = st.kept; edited = st.edited; point = st.position;
+    rows.push(["kind", s.ref.kind], ["id", s.ref.id]);
+    if (!s.ref.keepable) rows.push(["", "not on the N64 (its tags are left out)"]);
+    buttons = kept ? '<button data-act="delete">Delete</button>'
+                   : (s.ref.keepable ? '<button data-act="keep">Keep</button>' : "");
+  } else {
+    const st = squadState(s.ref);
+    title = s.ref.key + (isNew(s.ref) ? " (added)" : ""); kept = st.kept; edited = st.edited && !isNew(s.ref);
+    point = st.locations[s.index];
+    rows.push(["kind", `${kindOf(s.ref)} (${teamOf(s.ref) === 0 ? "Marines" : "Covenant"})`],
+              ["point", `${s.index + 1} of ${st.locations.length}`]);
+    if (!isNew(s.ref) && !s.ref.kept && s.ref.reason) rows.push(["left out", s.ref.reason]);
+    extra = `<div class="row"><span>easy/normal</span><span class="counts"><button data-act="normal-">−</button>${st.normal}` +
+      `<button data-act="normal+">+</button></span></div>` +
+      `<div class="row"><span>heroic/legendary</span><span class="counts"><button data-act="insane-">−</button>${st.insane}` +
+      `<button data-act="insane+">+</button></span></div>`;
+    if (isNew(s.ref)) {
+      extra += `<div class="addrow" style="margin-top:6px"><select data-act="kind">` +
+        (level.kinds || []).map(k => `<option value="${k.palette}" ${k.palette === s.ref.palette ? "selected" : ""}>` +
+          `${escapeHtml(k.unit)} — ${escapeHtml(k.name)}</option>`).join("") + `</select></div>`;
+    }
+    buttons = kept ? '<button data-act="delete">Delete squad</button>' : '<button data-act="keep">Keep squad</button>';
+    if (kept) buttons += ' <button data-act="addpoint">Add a point</button>' +
+      (st.locations.length > 1 ? ' <button data-act="removepoint">Remove this point</button>' : "");
+  }
+  if (point) {
+    rows.push(["position", point.slice(0, 3).map(c => c.toFixed(1)).join(", ")]);
+    const d = gap(point[0], point[1], point[2]);
+    rows.push(["above ground", d === null ? "no ground below" : d.toFixed(1)]);
+  }
+  if (edited) buttons += ' <button data-act="reset">Undo changes</button>';
+  const warn = point && odd(point[0], point[1], point[2]) ? '<div class="note">High above the ground, or under it: it may fall or start inside it.</div>' : "";
+  box.innerHTML = `<div class="name">${escapeHtml(title)}${kept ? "" : " — removed"}</div>` +
+    rows.map(([k, v]) => `<div class="row"><span>${k}</span><span>${escapeHtml(String(v))}</span></div>`).join("") +
+    extra + warn + `<div class="buttons" style="margin-top:8px">${buttons}</div>`;
+  box.querySelectorAll("button").forEach(b => b.addEventListener("click", () => act(b.dataset.act)));
+  box.querySelectorAll("select[data-act=kind]").forEach(el => el.addEventListener("change", () => {
+    s.ref.palette = Number(el.value); renderSelection(); renderLists(); changed(true); draw();
+  }));
+}
+function act(what) {
+  const s = selected;
+  if (s.kind === "squad" && (what.startsWith("normal") || what.startsWith("insane") || what.endsWith("point")
+      || (isNew(s.ref) && what === "delete"))) {
+    squadAct(what);
+  } else {
+    const table = s.kind === "placement" ? edits.placements : edits.squads, key = s.kind === "placement" ? s.ref.id : s.ref.key;
+    if (what === "reset") delete table[key];
+    else if (what === "delete") table[key] = { deleted: true };
+    else if (what === "keep") { const e = Object.assign({}, table[key] || {}); delete e.deleted; e.kept = true; table[key] = e; }
+  }
+  renderSelection(); renderLists(); changed(true); draw();
+}
+// a squad's counts and points (the level's: in its edit; an added one: itself)
+function squadAct(what) {
+  const s = selected, st = squadState(s.ref);
+  const target = isNew(s.ref) ? s.ref : (edits.squads[s.ref.key] = Object.assign({}, edits.squads[s.ref.key] || {}));
+  if (what === "delete") { edits.new_squads.splice(edits.new_squads.indexOf(s.ref), 1); selected = null; return; }
+  if (what.startsWith("normal") || what.startsWith("insane")) {
+    const field = what.slice(0, 6), step = what.endsWith("+") ? 1 : -1;
+    target[field] = Math.max(0, Math.min(20, st[field] + step));
+    return;
+  }
+  const locations = st.locations.map(l => l.slice());
+  if (what === "addpoint") {
+    const from = locations[s.index], x = from[0] + 1.5, y = from[1], g = groundNear(x, y, from[2]);
+    locations.push([round(x), round(y), round(g === null ? from[2] : g + 0.1), from[3]]);
+    s.index = locations.length - 1;
+  } else if (what === "removepoint" && locations.length > 1) {
+    locations.splice(s.index, 1);
+    s.index = Math.min(s.index, locations.length - 1);
+  }
+  target.locations = locations;
+}
+
+// ---------- adding a squad: the level's actor kinds, a squad at the view's middle
+function fillKinds() {
+  const select = document.getElementById("addKind"), kinds = (level.kinds || []).slice().sort((a, b) => b.team - a.team);
+  select.innerHTML = kinds.map(k => `<option value="${k.palette}">${escapeHtml(k.unit)} — ${escapeHtml(k.name)}` +
+    `${k.team === 0 ? " (Marines)" : ""}</option>`).join("");
+  document.getElementById("addSquad").disabled = !kinds.length;
+  document.getElementById("addSquad").title = kinds.length ? "" : "Export the level again: this file lists no kinds";
+}
+document.getElementById("addSquad").addEventListener("click", () => {
+  if (!level) return;
+  const hs = heightsAt(view.cx, view.cy);
+  if (!hs.length) { alert("There is no ground in the middle of the view: move the view over the level first."); return; }
+  const z = Math.max(...hs) + 0.1;
+  let n = edits.new_squads.length + 1;
+  while (edits.new_squads.some(q => q.key === `added/${n}`)) n++;
+  const squad = { key: `added/${n}`, palette: Number(document.getElementById("addKind").value),
+                  normal: Number(document.getElementById("addNormal").value) || 1,
+                  insane: Number(document.getElementById("addInsane").value) || 1,
+                  locations: [[round(view.cx), round(view.cy), round(z), 0]] };
+  edits.new_squads.push(squad);
+  layers[teamOf(squad) === 0 ? "allies" : "enemies"] = true;
+  document.querySelectorAll("#layers input").forEach((box, i) => { box.checked = layers[LAYERS[i][0]]; });
+  selected = { kind: "squad", ref: squad, index: 0 };
+  renderSelection(); renderLists(); changed(true); draw();
+});
+function escapeHtml(text) { return text.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+function renderLists() {
+  const box = document.getElementById("lists");
+  if (!level) { box.innerHTML = ""; return; }
+  const parts = [];
+  const squads = allSquads().filter(visibleSquad);
+  parts.push(`<div class="section" style="border:0;padding-bottom:2px"><h2>Squads (${squads.length})</h2></div>`);
+  for (const s of squads) {
+    const st = squadState(s), sel = selected && selected.ref === s;
+    parts.push(`<div class="item ${st.kept ? "" : "off"} ${sel ? "selected" : ""}" data-squad="${escapeHtml(s.key)}">` +
+      `<span class="dot" style="background:var(${teamOf(s) === 0 ? "--ally" : "--enemy"})"></span>${escapeHtml(s.key)}` +
+      `<span class="meta">${kindOf(s)} ×${st.normal}${st.edited ? " •" : ""}</span></div>`);
+  }
+  const items = level.placements.filter(p => visiblePlacement(p) && layerOf(p) !== "scenery");
+  parts.push(`<div class="section" style="border:0;padding-bottom:2px"><h2>Items (${items.length})</h2></div>`);
+  for (const p of items) {
+    const st = placementState(p), sel = selected && selected.ref === p;
+    parts.push(`<div class="item ${st.kept ? "" : "off"} ${sel ? "selected" : ""}" data-placement="${p.id}">` +
+      `<span class="dot" style="background:var(${colourOf[layerOf(p)]})"></span>${escapeHtml(p.name)}` +
+      `<span class="meta">${p.kind}${st.edited ? " •" : ""}</span></div>`);
+  }
+  box.innerHTML = parts.join("");
+  box.querySelectorAll(".item").forEach(el => el.addEventListener("click", () => {
+    if (el.dataset.squad) {
+      const s = allSquads().find(q => q.key === el.dataset.squad), l = squadState(s).locations;
+      selected = { kind: "squad", ref: s, index: 0 };
+      if (l.length) { view.cx = l[0][0]; view.cy = l[0][1]; }
+    } else {
+      const p = level.placements.find(q => q.id === el.dataset.placement), pos = placementState(p).position;
+      selected = { kind: "placement", ref: p };
+      view.cx = pos[0]; view.cy = pos[1];
+    }
+    view.scale = Math.max(view.scale, 4);
+    renderSelection(); renderLists(); draw();
+  }));
+}
+
+// ---------- saving
+function editCount() {
+  return Object.keys(edits.placements).length + Object.keys(edits.squads).length + edits.new_squads.length;
+}
+function changed(dirty) {
+  const n = edits ? editCount() : 0;
+  document.getElementById("status").textContent = n ? `${n} change${n === 1 ? "" : "s"}${dirty ? " (not saved)" : ""}` : "Nothing changed";
+  document.getElementById("save").disabled = !level;
+  document.getElementById("resetAll").disabled = !n;
+  try { if (level && dirty) localStorage.setItem("halo64-edits-" + level.map, JSON.stringify(edits)); } catch (error) { /* (no storage) */ }
+}
+document.getElementById("resetAll").addEventListener("click", () => {
+  if (!confirm("Undo every change?")) return;
+  edits = { map: level.map, placements: {}, squads: {}, new_squads: [] };
+  selected = null;
+  renderSelection(); renderLists(); changed(true); draw();
+});
+document.getElementById("save").addEventListener("click", async () => {
+  const text = JSON.stringify(edits, null, 1);
+  if (window.showSaveFilePicker) {
+    try {
+      if (!fileHandle) fileHandle = await window.showSaveFilePicker({ suggestedName: `${level.map}.json`,
+        types: [{ description: "Halo 64 campaign edits", accept: { "application/json": [".json"] } }] });
+      const out = await fileHandle.createWritable(); await out.write(text); await out.close();
+      try { localStorage.removeItem("halo64-edits-" + level.map); } catch (error) { /* (no storage) */ }
+      changed(false); document.getElementById("status").textContent += " — saved";
+      return;
+    } catch (error) { if (error.name === "AbortError") return; fileHandle = null; }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+  a.download = `${level.map}.json`; a.click(); URL.revokeObjectURL(a.href);
+  changed(false);
+});
+window.addEventListener("keydown", e => {
+  if (!selected || e.target.tagName === "INPUT") return;
+  if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); act(selected.kind === "placement" ? (placementState(selected.ref).kept ? "delete" : "keep") : (squadState(selected.ref).kept ? "delete" : "keep")); }
+  if (e.key === "Escape") { selected = null; renderSelection(); renderLists(); draw(); }
+});
+window.addEventListener("resize", draw);
+draw();
+// (a page campaign_editor.py --html made: the level in it, loaded at once)
+if (window.EMBEDDED_LEVEL) { try { loadLevel(window.EMBEDDED_LEVEL); } catch (error) { fail(error); } }
+</script>
+</body>
+</html>
