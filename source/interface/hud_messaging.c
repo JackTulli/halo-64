@@ -1245,6 +1245,17 @@ void hud_print_message(
 	short local_player_index,
 	wchar_t const *message_text)
 {
+#ifdef HALO_N64_ONLINE
+	{
+		/* (an online game shows its real game's messages, the Link's, alone:
+		port/n64/game/n64_online_game.c) */
+		extern int n64_online_active(void);
+		extern boolean n64_online_game_printing;
+
+		if (n64_online_active() && !n64_online_game_printing)
+			return;
+	}
+#endif
 	if (local_player_index != NONE)
 	{
 		struct hud_messaging_datum_definition *datum =

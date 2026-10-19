@@ -844,6 +844,17 @@ real player_control_get_autoaim_level(
 {
 	match_assert("c:\\halo\\SOURCE\\game\\player_control.c", 0xB1,
 		local_player_index>=0 && local_player_index<MAXIMUM_NUMBER_OF_LOCAL_PLAYERS);
+#ifdef HALO_N64_ONLINE
+	{
+		/* (an online game: the Link's player's, whose targets are the real
+		game's, port/n64/game/n64_online_game.c) */
+		extern boolean n64_online_game_autoaim(short local_player_index, real *autoaim);
+		real autoaim;
+
+		if (n64_online_game_autoaim(local_player_index, &autoaim))
+			return autoaim;
+	}
+#endif
 	return player_control_globals->players[local_player_index].autoaim_level;
 }
 

@@ -3606,8 +3606,17 @@ void players_update_before_game(
 	struct unit_control_data control_data;
 	long weapon_index;
 	short action_index;
+	boolean online_inhibited = FALSE;
 
 	profile_enter(PLAYERS_UPDATE_BEFORE_GAME_PROFILE);
+#ifdef HALO_N64_ONLINE
+	{
+		/* (an online game's: this tick's control to the Link, n64_online_game.c) */
+		extern void n64_online_game_tick_begin(void);
+
+		n64_online_game_tick_begin();
+	}
+#endif
 	if (update_client_dequeue(actions))
 	{
 		data_iterator_new(&iterator, player_data);
@@ -3676,6 +3685,15 @@ void players_update_before_game(
 							game_engine_postspawn_player_update(iterator.datum_index);
 						else
 							player->respawn_timer = 1;
+#ifdef HALO_N64_ONLINE
+						/* (an online game's: where the Link's unit is, n64_online_game.c) */
+						{
+							extern void n64_online_game_spawned(long player_index);
+
+							if (player->unit_index != NONE)
+								n64_online_game_spawned(iterator.datum_index);
+						}
+#endif
 					}
 				}
 				else if (!main_menu_is_active())
@@ -3690,7 +3708,21 @@ void players_update_before_game(
 			if (player->unit_index != NONE && unit_controllable(player->unit_index))
 			{
 				unit = unit_get(player->unit_index);
-				if (!players_globals->input_disabled)
+#ifdef HALO_N64_ONLINE
+				{
+					/* (an online game's unit in a vehicle: the Link's drives it,
+					n64_online_game.c) */
+					extern boolean n64_online_game_inhibited(long player_index);
+					extern boolean n64_online_game_action_target(long player_index);
+
+					online_inhibited = n64_online_game_inhibited(iterator.datum_index);
+					/* (the action button picks up or gets in where the Link's
+					unit is near something: no reload here then) */
+					if (n64_online_game_action_target(iterator.datum_index))
+						action->control_flags &= ~FLAG(_unit_control_action_bit);
+				}
+#endif
+				if (!players_globals->input_disabled && !online_inhibited)
 				{
 #ifdef HALO_LINUX
 					network_player_log_idle_action(iterator.datum_index, action->control_flags);

@@ -478,6 +478,45 @@ static void motion_sensor_update(
 					done = TRUE;
 			}
 		}
+#ifdef HALO_N64_ONLINE
+		{
+			/* (an online game: the Link's game's units, none of them this
+			game's, as its motion sensor shows them -- moving or firing --, on
+			the first local player's, port/n64/game/n64_online_game.c) */
+			extern int n64_online_game_blips(short local_player_index, real_point3d *positions, char *types,
+				char *sizes, int maximum);
+			real_point3d positions[MAXIMUM_MOTION_SENSOR_BLIPS];
+			char types[MAXIMUM_MOTION_SENSOR_BLIPS], sizes[MAXIMUM_MOTION_SENSOR_BLIPS];
+			long player_index = local_player_get_player_index(0);
+			int count = n64_online_game_blips(0, positions, types, sizes, MAXIMUM_MOTION_SENSOR_BLIPS);
+
+			if (count > 0 && player_index != NONE && player_get(player_index)->unit_index != NONE)
+			{
+				struct motion_sensor_player *player = &motion_sensor_globals->players[0];
+				struct motion_sensor_datum *sensor = &player->sensor_data[active_sensor_index];
+				real range = hud_globals->defaults.motion_sensor_range;
+				short blip_index = local_player_slots[0];
+				int i;
+
+				for (i = 0; i < count && blip_index < MAXIMUM_MOTION_SENSOR_BLIPS; i++)
+				{
+					real_point2d displacement;
+
+					displacement.x = positions[i].x - camera_positions[0].x;
+					displacement.y = positions[i].y - camera_positions[0].y;
+					if (displacement.x * displacement.x + displacement.y * displacement.y > range * range)
+						continue;
+					tiny_point2d_set(&sensor->blips[blip_index].position, &displacement);
+					sensor->blips[blip_index].type = types[i];
+					sensor->blips[blip_index].size = sizes[i];
+					player->unit_indices[blip_index] = NONE;
+					sensor->blip_count++;
+					blip_index++;
+				}
+				local_player_slots[0] = blip_index;
+			}
+		}
+#endif
 	}
 
 	{

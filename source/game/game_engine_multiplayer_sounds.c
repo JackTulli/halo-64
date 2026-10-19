@@ -258,6 +258,20 @@ static long get_sound_length_in_ticks(
 void game_engine_play_multiplayer_sound(
 	long sound_index)
 {
+#ifdef HALO_N64_ONLINE
+	{
+		/* (an online game: the Link's game's announcer alone; this game's
+		has nothing to say, port/n64/game/n64_online_game.c) */
+		extern int n64_online_active(void);
+		extern boolean n64_online_game_printing;
+
+		if (n64_online_active() &&
+			(!n64_online_game_printing || sound_index < 0 || sound_index >= _multiplayer_sound_ting))
+		{
+			return;
+		}
+	}
+#endif
 	if (sound_is_queueable[sound_index])
 	{
 		push_queued_sound(

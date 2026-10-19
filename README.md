@@ -42,7 +42,9 @@ working notebook.
   (everyone starts with a pistol and an assault rifle), Capture the Flag,
   King of the Hill, Oddball and Race (each also as a team game), with the
   score to win chosen in the menu.
-- **Bots**: up to 8 AI players at four skill levels (easy to legendary).
+- **Bots**: up to 15 AI players at four skill levels (easy to legendary),
+  as many as fit beside the players in Halo's 16 (8 are slow; from 9 the
+  menu warns that your console will burn).
   They fight, pick up better weapons, find their way with Halo's own
   pathfinding and play on teams. Each game they take names at random from
   a list of about 300 Mario, Zelda, GoldenEye and Rare N64 characters.
@@ -56,9 +58,10 @@ working notebook.
   N64's own explosions and particles.
 - **A main menu at 640x480** (interlaced) over the scene behind Halo's own
   title, the ring in space, with the HALO 64 logo.
-- **Controls for each player**: four schemes (standard, bumper jumper,
-  GoldenEye, north), toggle or hold crouch, inverted look, fire and grenade
-  swapped, and separate look speeds for the stick and the C buttons.
+- **Controls for each player**: six schemes (standard, bumper jumper,
+  GoldenEye, north, Golden Style, D-pad move), toggle or hold crouch,
+  inverted look, fire and grenade swapped, and separate look speeds for the
+  stick and the C buttons.
 - **Rumble Pak**: Halo's own rumble (shots, hits, explosions, vehicles)
   on the Rumble Pak, each player's on or off.
 - **Settings** for the picture and speed (below). Settings and controls are
@@ -91,6 +94,21 @@ for its work folder (`%LOCALAPPDATA%\Halo64RomBuilder`). No Halo data comes
 with it: it carries the game's program, built from this repository, and
 the tools that turn your maps into the cartridge's files.
 
+**Custom Edition maps.** Tick **Custom Edition maps** and add Halo Custom
+Edition multiplayer maps: their `.map` files, or the `.zip` files maps
+sites give them in (or drag them onto the window). They go on a cartridge
+of their own, `halo-custom-edition.z64`, up to 24 of them, with the same
+menu, game types, bots and Firefight as the multiplayer cartridge. Each map
+is first made an Xbox map (`tools/n64/ce_prepare.py`, with Invader's tools:
+`tools/n64/invader_lite`): the tags it shares with Custom Edition's
+`bitmaps.map`, `sounds.map` and `loc.map` come from your Xbox maps, so the
+Xbox disc is still needed. What only Custom Edition has is stood in for:
+the rocket warthog and the PC weapons take the nearest Xbox textures and
+sounds, other missing pictures are white and other missing sounds silent.
+Maps their authors protected against being taken apart can't be converted,
+and the builder says so. Big maps fill the cartridge quickly: the builder
+stops if the ROM would pass 64 MB.
+
 How it is made: `tools/n64/rombuilder.py` runs the same conversions as the
 ninja build below with each cartridge's prebuilt program (the build's
 `halo.elf.stripped` and `halo.elf.sym`), `tools/n64/xiso.py` reads the disc
@@ -99,6 +117,13 @@ build_windows_tools.sh` builds libdragon's mksprite, audioconv64, mkdfs,
 n64tool and ed64romconfig for Windows (MinGW-w64, in WSL or on Linux) and
 `tools/n64/package_rombuilder.py`, run with a Windows Python that has
 `pillow tkinterdnd2 sv-ttk pyinstaller`, packages it all with PyInstaller.
+The Custom Edition cartridge's program is `ninja -f build/n64/build.ninja
+custom` (not built by default) and its Windows tools come from
+`tools/n64/invader_lite/build.sh <Invader's source> <build folder> windows`
+(packaged with `--custom-elf build/n64/custom --ce-tools <their folder>`).
+From the repository the builder makes it too: `python3 -m
+tools.n64.rombuilder <Xbox maps> -o <folder> --custom-edition <maps or
+zips> --ce-tools <invader-lite's Linux build, with ogg2wav or ffmpeg>`.
 On Linux the builder runs from the repository too:
 `python3 -m tools.n64.rombuilder <disc image or maps folder> -o <folder>`.
 
@@ -182,6 +207,60 @@ The same build runs in WSL 2 (Ubuntu 24.04 is what it's built on):
 WSL gets half the PC's memory by default; the map conversion wants ~8 GB
 (set `memory=` in `%UserProfile%\.wslconfig` if the build is killed).
 
+### The PC maps cartridge (optional)
+
+A third cartridge, `halo-pc-expansion.z64`, has the 13 Xbox maps plus the
+six maps that came with Halo PC: Danger Canyon, Death Island, Gephyrophobia,
+Ice Fields, Infinity and Timberland. It is newer and less tested than the
+other two. The released ROM Builder can't make it yet (its **PC expansion**
+box is greyed out: the conversion tools it needs aren't in the package), so
+for now it is built from the sources, in two steps.
+
+What you need besides the build above (which must work first: the Xbox
+maps are still needed):
+
+- the six maps and `ui.map` from **retail Halo PC** (any patch; the
+  `MAPS` folder of an installed game; keep `bitmaps.map` and `sounds.map`
+  beside them). Custom Edition maps don't work here: Halo PC's maps are
+  first turned back into the Xbox's format, and only retail PC maps can be;
+- on Windows, Python 3.11 or newer and one folder with Windows builds of
+  Invader's programs (`invader-extract.exe`, `invader-convert.exe`,
+  `invader-refactor.exe`, `invader-bludgeon.exe`, `invader-edit.exe`,
+  `invader-sound.exe`, `invader-build.exe`) and FFmpeg's `ffmpeg.exe`, with
+  any DLLs they need.
+
+**1. Turn the PC maps into Xbox maps (Windows, PowerShell).** Copy the PC
+`MAPS` folder somewhere of its own (for example `C:\halo-pc\maps`), then
+run this from the repository's folder (in WSL's file system the repository
+is `\\wsl.localhost\Ubuntu\home\<you>\halo-64`):
+
+```powershell
+python -m tools.n64.pc_prepare C:\halo-pc\maps --work C:\halo-pc\work --tools C:\halo-pc\tools
+```
+
+It takes a while (every sound is converted) and writes a new folder
+`C:\halo-pc\work\pc-prepare-<random>\` with `maps\` (the six maps in the
+Xbox's format) and `ui-tags\ui\shell\bitmaps\mp_map_grafix.bitmap` (the
+menu's pictures of them); `C:\halo-pc\work\result.json` names both. Your
+own files are only read.
+
+**2. Build the cartridge (WSL).** Point the build at those two (C: is
+`/mnt/c` in WSL):
+
+```sh
+cd ~/halo-64
+W=/mnt/c/halo-pc/work/pc-prepare-<random>
+python3 tools/n64_build.py --pc-expansion --pc-maps $W/maps \
+  --pc-ui-bitmap $W/ui-tags/ui/shell/bitmaps/mp_map_grafix.bitmap
+ninja -f build/n64/build.ninja pc-expansion   # build/n64/halo-pc-expansion.z64
+```
+
+`ninja -f build/n64/build.ninja` alone still builds the other cartridges.
+Copying the six PC maps into the repository does nothing on its own: the
+build reads only the folder named by `--pc-maps`. More on what the PC
+cartridge adds is in
+[`port/n64/PC_EXPANSION_INTEGRATION.md`](port/n64/PC_EXPANSION_INTEGRATION.md).
+
 ## Playing
 
 The game needs the **Expansion Pak** (8 MB). It is developed and tested in
@@ -223,7 +302,7 @@ The standard scheme (each player can choose another on the CONTROLS page):
 | D-pad up | switch weapons |
 | D-pad down | crouch |
 | D-pad left | zoom |
-| D-pad right | switch grenades |
+| D-pad right | switch grenades (hold: flashlight; on the campaign cartridge the hold steps your speed) |
 | START | pause: the scoreboard, and MAIN MENU |
 
 The other schemes:
@@ -231,6 +310,12 @@ The other schemes:
 - **Bumper jumper**: R jumps, A throws a grenade.
 - **GoldenEye**: the stick turns and walks, C left/right strafe, C up/down look.
 - **North**: the stick walks and strafes, the C buttons look.
+- **Golden Style**: R held aims freely; C up/down zoom; D-pad left throws a
+  grenade.
+- **D-pad move**: the standard scheme with the D-pad and the C buttons
+  swapped, as GoldenEye and Perfect Dark can be held: the stick looks, the
+  D-pad walks and strafes; C up switches weapons, C down crouches, C left
+  zooms, C right switches grenades (held: flashlight).
 
 Each player also chooses: crouch held or toggled, look normal or inverted,
 fire on Z or R (grenades on the other), the look speed of the stick and of
@@ -259,7 +344,31 @@ gamepad that has motors).
 
 A multiplayer game's **CONTENT** screen (game setup) sets the WEAPONS
 players and bots start with, the VEHICLES (map default, or none at all),
-IMPACT FX (original or enhanced), BIG HEAD and PAINTBALL.
+IMPACT FX (enhanced, original or off), BIG HEAD and PAINTBALL.
+
+## Editing the campaign level
+
+`tools/n64/campaign_editor.html` shows the campaign level from above: its
+ground, the Covenant squads, the weapons, pickups, vehicles and scenery the
+cartridge keeps, and the ones it leaves out. Drag them to move them (a
+squad's points one at a time, or the whole squad with Shift), delete them,
+or keep one again. Points high above the ground or under it are ringed in
+orange.
+
+1. Make the level's data from your own map (it holds the level's
+   geometry: keep it to yourself, out of the repository):
+
+   ```sh
+   python3 -m tools.n64.campaign_editor build/xbox/disc/maps/a30.map -o ~/a30-level.json
+   ```
+
+2. Open `tools/n64/campaign_editor.html` in a browser and **Load level…**
+   that file.
+3. **Save edits** as `campaign_edits/a30.json` in the repository. Its
+   changes are placements and squads by name, moved, deleted or kept
+   again; `tools/n64/campaign.py` applies them when the campaign is
+   converted (`N64_CAMPAIGN_EDITS` names another folder).
+4. Rebuild (`~/n64/tools/build.sh`).
 
 ## How it runs on an N64
 

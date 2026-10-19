@@ -6180,6 +6180,39 @@ real_point3d *game_engine_get_goal_position(
 	return position;
 }
 
+#ifdef HALO_N64_ONLINE
+/* Halo 64 Online (port/n64/game/n64_online_game.c): the Link's game's goals
+its player sees (a CTF game's flags, Oddball's ball, King's hill, Race's
+flags), as this game's -- for its player, of no team --, and how the
+variant shows them (goal_radar 1: nav points, 0: the motion sensor) */
+void n64_online_set_goals(
+	long count,
+	real_point3d const *positions,
+	short const *nav_points,
+	long goal_radar)
+{
+	long goal_index;
+
+	for (goal_index = 0; goal_index < (long)NUMBEROF(global_goal); goal_index++)
+	{
+		struct game_engine_goal *goal = &global_goal[goal_index];
+
+		csmemset(goal, 0, sizeof(*goal));
+		goal->target_object_index = NONE;
+		goal->team_index = NONE;
+		goal->player_index = NONE;
+		goal->nav_point_index = NONE;
+		if (goal_index < count)
+		{
+			goal->in_use = TRUE;
+			goal->position = positions[goal_index];
+			goal->nav_point_index = nav_points[goal_index];
+		}
+	}
+	global_variant.universal_variant.goal_radar = goal_radar;
+}
+#endif
+
 void game_engine_set_goal_position(
 	short goal_index,
 	real_point3d const *position,
@@ -7318,6 +7351,53 @@ static void internal_rasterize_target_name(
 	struct player_datum *player;
 	long target_player_index;
 
+#ifdef HALO_N64_ONLINE
+	{
+		/* (an online game: the name of whom the Link's player aims at -- the
+		real game's players are no players of this one --, held and faded as
+		below, port/n64/game/n64_online_game.c) */
+		extern boolean n64_online_game_target_name(long player_index, wchar_t *name, long size);
+		static wchar_t held_name[12];
+		static long hold_time;
+		wchar_t name[12];
+
+		if (n64_online_game_target_name(player_index, name, NUMBEROF(name)))
+		{
+			short i;
+			boolean same = TRUE;
+
+			for (i = 0; i < 12 && (name[i] || held_name[i]); i++)
+			{
+				if (name[i] != held_name[i])
+				{
+					same = FALSE;
+					break;
+				}
+			}
+			if (!same)
+			{
+				if (hold_time > 0)
+					hold_time--;
+				if (hold_time == 0)
+				{
+					csmemcpy(held_name, name, sizeof(held_name));
+					held_name[11] = 0;
+				}
+			}
+			else if (hold_time < 15)
+			{
+				hold_time++;
+			}
+			if (held_name[0])
+			{
+				long shown = hold_time >= 10 ? 10 : hold_time;
+
+				game_engine_rasterize_message(held_name, (real)pow((double)(shown * 0.1f), 1.9f) * 0.5f);
+			}
+			return;
+		}
+	}
+#endif
 	player = player_get(player_index);
 	target_player_index = NONE;
 	if (player->local_player_index != NONE && player->unit_index != NONE)
@@ -7738,6 +7818,15 @@ static void game_engine_update_item_spawn(
 	if (network_game_distributed_client())
 		return;
 #endif
+#ifdef HALO_N64_ONLINE
+	{
+		/* (an online game draws the Link's items, n64_online.c) */
+		extern int n64_online_active(void);
+
+		if (n64_online_active())
+			return;
+	}
+#endif
 
 	for (equipment_index = 0;
 		equipment_index < scenario->netgame_equipment.count;
@@ -8049,6 +8138,18 @@ boolean game_engine_get_state_message(
 	long respawn_timer;
 	boolean result = FALSE;
 
+#ifdef HALO_N64_ONLINE
+	{
+		/* (an online game: the Link's game's, port/n64/game/n64_online_game.c) */
+		extern boolean n64_online_game_state_message(long player_index, wchar_t *message, long size,
+			boolean *has_message);
+		boolean has_message;
+
+		if (n64_online_game_state_message(player_index, message, message_character_count, &has_message))
+			return has_message;
+	}
+#endif
+
 	if (game_engine)
 	{
 		player = player_get(player_index);
@@ -8117,6 +8218,16 @@ boolean game_engine_should_spawn_player(
 {
 	boolean should_spawn = FALSE;
 
+#ifdef HALO_N64_ONLINE
+	{
+		/* (an online game's player spawns when the Link's unit lives,
+		n64_online_game.c) */
+		extern boolean n64_online_game_should_spawn(long player_index, boolean *should_spawn);
+
+		if (n64_online_game_should_spawn(player_index, &should_spawn))
+			return should_spawn;
+	}
+#endif
 	if (game_engine)
 	{
 		struct player_datum *player = player_get(player_index);

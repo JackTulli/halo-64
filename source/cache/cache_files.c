@@ -278,6 +278,31 @@ static struct cache_file_tag_instance *cache_get_tag_instance(
 
 /* ---------- public code */
 
+#ifdef HALO_N64_ONLINE
+/* Halo 64 Online (port/n64/game/n64_online_game.c): the tag the Link names
+by its absolute index (the cartridge's maps keep the Xbox maps' tag
+indices), if it is one of group_tag's; NONE if not */
+long n64_tag_from_absolute(
+	long absolute_index,
+	long group_tag)
+{
+	struct cache_file_tag_instance *instance;
+
+	if (!cache_file_globals.tags_loaded || !global_tag_instances || absolute_index < 0 ||
+		absolute_index >= cache_file_globals.tag_header->tag_count)
+	{
+		return NONE;
+	}
+	instance = &global_tag_instances[absolute_index];
+	if (instance->group_tag != group_tag && instance->parent_group_tags[0] != group_tag &&
+		instance->parent_group_tags[1] != group_tag)
+	{
+		return NONE;
+	}
+	return instance->tag_index;
+}
+#endif
+
 char const *cache_files_map_directory(
 	void)
 {

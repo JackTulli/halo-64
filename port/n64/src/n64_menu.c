@@ -37,6 +37,9 @@ game side (port/n64/game/n64_game.c) makes the game.
 #include <string.h>
 
 #include "n64.h"
+#ifdef HALO_N64_ONLINE
+#include "n64_link.h"
+#endif
 
 /* Settings: ANIMATIONS HALF RATE, read by the game's object updates
 (source/objects/objects.c n64_object_unmoved) */
@@ -44,6 +47,52 @@ int n64_half_animation_rate;
 
 /* ---------- what can be played */
 
+#ifdef HALO_N64_CUSTOM_MAPS
+/* the custom cartridge's maps (Custom Edition maps the ROM Builder made Xbox
+maps of: tools/n64/ce_prepare.py), named by its file maps/custom.list, a
+line a map: "<folder>|<NAME>" (tools/n64/rombuilder.py) */
+#define CUSTOM_MAP_LIMIT 24
+static struct
+{
+	char folder[32], name[24];
+	int picture;
+} maps[CUSTOM_MAP_LIMIT];
+static int custom_map_count = -1;
+
+static int custom_maps(void)
+{
+	char line[96];
+	FILE *file;
+
+	if (custom_map_count >= 0)
+		return custom_map_count;
+	custom_map_count = 0;
+	if (!(file = fopen("rom:/maps/custom.list", "rb")))
+		n64_fatal("this cartridge has no list of its maps (maps/custom.list)");
+	while (custom_map_count < CUSTOM_MAP_LIMIT && fgets(line, sizeof(line), file))
+	{
+		char *name = strchr(line, '|');
+
+		if (!name)
+			continue;
+		*name++ = 0;
+		name[strcspn(name, "\r\n")] = 0;
+		if (!line[0] || strlen(line) >= sizeof(maps[0].folder))
+			continue;
+		snprintf(maps[custom_map_count].folder, sizeof(maps[0].folder), "%s", line);
+		snprintf(maps[custom_map_count].name, sizeof(maps[0].name), "%s", name[0] ? name : line);
+		maps[custom_map_count].picture = -1;
+		custom_map_count++;
+	}
+	fclose(file);
+	if (!custom_map_count)
+		n64_fatal("this cartridge's list of maps is empty (maps/custom.list)");
+	return custom_map_count;
+}
+#define MAP_COUNT custom_maps()
+/* (Firefight's Covenant are imported into each of them: convert.py) */
+#define FIREFIGHT_MAP_COUNT MAP_COUNT
+#else
 static const struct
 {
 	const char *folder, *name;
@@ -79,6 +128,7 @@ static const struct
 };
 #define MAP_COUNT ((int)(sizeof(maps) / sizeof(maps[0])))
 #define FIREFIGHT_MAP_COUNT 13
+#endif
 
 static const struct
 {
@@ -760,7 +810,8 @@ static void read_pads(void)
 
 /* ---------- the screens */
 
-enum { SCREEN_RESULTS, SCREEN_TITLE, SCREEN_SETUP, SCREEN_SETTINGS, SCREEN_CONTROLS, SCREEN_CONTENT, SCREEN_TEAMS };
+enum { SCREEN_RESULTS, SCREEN_TITLE, SCREEN_SETUP, SCREEN_SETTINGS, SCREEN_CONTROLS, SCREEN_CONTENT, SCREEN_TEAMS,
+	SCREEN_ONLINE };
 enum { ROW_GAME_TYPE, ROW_MAP, ROW_SCORE, ROW_BOTS, ROW_OPTIONS, ROW_START, ROW_COUNT };
 enum { CONTENT_WEAPONS, CONTENT_VEHICLES,
 	CONTENT_FEEDBACK, CONTENT_BIG_HEAD, CONTENT_PAINTBALL, CONTENT_BACK, CONTENT_COUNT };
@@ -790,20 +841,32 @@ static int vehicle_choice(int set)
 	}
 	return 0;
 }
-/* bots (port/n64/game/n64_bots.c): at most this many, whatever the
-players (each biped costs ~2.7 ms of a tick: many will be slow) */
-#define MAXIMUM_BOTS 8
+/* bots (port/n64/game/n64_bots.c): at most this many, and no more than
+the game's sixteen players leave beside the players (each biped costs ~2.7
+ms of a tick: many will be slow). Eight are EXPERIMENTAL (measured slow),
+from BURNING_BOTS the menu warns that the console will burn */
+#define MAXIMUM_BOTS 15
+#define GAME_PLAYERS 16
+#define EXPERIMENTAL_BOTS 8
+#define BURNING_BOTS 9
 #ifdef HALO_N64_CAMPAIGN
 /* (the campaign cartridge: CAMPAIGN where MULTIPLAYER is, no FIREFIGHT) */
 enum { TITLE_MULTIPLAYER, TITLE_CONTROLS, TITLE_SETTINGS, TITLE_COUNT, TITLE_FIREFIGHT = -1 };
 #define CAMPAIGN_CARTRIDGE 1
+#define ONLINE_CARTRIDGE 0
+#elif defined(HALO_N64_ONLINE)
+/* (the online cartridge: ONLINE where MULTIPLAYER is, no FIREFIGHT:
+port/n64/docs/online) */
+enum { TITLE_MULTIPLAYER, TITLE_CONTROLS, TITLE_SETTINGS, TITLE_COUNT, TITLE_FIREFIGHT = -1 };
+#define CAMPAIGN_CARTRIDGE 0
+#define ONLINE_CARTRIDGE 1
 #else
 enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE_COUNT };
 #define CAMPAIGN_CARTRIDGE 0
+#define ONLINE_CARTRIDGE 0
 #endif
 /* a game played at a difficulty, not to a score: Firefight, a campaign */
 #define DIFFICULTY_GAME(c) ((c)->firefight || (c)->campaign)
-#define REGULAR_BOT_MAXIMUM 4
 /* the buzz a controller gives when its rumble is turned on (frames) */
 #define RUMBLE_PULSE_FRAMES 12
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
@@ -1016,10 +1079,236 @@ static void setting_row(int x0, int x1, int y, int selected, struct n64_font *fo
 	text_right(font, x1 - 14, y, selected ? pulsing() : TEXT_COLOR, value);
 }
 
+#ifdef HALO_N64_ONLINE
+/* ---------- the player's name in online games: the Link plays under it
+(n64_link_set_name). Kept in a record of its own in the EEPROM, after the
+settings' ("H64N", the name, a checksum); typed on the ONLINE screen's
+keyboard (R) */
+
+#define NAME_RECORD 48
+#define NAME_RECORD_BYTES 16
+#define NAME_LENGTH 11
+/* the keyboard: its rows of keys (the menu's fonts have the capitals) */
+#define KEY_ROWS 3
+#define KEY_COLUMNS 13
+
+static const char keys[KEY_ROWS][KEY_COLUMNS + 1] = {"ABCDEFGHIJKLM", "NOPQRSTUVWXYZ", "0123456789-._"};
+
+static struct
+{
+	char name[NAME_LENGTH + 1];
+	int read;
+	/* the keyboard: open, its text, the key chosen */
+	int open;
+	char text[NAME_LENGTH + 1];
+	int row, column;
+} naming;
+
+static int name_character(char c)
+{
+	return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == ' ';
+}
+
+static unsigned char name_checksum(const unsigned char *bytes)
+{
+	unsigned sum = 0xA5;
+
+	for (int i = 0; i < NAME_RECORD_BYTES - 1; i++)
+		sum = sum * 31 + bytes[i];
+	return (unsigned char)(sum ^ (sum >> 8));
+}
+
+static void name_load(void)
+{
+	unsigned char record[NAME_RECORD_BYTES];
+
+	if (naming.read)
+		return;
+	naming.read = 1;
+	if (eeprom_present() == EEPROM_NONE)
+		return;
+	eeprom_read_bytes(record, NAME_RECORD, NAME_RECORD_BYTES);
+	if (memcmp(record, "H64N", 4) || record[NAME_RECORD_BYTES - 1] != name_checksum(record))
+		return;
+	for (int i = 0; i < NAME_LENGTH && record[4 + i] && name_character((char)record[4 + i]); i++)
+		naming.name[i] = (char)record[4 + i];
+	debugf("n64: online: the player's name is \"%s\"\n", naming.name);
+}
+
+static void name_save(void)
+{
+	unsigned char record[NAME_RECORD_BYTES];
+
+	if (eeprom_present() == EEPROM_NONE)
+		return;
+	memset(record, 0, sizeof(record));
+	memcpy(record, "H64N", 4);
+	memcpy(record + 4, naming.name, strlen(naming.name));
+	record[NAME_RECORD_BYTES - 1] = name_checksum(record);
+	eeprom_write_bytes(record, NAME_RECORD, NAME_RECORD_BYTES);
+}
+
+/* the keyboard's buttons: A types the key, B takes the last letter back
+(or, with none, closes the keyboard unchanged), Z types a space, START
+keeps the name */
+static void name_input(const struct pad *pad)
+{
+	int length = (int)strlen(naming.text);
+
+	if (pad->up)
+		naming.row = (naming.row + KEY_ROWS - 1) % KEY_ROWS;
+	if (pad->down)
+		naming.row = (naming.row + 1) % KEY_ROWS;
+	if (pad->left)
+		naming.column = (naming.column + KEY_COLUMNS - 1) % KEY_COLUMNS;
+	if (pad->right)
+		naming.column = (naming.column + 1) % KEY_COLUMNS;
+	if (pad->pressed.a && length < NAME_LENGTH)
+	{
+		naming.text[length] = keys[naming.row][naming.column];
+		naming.text[length + 1] = 0;
+	}
+	if (pad->pressed.z && length > 0 && length < NAME_LENGTH)
+	{
+		naming.text[length] = ' ';
+		naming.text[length + 1] = 0;
+	}
+	if (pad->pressed.b)
+	{
+		if (length > 0)
+			naming.text[length - 1] = 0;
+		else
+			naming.open = 0;
+	}
+	if (pad->pressed.start)
+	{
+		/* (no spaces at the end) */
+		while (length > 0 && naming.text[length - 1] == ' ')
+			naming.text[--length] = 0;
+		memcpy(naming.name, naming.text, sizeof(naming.name));
+		name_save();
+		n64_link_set_name(naming.name);
+		naming.open = 0;
+		debugf("n64: online: the player's name is now \"%s\"\n", naming.name);
+	}
+}
+
+static void draw_naming(void)
+{
+	char shown[NAME_LENGTH + 2];
+	int x0 = SCREEN_W / 2 - KEY_COLUMNS * 36 / 2;
+
+	page("YOUR NAME", "FOR ONLINE GAMES");
+	snprintf(shown, sizeof(shown), "%s%s", naming.text,
+		(int)strlen(naming.text) < NAME_LENGTH && (int)menu.frame % 40 < 24 ? "_" : "");
+	text_centered(menu.large, SCREEN_W / 2, 150, TEXT_BRIGHT, naming.text[0] || (int)menu.frame % 40 < 24 ? shown : " ");
+	for (int row = 0; row < KEY_ROWS; row++)
+	{
+		for (int column = 0; column < KEY_COLUMNS; column++)
+		{
+			char key[2] = {keys[row][column], 0};
+			int selected = row == naming.row && column == naming.column;
+
+			text_centered(menu.large, x0 + column * 36 + 18, 230 + row * 44, selected ? pulsing() : TEXT_COLOR, key);
+		}
+	}
+	text_centered(menu.small, SCREEN_W / 2, 400, TEXT_DIM, "THE NAME OTHER PLAYERS SEE, FROM THE NEXT GAME YOU JOIN");
+	text_centered(menu.small, SCREEN_W / 2, 448, TEXT_DIM, "A  TYPE     B  DELETE     Z  SPACE     START  DONE");
+}
+
+/* the ONLINE screen: the cable's state (n64_link.c), the Link's game list,
+the one chosen joined */
+#define ONLINE_ROWS 8
+
+static void draw_online(int chosen)
+{
+	const struct n64_link_game *games;
+	int count = n64_link_games(&games);
+	const char *status = n64_link_status();
+
+	{
+		char note[40];
+
+		snprintf(note, sizeof(note), "PLAYING AS %s", naming.name[0] ? naming.name : "(THE LINK'S NAME)");
+		page("ONLINE", n64_link_state() == N64_LINK_CONNECTED ? note : "");
+	}
+	if (n64_link_state() == N64_LINK_NO_CART)
+	{
+		text_centered(menu.large, SCREEN_W / 2, 180, TEXT_BRIGHT, "NO USB PORT FOUND");
+		text_centered(menu.small, SCREEN_W / 2, 220, TEXT_COLOR, "HALO 64 ONLINE NEEDS A FLASHCART WITH A USB PORT");
+		text_centered(menu.small, SCREEN_W / 2, 244, TEXT_COLOR, "(64DRIVE, EVERDRIVE X7 OR V3, SUMMERCART64)");
+		text_centered(menu.small, SCREEN_W / 2, 268, TEXT_COLOR, "WIRED TO A COMPUTER RUNNING HALO 64 LINK,");
+		text_centered(menu.small, SCREEN_W / 2, 292, TEXT_COLOR, "OR AN EMULATOR WITH ITS USB PORT ON");
+	}
+	else if (n64_link_state() == N64_LINK_WAITING)
+	{
+		text_centered(menu.large, SCREEN_W / 2, 200, TEXT_BRIGHT, "START HALO 64 LINK");
+		text_centered(menu.small, SCREEN_W / 2, 240, TEXT_COLOR, "ON THE COMPUTER YOUR CARTRIDGE'S USB PORT IS WIRED TO");
+		text_centered(menu.small, SCREEN_W / 2, 270, (int)menu.frame % 60 < 40 ? TEXT_DIM : 0x605880B0u,
+			"WAITING FOR THE LINK...");
+		if (status[0])
+			text_centered(menu.small, SCREEN_W / 2, 320, TEXT_DIM, status);
+	}
+	else if (n64_online_scores()->valid && !n64_online_scores()->in_game)
+	{
+		/* a game's lobby, joined: its players until the game begins */
+		const struct n64_online_scores *s = n64_online_scores();
+		char line[64];
+
+		page("LOBBY", s->game);
+		snprintf(line, sizeof(line), "%s   %s   %d PLAYERS", s->map, s->game_type, s->total);
+		text_centered(menu.small, SCREEN_W / 2, 92, TEXT_COLOR, line);
+		for (int i = 0; i < s->count && i < 12; i++)
+		{
+			int x = i < 6 ? 120 : 360, y = 132 + (i % 6) * 36;
+			unsigned long color = s->rows[i].human ? TEXT_BRIGHT : TEXT_COLOR;
+
+			if (s->teams && s->rows[i].team >= 0)
+				snprintf(line, sizeof(line), "%s  (%s)", s->rows[i].name, s->rows[i].team ? "BLUE" : "RED");
+			else
+				snprintf(line, sizeof(line), "%s", s->rows[i].name);
+			menu_text(menu.small, x, y, color, line);
+		}
+		text_centered(menu.small, SCREEN_W / 2, 380, (int)menu.frame % 60 < 40 ? TEXT_DIM : 0x605880B0u,
+			"WAITING FOR THE GAME TO BEGIN");
+		if (status[0])
+			text_centered(menu.small, SCREEN_W / 2, 412, TEXT_DIM, status);
+		text_centered(menu.small, SCREEN_W / 2, 448, TEXT_DIM, "B  LEAVE");
+		return;
+	}
+	else if (!count)
+	{
+		text_centered(menu.large, SCREEN_W / 2, 200, TEXT_BRIGHT, "NO GAMES");
+		text_centered(menu.small, SCREEN_W / 2, 240, TEXT_COLOR, "Z  LOOK AGAIN");
+		if (status[0])
+			text_centered(menu.small, SCREEN_W / 2, 320, TEXT_DIM, status);
+	}
+	else
+	{
+		int first = chosen >= ONLINE_ROWS ? chosen - ONLINE_ROWS + 1 : 0;
+
+		for (int i = first; i < count && i < first + ONLINE_ROWS; i++)
+		{
+			char value[48];
+
+			snprintf(value, sizeof(value), "%s  %s  %d/%d", games[i].map, games[i].game_type, games[i].players,
+				games[i].most);
+			setting_row(48, 592, 104 + (i - first) * 36, i == chosen, menu.small, games[i].name, value);
+		}
+		if (status[0])
+			text_centered(menu.small, SCREEN_W / 2, 412, TEXT_DIM, status);
+	}
+	text_centered(menu.small, SCREEN_W / 2, 448, TEXT_DIM,
+		n64_link_state() == N64_LINK_CONNECTED ? "A  JOIN     Z  LOOK AGAIN     R  YOUR NAME     B  BACK" : "B  BACK");
+}
+#endif
+
 static void draw_title(int item)
 {
 #ifdef HALO_N64_CAMPAIGN
 	static const char *items[TITLE_COUNT] = {"CAMPAIGN", "CONTROLS", "SETTINGS"};
+#elif defined(HALO_N64_ONLINE)
+	static const char *items[TITLE_COUNT] = {"ONLINE", "CONTROLS", "SETTINGS"};
 #else
 	static const char *items[TITLE_COUNT] = {"MULTIPLAYER", "FIREFIGHT", "CONTROLS", "SETTINGS"};
 #endif
@@ -1033,6 +1322,10 @@ static void draw_title(int item)
 		CAMPAIGN_CARTRIDGE ? "THE SECOND MISSION" :
 #ifdef HALO_N64_PC_EXPANSION
 		"PC EXPANSION   -   EXPERIMENTAL BUILD"
+#elif defined(HALO_N64_CUSTOM_MAPS)
+		"CUSTOM EDITION MAPS   -   UP TO 4 PLAYERS"
+#elif defined(HALO_N64_ONLINE)
+		"ONLINE   -   WITH HALO 64 LINK ON YOUR COMPUTER"
 #else
 		"SPLIT SCREEN   -   UP TO 4 PLAYERS"
 #endif
@@ -1043,7 +1336,8 @@ static void draw_title(int item)
 chosen and changed with its own buttons; each row says what it is */
 static void draw_controls(void)
 {
-	static const char *const schemes[N64_SCHEME_COUNT] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH", "GOLDEN STYLE"};
+	static const char *const schemes[N64_SCHEME_COUNT] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH", "GOLDEN STYLE",
+		"D-PAD MOVE"};
 	static const char *const labels[CONTROL_COUNT] = {
 		"SCHEME", "CROUCH", "LOOK", "FIRE BUTTON", "STICK SPEED", "C BUTTON SPEED", "RUMBLE",
 	};
@@ -1053,6 +1347,7 @@ static void draw_controls(void)
 		"THE STICK WALKS AND TURNS, C LEFT AND RIGHT STRAFE",
 		"THE STICK WALKS AND STRAFES, THE C BUTTONS LOOK",
 		"R AIMS; C UP/DOWN ZOOM; D-LEFT THROWS GRENADES",
+		"THE STICK LOOKS, THE D-PAD MOVES",
 	};
 	const struct n64_controls *chosen_controls = &n64_controls[menu.control_pad & 3];
 	const char *help;
@@ -1205,7 +1500,8 @@ static void draw_content(const struct n64_menu_choice *c, int item)
 	setting_row(80, 560, 126 + CONTENT_WEAPONS * 42, item == CONTENT_WEAPONS, menu.large,
 		"WEAPONS", weapon_sets[c->weapon_set >= 0 && c->weapon_set < WEAPON_SET_COUNT ? c->weapon_set : 0]);
 	setting_row(80, 560, 126 + CONTENT_VEHICLES * 42, item == CONTENT_VEHICLES, menu.large, "VEHICLES", vehicle_sets[vehicle]);
-	setting_row(80, 560, 126 + CONTENT_FEEDBACK * 42, item == CONTENT_FEEDBACK, menu.large, "IMPACT FX", c->enhanced_fx ? "ENHANCED" : "ORIGINAL");
+	setting_row(80, 560, 126 + CONTENT_FEEDBACK * 42, item == CONTENT_FEEDBACK, menu.large, "IMPACT FX",
+		c->enhanced_fx == N64_IMPACT_FX_ENHANCED ? "ENHANCED" : c->enhanced_fx == N64_IMPACT_FX_OFF ? "OFF" : "ORIGINAL");
 	setting_row(80, 560, 126 + CONTENT_BIG_HEAD * 42, item == CONTENT_BIG_HEAD, menu.large, "BIG HEAD", c->big_head ? "ON" : "OFF");
 	setting_row(80, 560, 126 + CONTENT_PAINTBALL * 42, item == CONTENT_PAINTBALL, menu.large, "PAINTBALL", c->paintball ? "ON" : "OFF");
 	list_item(SCREEN_W / 2, 134 + CONTENT_BACK * 42, 180, item == CONTENT_BACK, "BACK");
@@ -1219,7 +1515,8 @@ static void draw_content(const struct n64_menu_choice *c, int item)
         "STARTING WEAPONS FOR PLAYERS AND BOTS" :
 #endif
 		item == CONTENT_VEHICLES ? vehicle_help[vehicle] :
-		item == CONTENT_FEEDBACK ? "WEAPON, GRENADE AND IMPACT FEEDBACK" :
+		item == CONTENT_FEEDBACK ? c->enhanced_fx == N64_IMPACT_FX_OFF ? "NO PARTICLES FROM WEAPONS, GRENADES OR IMPACTS" :
+			"WEAPON, GRENADE AND IMPACT FEEDBACK" :
 		item == CONTENT_BIG_HEAD ? "LARGER HEADS; ORIGINAL HIT DETECTION" :
 		item == CONTENT_PAINTBALL ? "COLORED IMPACTS AT EACH WEAPON'S DECAL SIZE" : "BACK TO GAME SETUP";
 	text_centered(menu.small, SCREEN_W / 2, 394, TEXT_COLOR, help);
@@ -1227,36 +1524,41 @@ static void draw_content(const struct n64_menu_choice *c, int item)
 	text_centered(menu.small, SCREEN_W / 2, 448, TEXT_DIM, "A, LEFT, RIGHT  CHANGE        B  BACK");
 }
 
-/* Keep the measured-slow eight-bot stress option explicit. Ordinary menu
-counts stop at four; the engine's diagnostic capability remains unchanged. */
-static int setup_bot_count(int count, int minimum)
+/* the bots, one at a time from the least to the most there is room for
+beside the players (the PC expansion's menu went 4 then 8: 5, 6 and 7 were
+gone) */
+static int setup_bot_count(int count, int minimum, int players)
 {
-	if (count >= MAXIMUM_BOTS) return MAXIMUM_BOTS;
-	if (count > REGULAR_BOT_MAXIMUM) return REGULAR_BOT_MAXIMUM;
-	return count < minimum ? minimum : count;
+	int most = GAME_PLAYERS - (players > 1 ? players : 1);
+
+	if (most > MAXIMUM_BOTS)
+		most = MAXIMUM_BOTS;
+	return count > most ? most : count < minimum ? minimum : count;
 }
 
-static int setup_bot_step(int count, int step, int minimum)
+static int setup_bot_step(int count, int step, int minimum, int players)
 {
-	if (step > 0)
-		return count < minimum ? minimum : count < REGULAR_BOT_MAXIMUM ? count + 1 : MAXIMUM_BOTS;
-	if (step < 0)
-		return count > MAXIMUM_BOTS ? MAXIMUM_BOTS : count > REGULAR_BOT_MAXIMUM ?
-			REGULAR_BOT_MAXIMUM : count > minimum ? count - 1 : minimum;
-	return setup_bot_count(count, minimum);
+	return setup_bot_count(count + (step > 0) - (step < 0), minimum, players);
 }
 
 static void setup_normalize_bots(struct n64_menu_choice *c, int automated_roster)
 {
 	if (!automated_roster)
-		c->bots = setup_bot_count(c->bots, !DIFFICULTY_GAME(c) && n64_menu_game_bots(c->game_type) ? 1 : 0);
+		c->bots = setup_bot_count(c->bots, !DIFFICULTY_GAME(c) && n64_menu_game_bots(c->game_type) ? 1 : 0,
+			c->player_count);
+}
+
+/* more bots than any console keeps up with: the menu says so */
+static int setup_burning(const struct n64_menu_choice *c)
+{
+	return !DIFFICULTY_GAME(c) && c->bots >= BURNING_BOTS;
 }
 
 static int setup_experimental(const struct n64_menu_choice *c)
 {
 	const char *map;
 	if (DIFFICULTY_GAME(c)) return 0;
-	if (c->bots == MAXIMUM_BOTS) return 1;
+	if (c->bots >= EXPERIMENTAL_BOTS) return 1;
 	/* Four locals + four bots in native Team Slayer measured below the
 	20 FPS target on these maps: Pistol + AR, map-default vehicles, no
 	Paintball. Other maps/rosters have no count-only classification. */
@@ -1275,7 +1577,7 @@ static void setup_roster_text(const struct n64_menu_choice *c, char *text, size_
 	else
 		snprintf(text, size, "%d PLAYER%s + %d BOT%s%s", c->player_count,
 			c->player_count == 1 ? "" : "S", c->bots, c->bots == 1 ? "" : "S",
-			setup_experimental(c) ? " (EXPERIMENTAL)" : "");
+			setup_burning(c) ? " - YOUR CONSOLE WILL BURN" : setup_experimental(c) ? " (EXPERIMENTAL)" : "");
 }
 
 static void draw_player_cards(const struct n64_menu_choice *c, int teams, int choosing_team)
@@ -1318,11 +1620,14 @@ static void draw_teams(const struct n64_menu_choice *c)
 	for (int team = 0; team < 2; team++)
 	{
 		int x0 = SAFE_LEFT + team * 296, x1 = x0 + 280, center = (x0 + x1) / 2;
-		int human_count = 0, bot_count = 0, row = 0;
+		int human_count = 0, bot_count = 0, row = 0, spacing;
 		for (int i = 0; i < c->player_count; i++)
 			if (c->teams[i] == team) human_count++;
 		for (int b = 0; b < c->bots; b++)
 			if (n64_bot_lobby_team(b, c->teams, c->player_count) == team) bot_count++;
+		/* (up to six rows at 25, more closer: fifteen bots and a player
+		are eight a team) */
+		spacing = human_count + bot_count > 6 ? 150 / (human_count + bot_count) : 25;
 		panel(x0, 84, x1, 324, 0xC0102040);
 		frame_line(x0, 84, x1, 324, FRAME_COLOR);
 		panel(x0 + 2, 86, x1 - 2, 116, 0xFF000000 | team_rgb[team]);
@@ -1337,19 +1642,20 @@ static void draw_teams(const struct n64_menu_choice *c)
 				if (c->ports[i] == p && c->teams[i] == team)
 				{
 					snprintf(text, sizeof(text), "PLAYER %d", p + 1);
-					text_centered(menu.small, center, 164 + row++ * 25, TEXT_BRIGHT, text);
+					text_centered(menu.small, center, 164 + row++ * spacing, TEXT_BRIGHT, text);
 				}
 		for (int b = 0; b < c->bots; b++)
 			if (n64_bot_lobby_team(b, c->teams, c->player_count) == team)
 			{
 				snprintf(text, sizeof(text), "BOT  %s", n64_bot_lobby_name(b, c->bots));
-				text_centered(menu.small, center, 164 + row++ * 25, TEXT_COLOR, text);
+				text_centered(menu.small, center, 164 + row++ * spacing, TEXT_COLOR, text);
 			}
 		if (!row)
 			text_centered(menu.small, center, 189, TEXT_DIM, "NO PLAYERS");
 	}
 	draw_player_cards(c, 1, 1);
 	text_centered(menu.small, SCREEN_W / 2, 452, TEXT_DIM,
+		setup_burning(c) ? "YOUR CONSOLE WILL BURN   LEFT RED / RIGHT BLUE   START PLAY" :
 		setup_experimental(c) ? "EXPERIMENTAL   LEFT RED / RIGHT BLUE   A/B BACK   START PLAY" :
 		"LEFT  RED     RIGHT  BLUE     A/B  BACK     START  PLAY");
 }
@@ -1387,6 +1693,7 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 		}
 		menu_text(menu.small, x0 + 14, y + 13, selected ? TEXT_COLOR : TEXT_DIM,
 			DIFFICULTY_GAME(c) && r == ROW_GAME_TYPE ? "DIFFICULTY" :
+			r == ROW_BOTS && setup_burning(c) ? "BOTS - YOUR CONSOLE WILL BURN" :
 			r == ROW_BOTS && setup_experimental(c) ? "BOTS (EXPERIMENTAL)" : labels[r]);
 		if (r == ROW_GAME_TYPE && DIFFICULTY_GAME(c))
 			snprintf(value, sizeof(value), "%s", difficulties[c->difficulty & 3]);
@@ -1436,6 +1743,8 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 	}
 	draw_player_cards(c, teams, 0);
 	text_centered(menu.small, SCREEN_W / 2, 452, TEXT_DIM,
+		setup_burning(c) && row == ROW_BOTS ? "YOUR CONSOLE WILL BURN   LEFT/RIGHT BOTS   START PLAY" :
+		setup_burning(c) ? "WARNING: YOUR CONSOLE WILL BURN   START PLAY" :
 		setup_experimental(c) && row == ROW_BOTS ? "EXPERIMENTAL: LEFT/RIGHT BOTS; A SKILL; START PLAY" :
 		setup_experimental(c) ? teams ? "EXPERIMENTAL   A JOIN  B LEAVE  Z/R TEAMS  START PLAY" :
 			"EXPERIMENTAL   A JOIN  B LEAVE  START PLAY" :
@@ -1495,6 +1804,7 @@ static int team_setup_input(struct n64_menu_choice *c, int *screen, int automate
 				c->ports[c->player_count] = p;
 				c->teams[c->player_count] = c->player_count & 1;
 				c->player_count++;
+				setup_normalize_bots(c, 0);
 			}
 			continue;
 		}
@@ -1553,6 +1863,29 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 	static int score_index = -1;
 	int screen = result_count > 0 ? SCREEN_RESULTS : (c->player_count && !c->to_title ? SCREEN_SETUP : SCREEN_TITLE);
 	int row = ROW_GAME_TYPE, item = TITLE_MULTIPLAYER, setting = SETTING_CHUNKY, content = CONTENT_WEAPONS;
+#ifdef HALO_N64_ONLINE
+	int online_chosen = 0;
+	/* (the controller that joined the game: the player's) */
+	static int online_port;
+	/* (testing, port.json flag "debug_online": ONLINE at once, the first
+	game the Link lists joined) */
+	int online_test = n64_debug_flag("debug_online");
+
+	if (online_test)
+		screen = SCREEN_ONLINE;
+	/* (the player's name, for the Link) */
+	name_load();
+	n64_link_set_name(naming.name);
+	/* (after an online game: back to ONLINE, the list asked for again) */
+	if (c->to_online)
+	{
+		c->to_online = 0;
+		c->online = 0;
+		screen = SCREEN_ONLINE;
+		online_test = 0;
+		n64_link_list();
+	}
+#endif
 
 	/* (left from the pause menu: the title, the players still joined) */
 	if (c->to_title && c->firefight)
@@ -1606,6 +1939,50 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 
 		menu.frame += 1.f;
 		read_pads();
+#ifdef HALO_N64_ONLINE
+		{
+			static enum n64_link_state was;
+			char map[32];
+			int teams, team;
+
+			n64_link_update();
+			if (n64_link_state() == N64_LINK_CONNECTED && was != N64_LINK_CONNECTED)
+				n64_link_list();
+			was = n64_link_state();
+			/* the game the Link joined has begun: a game of the cartridge's own
+			on its map, the player's unit played here and the rest drawn as the
+			Link sends it (port/n64/game/n64_online_game.c) */
+			if (n64_link_take_load(map, sizeof(map), &teams, &team))
+			{
+				int chosen = n64_menu_map_from_folder(map);
+
+				if (chosen < 0)
+				{
+					debugf("n64: online: %s is not on the cartridge: leaving\n", map);
+					n64_link_leave();
+				}
+				else
+				{
+					debugf("n64: online: the Link's game begins on %s (teams %d, team %d)\n", map, teams, team);
+					c->online = 1;
+					c->online_teams = teams;
+					c->online_team = team;
+					c->map = chosen;
+					c->game_type = teams ? 1 : 0;
+					c->firefight = 0;
+					c->campaign = 0;
+					c->bots = 0;
+					c->weapon_set = 0;
+					c->vehicle_set = N64_VEHICLES_NONE;
+					c->big_head = c->paintball = 0;
+					c->player_count = 1;
+					c->ports[0] = online_port;
+					c->teams[0] = team & 1;
+					start = 1;
+				}
+			}
+		}
+#endif
 		if (screen == SCREEN_RESULTS)
 		{
 			for (int p = 0; p < 4; p++)
@@ -1636,6 +2013,15 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					menu.control_pad = p;
 					continue;
 				}
+#ifdef HALO_N64_ONLINE
+				if (item == TITLE_MULTIPLAYER)
+				{
+					screen = SCREEN_ONLINE;
+					online_chosen = 0;
+					n64_link_list();
+					continue;
+				}
+#endif
 				c->firefight = item == TITLE_FIREFIGHT;
 				c->campaign = CAMPAIGN_CARTRIDGE && item == TITLE_MULTIPLAYER;
 				/* Preserve Firefight on its original map set; PC maps are MP. */
@@ -1661,6 +2047,66 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				}
 			}
 		}
+#ifdef HALO_N64_ONLINE
+		else if (screen == SCREEN_ONLINE)
+		{
+			const struct n64_link_game *games;
+			int count = n64_link_games(&games);
+
+			for (int p = 0; p < 4 && screen == SCREEN_ONLINE; p++)
+			{
+				/* (the name's keyboard, open: its keys) */
+				if (naming.open)
+				{
+					name_input(&pads[p]);
+					continue;
+				}
+				/* (in a game's lobby: B leaves it) */
+				if (n64_online_scores()->valid && !n64_online_scores()->in_game)
+				{
+					if (pads[p].pressed.b)
+						n64_link_leave();
+					continue;
+				}
+				if (pads[p].pressed.b)
+				{
+					screen = SCREEN_TITLE;
+					continue;
+				}
+				if (pads[p].pressed.z)
+					n64_link_list();
+				/* (R: the player's name typed) */
+				if (pads[p].pressed.r)
+				{
+					naming.open = 1;
+					memcpy(naming.text, naming.name, sizeof(naming.text));
+					naming.row = naming.column = 0;
+					continue;
+				}
+				if (count)
+				{
+					if (pads[p].up)
+						online_chosen = (online_chosen + count - 1) % count;
+					if (pads[p].down)
+						online_chosen = (online_chosen + 1) % count;
+					if (pads[p].pressed.a && online_chosen < count)
+					{
+						online_port = p;
+						n64_link_join(games[online_chosen].id);
+					}
+				}
+			}
+			if (online_chosen >= count)
+				online_chosen = count ? count - 1 : 0;
+			if (online_test && count)
+			{
+				debugf("n64: online test: joining %s\n", games[0].name);
+				online_port = 0;
+				n64_link_join(games[0].id);
+				online_test = 0;
+			}
+		}
+#endif
 		else if (screen == SCREEN_TEAMS)
 		{
 			start = team_setup_input(c, &screen, automated_roster);
@@ -1676,7 +2122,14 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				if (step && content == CONTENT_WEAPONS) c->weapon_set = (c->weapon_set + WEAPON_SET_COUNT + step) % WEAPON_SET_COUNT;
 				if (step && content == CONTENT_VEHICLES)
 					c->vehicle_set = vehicle_choices[(vehicle_choice(c->vehicle_set) + VEHICLE_CHOICE_COUNT + step) % VEHICLE_CHOICE_COUNT];
-				if (step && content == CONTENT_FEEDBACK) c->enhanced_fx = !c->enhanced_fx;
+				if (step && content == CONTENT_FEEDBACK)
+				{
+					/* (ENHANCED, ORIGINAL, OFF, round) */
+					static const int order[3] = {N64_IMPACT_FX_ENHANCED, N64_IMPACT_FX_ORIGINAL, N64_IMPACT_FX_OFF};
+					int at = c->enhanced_fx == N64_IMPACT_FX_ORIGINAL ? 1 : c->enhanced_fx == N64_IMPACT_FX_OFF ? 2 : 0;
+
+					c->enhanced_fx = order[(at + 3 + step) % 3];
+				}
 				if (step && content == CONTENT_BIG_HEAD) c->big_head = !c->big_head;
 				if (step && content == CONTENT_PAINTBALL) c->paintball = !c->paintball;
 				if (pad->pressed.b || pad->pressed.start || (pad->pressed.a && content == CONTENT_BACK)) screen = SCREEN_SETUP;
@@ -1772,6 +2225,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 						c->ports[c->player_count] = p;
 						c->teams[c->player_count] = c->player_count & 1;
 						c->player_count++;
+						setup_normalize_bots(c, 0);
 						continue;
 					}
 					if (pad->pressed.b && !c->player_count)
@@ -1830,7 +2284,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					else if (row == ROW_SCORE)
 						score_index = (score_index + 5 + step) % 5;
 					else if (row == ROW_BOTS)
-						c->bots = setup_bot_step(c->bots, step, n64_menu_game_bots(c->game_type) ? 1 : 0);
+						c->bots = setup_bot_step(c->bots, step, n64_menu_game_bots(c->game_type) ? 1 : 0, c->player_count);
 					if (!DIFFICULTY_GAME(c) && n64_menu_game_bots(c->game_type) && !c->bots) c->bots = 1;
 				}
 				if (pad->pressed.start || (pad->pressed.a && row == ROW_START && slot >= 0))
@@ -1854,6 +2308,12 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			draw_results(results, result_count);
 		else if (screen == SCREEN_TITLE)
 			draw_title(item);
+#ifdef HALO_N64_ONLINE
+		else if (screen == SCREEN_ONLINE && naming.open)
+			draw_naming();
+		else if (screen == SCREEN_ONLINE)
+			draw_online(online_chosen);
+#endif
 		else if (start)
 			draw_loading(c);
 		else if (screen == SCREEN_TEAMS)
@@ -1879,8 +2339,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_render_frame_end();
 			/* the game in chunky mode or not from its first frame */
 			n64_render_set_chunky(menu.chunky == RESOLUTION_HIGH ? 0 : menu.chunky);
-			n64_particles_set_enabled(!menu.no_particles);
-			n64_particles_set_enhanced(c->enhanced_fx);
+			n64_particles_set_enabled(!menu.no_particles && c->enhanced_fx != N64_IMPACT_FX_OFF);
+			n64_particles_set_enhanced(c->enhanced_fx == N64_IMPACT_FX_ENHANCED);
 			n64_render_set_view_model_quality(menu.view_model);
 			n64_hud_set_inset(menu.hud_inset);
 			n64_render_show_counter(menu.fps_counter);

@@ -68,7 +68,7 @@ static inline int n64_ghost_camo_roll(int profile, uint32_t *seed)
 static inline int n64_ghost_lobby_team(int index, const int *human_teams, int human_count)
 {
 	int counts[2] = { 0, 0 }, team = 0, i;
-	if (index < 0 || index >= 12) return -1;
+	if (index < 0 || index >= 15) return -1;
 	for (i = 0; human_teams && i < human_count && i < 4; i++)
 		counts[human_teams[i] & 1]++;
 	for (i = 0; i <= index; i++)

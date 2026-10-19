@@ -1171,6 +1171,16 @@ static void player_effect_update_camera_impulse(
 	return;
 }
 
+#ifdef HALO_N64_ONLINE
+/* Halo 64 Online (port/n64/game/n64_online_game.c): while a hit from the
+Link's game is replayed, where its attacker is (the attacker is no object
+of this game) */
+real_point3d const *n64_online_damage_attacker;
+#define N64_ONLINE_ATTACKER (n64_online_damage_attacker != NULL)
+#else
+#define N64_ONLINE_ATTACKER FALSE
+#endif
+
 void player_effect_start(
 	long player_index,
 	struct damage_data const *damage,
@@ -1218,7 +1228,7 @@ void player_effect_start(
 		if (definition->sound.index != NONE)
 			unspatialized_impulse_sound_new(definition->sound.index, 1.0f);
 
-		if (total_damage > 0.0f && damage->owner_object_index != NONE)
+		if (total_damage > 0.0f && (damage->owner_object_index != NONE || N64_ONLINE_ATTACKER))
 		{
 			if (TEST_FLAG(definition->damage.flags, _damage_draw_indicators_down_bit))
 			{
@@ -1239,7 +1249,7 @@ void player_effect_start(
 				unit = unit_try_and_get(unit_index);
 				attacker = object_try_and_get(damage->owner_object_index);
 
-				if (unit && attacker)
+				if (unit && (attacker || N64_ONLINE_ATTACKER))
 				{
 					struct observer_result const *camera =
 						observer_get_camera(local_player_index);
@@ -1253,6 +1263,11 @@ void player_effect_start(
 						real_vector3d relative;
 
 						unit_get_head_position(unit_index, &head_position);
+#ifdef HALO_N64_ONLINE
+						if (n64_online_damage_attacker)
+							attacker_position = *n64_online_damage_attacker;
+						else
+#endif
 						object_get_origin(
 							damage->owner_object_index,
 							&attacker_position);

@@ -20,7 +20,15 @@ already there.
 #include "n64.h"
 
 #define CHUNK_SIZE 4096
+#ifdef HALO_N64_CAMPAIGN
+/* 256 KiB: the campaign streams 3.9 MB of frames (the player's first-person
+animations and the Grunts', Jackals' and Elites' at once), and 64 KiB
+missed 40-46% of its requests in a fight (a profile, 2026-10-16: the DMA
+waits were the campaign's "AI lag"; Firefight's fit) */
+#define CHUNK_COUNT 64
+#else
 #define CHUNK_COUNT 16 /* 64 KiB; frames are unchanged, misses stream from ROM */
+#endif
 
 #define MAXIMUM_GRAPHS 256
 

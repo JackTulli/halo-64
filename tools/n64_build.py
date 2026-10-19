@@ -189,6 +189,12 @@ def main(argv=None):
                     "-Wl,--wrap,__do_global_ctors -Wl,-Map=$out.map $ldflags "
                     "&& $python tools/n64_link_check.py $objlist --check"),
            description="N64 LINK $out", rspfile="$out.rsp", rspfile_content="$in_newline")
+    # a cartridge's program alone (the ROM Builder's: it makes the ROM)
+    n.rule("program",
+           command=("cd $root && export N64_INST=$n64inst && $bin/n64sym --all $in $in.sym && cp $in $in.stripped && "
+                    "$bin/mips64-elf-strip -s $in.stripped && "
+                    "$bin/n64elfcompress -o $outdir -c $rom_elf_compression $in.stripped"),
+           description="N64 PROGRAM $in")
     n.rule("z64",
            command=("cd $root && export N64_INST=$n64inst INVADER_DEFINITIONS=$definitions && $bin/n64sym --all $in $in.sym && cp $in $in.stripped && "
                     "$bin/mips64-elf-strip -s $in.stripped && "
@@ -274,9 +280,11 @@ def main(argv=None):
     tool_sources = sorted(posix(p) for p in Path("tools/n64").glob("*.py") if converter_source(p)) + [p8_palette]
     tool_sources += sorted(posix(p) for p in definitions.glob("*.json"))
 
-    def variant(variant_dir, extra_defines, maps, flags, rom, title, campaign, pc_expansion=False, compression=1):
+    def variant(variant_dir, extra_defines, maps, flags, rom, title, campaign, pc_expansion=False, compression=1,
+                program_only=False):
         """one cartridge: the game compiled with its defines, its files, its
-        ROM"""
+        ROM (program_only: the program alone, stripped and compressed, and its
+        symbols)"""
         if type(compression) is not int or not 0 <= compression <= 3:
             raise ValueError("rom_elf_compression must be an integer from 0 to 3")
         convert_flags = "--campaign" if campaign else ""
@@ -353,6 +361,13 @@ def main(argv=None):
             # of them beside the map conversions froze a 15 GB machine)
             "ldflags": " ".join(port.get("ldflags", []) + (["-flto=4", game_opt, small, *CODE_FLAGS] if lto else [])),
         })
+        if program_only:
+            products = [posix(variant_dir / "halo.elf.stripped"), posix(variant_dir / "halo.elf.sym")]
+            n.build(products, "program", posix(elf),
+                    implicit=[posix(N64_INST / "bin" / (name + (".exe" if sys.platform == "win32" else "")))
+                              for name in ("n64sym", "mips64-elf-strip", "n64elfcompress")],
+                    variables={"outdir": q(variant_dir), "rom_elf_compression": str(compression)})
+            return products[0], len(game_objects), len(objects)
 
         fsdir = variant_dir / "filesystem"
         fs_files = []
@@ -366,6 +381,10 @@ def main(argv=None):
                 outputs += [posix(fsdir / "levels" / f"{name}.tiles"), posix(fsdir / "levels" / f"{name}-low.lvl"),
                             posix(fsdir / "levels" / f"{name}-low.mdl")]
             sources = ["build/xbox/disc/maps/a30.map"] if not campaign else []
+            # (the level's edits: tools/n64/campaign_editor.html)
+            edits = Path("campaign_edits") / f"{name}.json"
+            if campaign and edits.is_file():
+                sources.append(posix(edits))
             if pc_expansion:
                 # Both explicit donors can contribute tag dependencies. Track
                 # aircraft donor changes just like the weapon/ground donor.
@@ -476,6 +495,23 @@ def main(argv=None):
                             campaign.get("title", "HALO N64 CAMPAIGN"), True, compression=campaign.get("rom_elf_compression", 1))
         targets.append(rom)
     n.build("campaign", "phony", [posix(t) for t in targets[1:]])
+    # the online cartridge (port.json "online"): the multiplayer cartridge's
+    # maps unless it names its own; not built by default
+    online = port.get("online")
+    if online:
+        rom, _, _ = variant(BUILD_DIR / "online", online.get("defines", []), online.get("maps") or port.get("maps", []),
+                            online.get("flags", []), online.get("rom", "halo-online.z64"),
+                            online.get("title", "HALO 64 ONLINE"), False,
+                            compression=online.get("rom_elf_compression", 1))
+        n.build("online", "phony", posix(rom))
+    # the Custom Edition cartridge's program (port.json "custom"): not built by
+    # default; the ROM Builder makes its ROMs from the player's maps
+    custom = port.get("custom")
+    if custom:
+        program, _, _ = variant(BUILD_DIR / "custom", custom.get("defines", []), [], [], custom.get("rom"),
+                                custom.get("title"), False, compression=custom.get("rom_elf_compression", 1),
+                                program_only=True)
+        n.build("custom", "phony", posix(program))
     if args.pc_expansion:
         pc = port.get("pc_expansion")
         if not pc:

@@ -3812,7 +3812,14 @@ static boolean n64_vehicle_unmoved(
 /* a biped no player controls (Firefight's Covenant) far from every local
 player poses every other tick, staggered: at that distance 15 poses a
 second look the same, and its hits are tested against a pose a tick old */
+#ifdef HALO_N64_CAMPAIGN
+/* (the campaign's: its fights are near, five or six Covenant within 15 units
+were all posed every tick, ~5 ms of a fight's tick; 8 to 15 units off, 15
+poses a second look the same) */
+#define N64_FAR_BIPED_DISTANCE 8.f
+#else
 #define N64_FAR_BIPED_DISTANCE 15.f
+#endif
 
 extern boolean n64_object_recently_seen(long object_index);
 

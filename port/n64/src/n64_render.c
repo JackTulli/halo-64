@@ -387,6 +387,8 @@ struct loaded_model
 	uint8_t *data;
 	rspq_block_t **setups, **blocks;
 	unsigned long last_drawn;
+	/* the frame it was last drawn in a first-person view (0: never) */
+	unsigned long first_person_drawn;
 };
 
 static struct
@@ -751,6 +753,34 @@ puts at the top of the heap the first time a frame asks for it) */
 static surface_t game_zbuf;
 static int home_in_use;
 
+/* the game's z-buffer when the heap had no 150 KB in one piece for it (issue
+3: "no memory for the z-buffer" between the menu and the campaign's level,
+on a cartridge built from another copy of the game): the model cache's
+oldest models dropped, then the maps' home if no map is in it (between the
+menu and the level none is; the level's load closes the display before its
+image goes there, n64_render_prepare_map_image) */
+static surface_t game_zbuf_made_room(void)
+{
+	unsigned long size = 320 * 240 * 2 + 64, available;
+	surface_t zbuf = {0};
+	void *home;
+
+	if (n64_render_make_room(size, 1))
+		zbuf = surface_alloc(FMT_RGBA16, 320, 240);
+	home = n64_map_home_free_part(&available);
+	if (!zbuf.buffer && home && available >= size)
+	{
+		n64_display_lend(home, available);
+		zbuf = surface_alloc(FMT_RGBA16, 320, 240);
+		n64_display_lend(NULL, 0);
+		if (zbuf.buffer)
+			home_in_use = 1;
+	}
+	debugf("n64: no room for the z-buffer on the heap (%lu KB free); %s\n", n64_heap_free() / 1024,
+		!zbuf.buffer ? "none found" : home_in_use ? "made in the maps' home" : "made by dropping models");
+	return zbuf;
+}
+
 /* The game's display, and its z-buffer made right after its three buffers,
 in the same place (the menu keeps that place for them: GAME_DISPLAY_BYTES).
 libdragon's display_get_zbuf took it from the heap's top or, failing that,
@@ -775,6 +805,8 @@ static void game_display_init(void)
 		surface_free(&game_zbuf);
 	game_zbuf = surface_alloc(FMT_RGBA16, 320, 240);
 	n64_display_lend(NULL, 0);
+	if (!game_zbuf.buffer)
+		game_zbuf = game_zbuf_made_room();
 	first = 0;
 	screen_width = 320;
 	screen_height = 240;
@@ -1378,6 +1410,21 @@ static void record_model_modes(void)
 	}
 }
 
+/* A palette's load (LOAD_TLUT) then drawing, with no SYNC_LOAD between:
+libdragon's own font code hung real consoles' RDPs that way (its commit
+e2e2dc0, "workaround for crash related to missing sync"; its validator and
+the emulators say nothing). Every palette load here is followed by one
+(issues 6 and 7: "RDP crashed" on consoles at explosions and plasma fire,
+whose scorch marks are paletted, n64_paint.c) */
+static void upload_sprite(sprite_t *sprite, const rdpq_texparms_t *parms)
+{
+	tex_format_t format = sprite_get_format(sprite);
+
+	rdpq_sprite_upload(TILE0, sprite, parms);
+	if (format == FMT_CI4 || format == FMT_CI8)
+		rdpq_sync_load();
+}
+
 /* a batch's texture (and the RSP's culling: Halo's two-sided shaders are
 drawn without back-face culling), recorded */
 static rspq_block_t *record_setup(sprite_t *sprite, int flags)
@@ -1387,7 +1434,7 @@ static rspq_block_t *record_setup(sprite_t *sprite, int flags)
 	rspq_block_begin();
 	if (sprite)
 	{
-		rdpq_sprite_upload(TILE0, sprite, &(rdpq_texparms_t){
+		upload_sprite(sprite, &(rdpq_texparms_t){
 			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
 		});
 	}
@@ -1434,11 +1481,31 @@ static unsigned long model_allocation(struct model_record const *model)
 	return needed;
 }
 
+/* a first-person model (the arms, the weapon) drawn as one lately. On the
+custom cartridge: a Custom Edition map (Foundry: its warehouse is machine
+models, ~1.5 MB of them) filled the heap with world models drawn in the
+frames in flight, and the view models, drawn last, found no room. There
+they are kept once loaded, take room first (n64_render_frame_begin) and may
+push out a world model from an earlier frame */
+#define FIRST_PERSON_FRAMES 60
+static int first_person_model(int index)
+{
+#ifdef HALO_N64_CUSTOM_MAPS
+	unsigned long drawn = models.loaded[index].first_person_drawn;
+
+	return drawn && drawn + FIRST_PERSON_FRAMES >= renderer.frame_index;
+#else
+	(void)index;
+	return 0;
+#endif
+}
+
 static int load_model(int index)
 {
 	struct model_record *model = &models.models[index];
 	struct loaded_model *loaded = &models.loaded[index];
 	unsigned long size = model->vertex_bytes + model->index_bytes;
+	int priority = first_person_model(index);
 	FILE *file;
 
 	loaded->last_drawn = renderer.frame_index;
@@ -1461,7 +1528,10 @@ static int load_model(int index)
 
 		for (int i = 0; i < models.header->model_count; i++)
 		{
-			if (models.loaded[i].data && models.loaded[i].last_drawn + FRAMES_IN_FLIGHT < renderer.frame_index &&
+			if (!models.loaded[i].data || i == index || first_person_model(i))
+				continue;
+			if ((priority ? models.loaded[i].last_drawn < renderer.frame_index :
+				models.loaded[i].last_drawn + FRAMES_IN_FLIGHT < renderer.frame_index) &&
 				(oldest < 0 || models.loaded[i].last_drawn < models.loaded[oldest].last_drawn))
 				oldest = i;
 		}
@@ -2215,7 +2285,14 @@ void n64_render_frame_begin(void)
 	/* (a z-buffer without memory is one at address 0, over the code: stop
 	and say so instead) */
 	if (!frame_zbuf || !frame_zbuf->buffer)
-		n64_fatal("no memory for the z-buffer");
+	{
+		char pieces[200], message[300];
+		unsigned long largest = n64_heap_describe(pieces, sizeof(pieces));
+
+		snprintf(message, sizeof(message), "no memory for the z-buffer: %lu KB free, largest %lu KB; %s",
+			n64_heap_free() / 1024, largest / 1024, pieces);
+		n64_fatal(message);
+	}
 	rdpq_attach(renderer.surface, frame_zbuf);
 	t3d_frame_start();
 	/* past the draw distance: the fog's colour */
@@ -2234,6 +2311,17 @@ void n64_render_frame_begin(void)
 	tiles.big_drawn = tiles.waiting = 0;
 	renderer.matrix_count = 0;
 	palette_count = 0;
+#ifdef HALO_N64_CUSTOM_MAPS
+	/* the view models first, before the world's take the heap */
+	if (models.header && models.loaded && display_mode == DISPLAY_GAME)
+	{
+		for (int i = 0; i < models.header->model_count; i++)
+		{
+			if (first_person_model(i))
+				load_model(i);
+		}
+	}
+#endif
 }
 
 static void record_material(int index);
@@ -2479,7 +2567,7 @@ static void record_material(int index)
 	}
 	else if (textured)
 	{
-		rdpq_sprite_upload(TILE0, level.sprites[material->texture], &(rdpq_texparms_t){
+		upload_sprite(level.sprites[material->texture], &(rdpq_texparms_t){
 			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
 		});
 	}
@@ -3193,7 +3281,11 @@ static void use_setup(struct loaded_model *loaded, int b, struct model_batch *ba
 		uint16_t *palette = tinted_palette(sprite, color);
 
 		if (palette)
+		{
 			rdpq_tex_upload_tlut(palette, 0, 16);
+			/* (upload_sprite) */
+			rdpq_sync_load();
+		}
 		current_color = color;
 	}
 }
@@ -3528,6 +3620,8 @@ static void render_object(const struct n64_object *object)
 	node_count = object->node_count < model->node_count ? object->node_count : model->node_count;
 	if (node_count <= 0 || renderer.matrix_count + model->node_count > MATRICES_PER_FRAME)
 		return;
+	if (renderer.first_person)
+		models.loaded[model - models.models].first_person_drawn = renderer.frame_index;
 	if (!load_model(model - models.models))
 		return;
 	/* an object seen in an earlier view of this frame has its matrices */
@@ -3721,6 +3815,11 @@ static void draw_counter(void)
 	}
 	/* the game's (a campaign's objects: n64_campaign.c) */
 	if (n64_game_debug_line(text, sizeof(text)))
+	{
+		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, line, "%s", text);
+		line += 10;
+	}
+	if (n64_game_debug_line_2(text, sizeof(text)))
 		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, line, "%s", text);
 }
 

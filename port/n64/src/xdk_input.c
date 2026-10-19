@@ -18,7 +18,7 @@ so the default layout is the one N64 shooters used (Turok, Perfect Dark's
     D-pad up    switch weapon (Y)
     D-pad down  crouch (left stick click)
     D-pad left  zoom (right stick click)
-    D-pad right switch grenades (white)
+    D-pad right switch grenades (black); held, the flashlight (white)
     Start       start
 
 The game's rumble (XInputSetState, once a frame) goes to the controller's
@@ -28,7 +28,11 @@ frames as strong as Halo's two motors).
 Each controller can choose another scheme on the menu's CONTROLS page
 (n64_controls, n64.h): bumper jumper (R jumps, A throws a grenade),
 GoldenEye's (the stick turns and walks, C left and right strafe, C up and
-down look) or north (the stick walks and strafes, the C buttons look);
+down look), north (the stick walks and strafes, the C buttons look) or
+D-pad move (the standard one with the C buttons and the D-pad swapped: the
+D-pad walks and strafes, C up switches weapons, C down crouches, C left
+zooms, C right switches grenades -- issue 5, GoldenEye's and Perfect Dark's
+way of holding the controller);
 crouch held or toggled (a jump stands back up), look inverted or not, fire
 and grenades swapped or not, and the look speeds of the stick and of the C
 buttons (n64_look_speed: Halo's turning rates times them).
@@ -58,6 +62,13 @@ struct controller
 static struct controller controllers[PORT_COUNT];
 static DWORD reported_gamepads;
 static struct n64_pad golden_pads[4];
+
+/* D-pad right, tapped or held: a tap switches grenades (Halo's Black
+button), a hold of D_RIGHT_HOLD polls the flashlight (its White) -- it
+pressed White alone, so no layout could switch grenades (issue 4); on the
+campaign cartridge the hold steps the players' speed (n64_campaign.c) */
+#define D_RIGHT_HOLD 10
+static unsigned char d_right_held[PORT_COUNT];
 static unsigned long last_poll_tick;
 
 int n64_test_input = 0;
@@ -235,10 +246,29 @@ int n64_golden_raw(int local, float *x, float *y, int *aim)
 	return 1;
 }
 
+/* the C buttons and the D-pad swapped (N64_SCHEME_DPAD) */
+static unsigned short swap_c_and_d(unsigned short b)
+{
+	static const unsigned short c[4] = {N64_BUTTON_C_UP, N64_BUTTON_C_DOWN, N64_BUTTON_C_LEFT, N64_BUTTON_C_RIGHT};
+	static const unsigned short d[4] = {N64_BUTTON_D_UP, N64_BUTTON_D_DOWN, N64_BUTTON_D_LEFT, N64_BUTTON_D_RIGHT};
+	unsigned short out = b;
+
+	for (int i = 0; i < 4; i++)
+	{
+		out &= (unsigned short)~(c[i] | d[i]);
+		if (b & c[i])
+			out |= d[i];
+		if (b & d[i])
+			out |= c[i];
+	}
+	return out;
+}
+
 static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, XINPUT_GAMEPAD *gamepad)
 {
 	struct n64_controls *controls = &n64_controls[n64_port & 3];
-	unsigned short b = pad->buttons, pressed = b & ~controls->last_buttons;
+	unsigned short b = controls->scheme == N64_SCHEME_DPAD ? swap_c_and_d(pad->buttons) : pad->buttons;
+	unsigned short pressed = b & ~controls->last_buttons;
 	unsigned short jump = N64_BUTTON_A, grenade = N64_BUTTON_R, fire = N64_BUTTON_Z;
 	SHORT look_y;
 	int crouch;
@@ -297,18 +327,32 @@ static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, XINPUT_GAMEP
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_X] = (b & N64_BUTTON_B) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_B] = (b & N64_BUTTON_L) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_Y] = (b & N64_BUTTON_D_UP) ? 255 : 0;
-#ifdef HALO_N64_CAMPAIGN
-	/* (the campaign cartridge: D-pad right steps the player's speed, for
-	looking round a level quickly -- n64_campaign.c; no grenade switch) */
-	if (pressed & N64_BUTTON_D_RIGHT)
 	{
-		extern int n64_campaign_speed_requests;
+		unsigned char *held = &d_right_held[n64_port & 3];
 
-		n64_campaign_speed_requests++;
-	}
+		if (b & N64_BUTTON_D_RIGHT)
+		{
+			if (*held < 255)
+				(*held)++;
+			if (*held == D_RIGHT_HOLD)
+			{
+#ifdef HALO_N64_CAMPAIGN
+				extern int n64_campaign_speed_requests;
+
+				n64_campaign_speed_requests++;
 #else
-	gamepad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] = (b & N64_BUTTON_D_RIGHT) ? 255 : 0;
+				gamepad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] = 255;
 #endif
+			}
+		}
+		else
+		{
+			/* (let go before the hold: a tap) */
+			if (*held && *held < D_RIGHT_HOLD)
+				gamepad->bAnalogButtons[XINPUT_GAMEPAD_BLACK] = 255;
+			*held = 0;
+		}
+	}
 	if (crouch)
 		gamepad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
 	if (controls->scheme != N64_SCHEME_GOLDEN_STYLE && (b & N64_BUTTON_D_LEFT))
@@ -341,6 +385,33 @@ static void test_gamepad(int port, XINPUT_GAMEPAD *gamepad)
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] = ((phase % 120) == 30) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_X] = ((phase % 64) == 9) ? 255 : 0;
 }
+
+#ifdef HALO_N64_ONLINE
+#include "n64_link.h"
+
+/* the online cartridge's controllers, for Halo 64 Link (n64_online.c): an
+N64 port's pad as the game's input makes it (its scheme and settings) */
+int n64_input_link_pad(int port, struct n64_link_pad *out)
+{
+	struct n64_pad pad;
+	XINPUT_GAMEPAD gamepad;
+
+	poll();
+	n64_input_get(port & 3, &pad);
+	if (!pad.connected)
+		return 0;
+	memset(&gamepad, 0, sizeof(gamepad));
+	pad_to_gamepad(port & 3, &pad, &gamepad);
+	out->port = (uint8_t)port;
+	out->buttons = gamepad.wButtons;
+	memcpy(out->analog, gamepad.bAnalogButtons, sizeof(out->analog));
+	out->sticks[0] = gamepad.sThumbLX;
+	out->sticks[1] = gamepad.sThumbLY;
+	out->sticks[2] = gamepad.sThumbRX;
+	out->sticks[3] = gamepad.sThumbRY;
+	return 1;
+}
+#endif
 
 DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 {

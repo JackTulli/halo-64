@@ -532,6 +532,14 @@ void render_frame(
 
 		n64_game_cycle_frame();
 	}
+#ifdef HALO_N64_ONLINE
+	{
+		/* (an online game: the Link's frames read, n64_online_game.c) */
+		extern void n64_online_game_frame(void);
+
+		n64_online_game_frame();
+	}
+#endif
 	render.frame_index++;
 	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
 	{
@@ -549,6 +557,8 @@ void render_frame(
 		struct render_window *window = &windows[window_index];
 		struct render_camera const *camera = &window->render_camera;
 		struct n64_view view;
+		/* (the view is the Link's, an online game's: no first-person weapon) */
+		int online_view = 0;
 
 		if (window->console_window)
 			continue;
@@ -648,6 +658,10 @@ void render_frame(
 				view.up[2] = 1.f;
 			}
 		}
+#ifdef HALO_N64_ONLINE
+		/* (an online game's player in a vehicle: the Link's view of it) */
+		online_view = n64_online_view(window->local_player_index, &view);
+#endif
 		{
 			/* the clusters the eye can see (Halo's potentially visible set) */
 			struct location location;
@@ -671,7 +685,13 @@ void render_frame(
 		render.camera = *camera;
 		n64_render_view(&view);
 		render_objects_for_view(window->local_player_index, window_index == 0 && n64_debug_flag("debug_chase"));
-		if (!(window_index == 0 && n64_debug_flag("debug_chase")) && !n64_debug_flag("debug_no_first_person"))
+#ifdef HALO_N64_ONLINE
+		/* (an online game: everything the Link's game has but the player's
+		own unit) */
+		n64_online_draw_objects();
+#endif
+		if (!(window_index == 0 && n64_debug_flag("debug_chase")) && !n64_debug_flag("debug_no_first_person") &&
+			!online_view)
 		{
 			first_person_begun = FALSE;
 			first_person_weapon_render_update();

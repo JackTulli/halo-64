@@ -91,6 +91,23 @@
     "title": "HALO 64 CAMPAIGN",
     "flags": []
   },
+  "online": {
+    "comment": "the online cartridge (port/n64/docs/online): its own build of the game (HALO_N64_ONLINE: ONLINE, through Halo 64 Link on the computer), the multiplayer cartridge's maps. tools/n64_build.py builds it with target online (not by default)",
+    "maps": [],
+    "defines": ["HALO_N64_ONLINE"],
+    "rom": "halo-online.z64",
+    "rom_elf_compression": 1,
+    "title": "HALO 64 ONLINE",
+    "flags": []
+  },
+  "custom": {
+    "comment": "the Custom Edition cartridge: its own build of the game (HALO_N64_CUSTOM_MAPS: the maps named by the cartridge's maps/custom.list); its maps are Custom Edition maps the ROM Builder makes Xbox maps of (tools/n64/ce_prepare.py) and converts with --custom. tools/n64_build.py builds only its program (target custom)",
+    "defines": ["HALO_N64_CUSTOM_MAPS"],
+    "rom": "halo-custom-edition.z64",
+    "rom_elf_compression": 1,
+    "title": "HALO 64 CUSTOM",
+    "flags": []
+  },
   "pc_expansion": {
     "comment": "Additive PC multiplayer cartridge; explicit PC map input is required by tools/n64_build.py.",
     "maps": [

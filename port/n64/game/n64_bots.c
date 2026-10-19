@@ -59,7 +59,7 @@ a clear line (objects included) to the enemy.
 
 /* ---------- constants */
 
-#define MAXIMUM_BOTS 12
+#define MAXIMUM_BOTS 15
 /* a path is found again after this long, or when its target has moved */
 #define PATH_LIFETIME (5 * TICKS_PER_SECOND)
 /* a straight walk to the target is tested before a search, at most this
@@ -125,7 +125,10 @@ static short const grenade_chance[4] = { 2, 4, 6, 8 }; /* in 1000 a tick */
 
 /* their armour in free-for-all games (Halo's colour indices: pink, orange,
 purple, cyan, cobalt, brown, teal, sage, salmon, tan, maroon, white) */
-static short const bot_colors[MAXIMUM_BOTS] = { 7, 11, 8, 9, 10, 14, 12, 13, 17, 15, 16, 0 };
+static short const bot_colors[MAXIMUM_BOTS] = { 7, 11, 8, 9, 10, 14, 12, 13, 17, 15, 16, 0,
+	/* (past twelve bots there are three players or fewer: black, grey,
+	and the fourth player's green) */
+	1, 4, 6 };
 
 /* ---------- state */
 
@@ -622,6 +625,13 @@ the dearest part of a biped's tick after its pose); else every tick */
 int n64_bot_move_interval(
 	long unit_index)
 {
+#ifdef HALO_N64_CAMPAIGN
+	extern int n64_campaign_move_interval(long unit_index);
+
+	/* (a campaign's actors: n64_campaign.c) */
+	if (!bots.active)
+		return n64_campaign_move_interval(unit_index);
+#endif
 	if (!bots.active || bots.created < 4)
 		return 1;
 	return bot_of_unit(unit_index) ? 2 : 1;

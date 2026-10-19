@@ -280,6 +280,9 @@ void n64_paint_draw(const struct n64_particle_view *view)
 			rdpq_mode_combiner(RDPQ_COMBINER1((TEX0, 0, PRIM, 0), (TEX0, 0, PRIM, 0)));
 			rdpq_set_prim_color(RGBA32(mark->rgba[0], mark->rgba[1], mark->rgba[2], (int)(alpha * mark->rgba[3])));
 			rdpq_tex_upload_tlut((uint16_t *)(texture + PAINT_CELL * PAINT_CELL / 2), 0, 16);
+			/* (a palette's load, then a SYNC_LOAD: n64_render.c upload_sprite,
+			issues 6 and 7) */
+			rdpq_sync_load();
 			surface = surface_make_linear(texture, FMT_CI4, PAINT_CELL, PAINT_CELL);
 		}
 		else

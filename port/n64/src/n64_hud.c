@@ -1095,7 +1095,8 @@ static void pause_text_fit(float x, int y, int align, unsigned long color, const
 void n64_hud_pause_controls(const int *ports, int count, const int *selected_rows)
 {
 	static const char *const names[CONTROL_COUNT] = {"SCHEME", "CROUCH", "LOOK", "FIRE", "STICK", "C LOOK", "RUMBLE"};
-	static const char *const schemes[N64_SCHEME_COUNT] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH", "GOLDEN STYLE"};
+	static const char *const schemes[N64_SCHEME_COUNT] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH", "GOLDEN STYLE",
+		"D-PAD MOVE"};
 	int width = n64_render_screen_width(), height = n64_render_screen_height();
 	int unit = height >= 480 ? 2 : 1, cap, i, r;
 	int columns = count > 1 ? 2 : 1, rows = count > 2 ? 2 : 1;

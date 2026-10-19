@@ -156,6 +156,7 @@ enum
 	N64_SCHEME_GOLDENEYE,     /* the stick turns and walks, C left and right strafe, C up and down look */
 	N64_SCHEME_NORTH,         /* the stick walks and strafes, the C buttons look */
 	N64_SCHEME_GOLDEN_STYLE,  /* optional free aim, held R and threshold turning */
+	N64_SCHEME_DPAD,          /* the stick looks, the D-pad moves, the C buttons do the D-pad's */
 	N64_SCHEME_COUNT
 };
 
@@ -290,6 +291,7 @@ the fog's colour alone */
 void n64_render_set_sky(const unsigned long *colors);
 /* the FPS counter's line of the game's own (n64_campaign.c), 0 for none */
 int n64_game_debug_line(char *text, int size);
+int n64_game_debug_line_2(char *text, int size);
 /* the views this frame: small views draw objects' far versions sooner */
 void n64_render_set_view_count(int count);
 /* then the first-person weapon: its own near plane, drawn over the world */
@@ -298,6 +300,8 @@ void n64_render_frame_end(void);
 /* draws the objects queued so far (n64_render_object queues them, sorted
 by texture): before 2D drawn over them */
 void n64_render_flush(void);
+/* n64_render_flush, then the 2D over the views (the HUD's phase of the counter) */
+void n64_render_hud_phase(void);
 /* chunky mode (the menu's settings): from the next frame on, the views'
 3D is drawn half as wide and its pixels doubled across (the HUD and text
 stay at full width) */
@@ -474,6 +478,15 @@ void n64_text_draw_scaled(const struct n64_font *font, float x, int y, unsigned 
 
 /* ---------- the menu (n64_menu.c): split screen multiplayer's setup */
 
+/* the CONTENT page's IMPACT FX (n64_menu_choice.enhanced_fx): the weapons',
+grenades' and impacts' particles enhanced, as they were, or none at all */
+enum n64_impact_fx
+{
+	N64_IMPACT_FX_ORIGINAL = 0,
+	N64_IMPACT_FX_ENHANCED = 1,
+	N64_IMPACT_FX_OFF = 2
+};
+
 enum n64_vehicle_selection
 {
 	N64_VEHICLES_MAP_DEFAULT = 0,
@@ -511,9 +524,15 @@ struct n64_menu_choice
 	/* Session-only expansion choices; EEPROM v1 remains unchanged. */
 	int weapon_set;
 	int vehicle_set; /* enum n64_vehicle_selection; session only */
-	int enhanced_fx;
+	int enhanced_fx; /* enum n64_impact_fx */
 	int big_head;
 	int paintball;
+	/* an online game (the online cartridge, HALO_N64_ONLINE): the Link's
+	game played, the map its; whether it has teams and the player's team.
+	to_online: the next menu opens on ONLINE */
+	int online;
+	int online_teams, online_team;
+	int to_online;
 };
 void n64_menu_memory_begin(void);
 void n64_map_boot_complete(void);
@@ -625,6 +644,137 @@ struct n64_pause_screen
 
 void n64_hud_pause(const struct n64_pause_screen *screen);
 void n64_hud_pause_controls(const int *ports, int count, const int *selected_rows);
+
+/* ---------- online games (HALO_N64_ONLINE; port/n64/docs/online): the
+cartridge plays its player's own unit in a local game of the Link's map --
+moving, aiming, firing, its first-person weapon and HUD at once -- and Halo
+64 Link plays the same control in the real game (n64_online_send_control
+each tick), whose state of that unit (n64_online_self) corrects the local
+one (port/n64/game/n64_online_game.c); everything else in the game is drawn
+as the Link sends it (n64_online.c) */
+
+/* the Link's state of a local player's own unit, as of its latest frame */
+struct n64_online_weapon
+{
+	int definition; /* the weapon's tag index, -1: none in the slot */
+	int loaded, total;
+	float age;
+};
+
+struct n64_online_self
+{
+	unsigned long serial; /* one more each frame from the Link */
+	/* the N64 tick whose control the Link last played (a local tick's
+	predicted state is compared with this), 0xFFFFFFFF: none yet */
+	unsigned long applied_tick;
+	int alive, in_vehicle, action_target;
+	float position[3], velocity[3];
+	float yaw, pitch;
+	int respawn_ticks, team;
+	float health, shields;
+	int frags, plasmas;
+	int current_weapon; /* the slot, -1 none */
+	struct n64_online_weapon weapons[4];
+};
+
+/* a tick's control of a local player's unit, to the Link */
+struct n64_online_control
+{
+	unsigned long tick;
+	int local_player;
+	unsigned long flags;
+	float yaw, pitch, throttle[2], trigger;
+	int weapon, grenade, zoom;
+};
+
+/* an online game begins (its map loading; the player's controller port),
+and ends */
+void n64_online_begin(int port);
+void n64_online_end(void);
+int n64_online_active(void);
+/* each frame: the cable read, the Link told a frame was drawn; 0 when the
+game is over or was left (Start and Z together) */
+int n64_online_update(void);
+void n64_online_send_control(const struct n64_online_control *control);
+/* the Link's state of a local player's unit (NULL: none yet) */
+const struct n64_online_self *n64_online_self(int local_player_index);
+/* the Link's camera for a local player (its vehicle's) put in view: 1, else 0 */
+int n64_online_view(int local_player_index, struct n64_view *view);
+/* the Link's objects, in the current view */
+void n64_online_draw_objects(void);
+/* a message the Link's game printed on a local player's HUD, the oldest not
+yet taken (UTF-16, ended by a 0): 1, else 0 */
+int n64_online_take_message(int *local_player_index, unsigned short *text, int size);
+
+/* the game the Link joined: its players, about once a second (its lobby's
+before it begins), the best first (n64_link.c, SCORES) */
+struct n64_online_scores
+{
+	int valid, joined, teams, in_game;
+	long red, blue;
+	char game[24], map[32], game_type[24];
+	int count, total; /* the rows kept, the players in all */
+	struct n64_score_row rows[N64_SCORE_ROWS];
+	unsigned long serial;
+};
+
+const struct n64_online_scores *n64_online_scores(void);
+
+/* what happens in the Link's game, made again by the N64's
+(n64_online_game.c): an effect begun, a sound (or the announcer's), a hit
+the player takes; each taken once, the oldest first */
+struct n64_online_effect
+{
+	int definition; /* the tag's absolute index */
+	float point[3], forward[3];
+	float scale_a, scale_b;
+};
+
+struct n64_online_sound
+{
+	int definition; /* the tag's absolute index; the announcer's: its sound */
+	int announcer;
+	float point[3];
+	float scale;
+};
+
+struct n64_online_damage
+{
+	int local_player_index;
+	int definition; /* the damage effect's tag's absolute index */
+	float direction[3];
+	float scale, total;
+	int has_attacker;
+	float attacker[3];
+};
+
+int n64_online_take_effect(struct n64_online_effect *effect);
+int n64_online_take_sound(struct n64_online_sound *sound);
+int n64_online_take_damage(struct n64_online_damage *damage);
+
+/* the HUD's view of the Link's game, a local player's, as of its latest
+frame: the autoaim level (the crosshair red at 1), the name the crosshair
+shows ("" none) and whether an enemy's, the state message (UTF-16; empty
+none), how goals are shown (the variant's goal_radar), the goals the player
+sees, the motion sensor's blips */
+#define N64_ONLINE_GOALS 16
+#define N64_ONLINE_BLIPS 16
+
+struct n64_online_hud
+{
+	unsigned long serial;
+	float autoaim;
+	char target[16];
+	int target_enemy;
+	unsigned short state[64];
+	int goal_radar;
+	int goal_count;
+	struct { float position[3]; short nav_point; } goals[N64_ONLINE_GOALS];
+	int blip_count;
+	struct { float position[3]; signed char type, size; } blips[N64_ONLINE_BLIPS];
+};
+
+const struct n64_online_hud *n64_online_hud(int local_player_index);
 
 #ifdef __cplusplus
 }

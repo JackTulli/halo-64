@@ -77,7 +77,7 @@ void main_set_difficulty(short difficulty);
 #define N64_TEST_PLAYER_COUNT 2
 
 /* what the menu chose (or the test game) */
-static struct n64_menu_choice n64_choice = { .bot_skill = 1, .enhanced_fx = 1 };
+static struct n64_menu_choice n64_choice = { .bot_skill = 1, .enhanced_fx = N64_IMPACT_FX_ENHANCED };
 /* a Pro variant: everyone starts with a pistol and an assault rifle */
 static int n64_pro_weapons;
 
@@ -89,6 +89,48 @@ static void n64_game_start(
 	struct game_variant variant, temporary_variant;
 	char const *folder = n64_menu_map_folder(n64_choice.map);
 	char line[96];
+
+#ifdef HALO_N64_ONLINE
+	/* an online game (port/n64/game/n64_online_game.c): the Link's map, a
+	game of slayer (team slayer if the Link's has teams) for the player
+	alone -- no bots, no vehicles, none of the map's weapons (the Link's are
+	drawn), no score that ends it (the Link's game ends it) */
+	if (n64_choice.online)
+	{
+		extern int n64_gamepad_ports[4];
+		extern void n64_online_game_reset(void);
+		int port, used = 1;
+
+		n64_pro_weapons = FALSE;
+		variant = *game_engine_get_variant_by_name(&temporary_variant,
+			n64_choice.online_teams ? "team_slayer" : "slayer");
+		variant.universal_variant.score_to_win = 9999;
+		variant.universal_variant.vehicle_set = 1;
+		variant.universal_variant.lives = 0;
+		game_set_game_variant(&variant);
+		n64_particles_set_enhanced(n64_choice.enhanced_fx == N64_IMPACT_FX_ENHANCED);
+		n64_modifiers_set(FALSE, FALSE);
+		n64_golden_reset();
+		n64_firefight_stop();
+		n64_bots_stop();
+		player_spawn_count = 1;
+		snprintf(map_name, sizeof(map_name), "levels\\test\\%s\\%s", folder, folder);
+		main_set_map_name(map_name);
+		main_disallow_persistent_storage();
+		n64_gamepad_ports[0] = n64_choice.ports[0];
+		for (port = 0; port < 4 && used < 4; port++)
+		{
+			if (port != n64_choice.ports[0])
+				n64_gamepad_ports[used++] = port;
+		}
+		n64_online_game_reset();
+		n64_online_begin(n64_choice.ports[0]);
+		snprintf(line, sizeof(line), "n64: online game on %s (%s), team %d", map_name,
+			n64_choice.online_teams ? "team slayer" : "slayer", n64_choice.online_team);
+		n64_log(line);
+		return;
+	}
+#endif
 
 #ifdef HALO_N64_CAMPAIGN
 	/* a campaign level: no game engine (Halo's campaign), the difficulty,
@@ -151,7 +193,7 @@ static void n64_game_start(
 	if (!n64_choice.firefight && n64_choice.vehicle_set == N64_VEHICLES_NONE)
 		variant.universal_variant.vehicle_set = 1;
 	game_set_game_variant(&variant);
-	n64_particles_set_enhanced(n64_choice.enhanced_fx);
+	n64_particles_set_enhanced(n64_choice.enhanced_fx == N64_IMPACT_FX_ENHANCED);
 	n64_modifiers_set(!n64_choice.firefight && n64_choice.big_head, !n64_choice.firefight && n64_choice.paintball);
 	n64_golden_reset();
 	if (n64_choice.firefight)
@@ -220,7 +262,7 @@ void n64_game_setup(
 	n64_choice.player_count = n64_debug_text("debug_players", name, sizeof(name)) ? PIN(atoi(name), 1, 4) :
 		N64_TEST_PLAYER_COUNT;
 	/* (port.json flags "debug_bots=<n>", "debug_bot_skill=<0-3>") */
-	n64_choice.bots = n64_debug_text("debug_bots", name, sizeof(name)) ? PIN(atoi(name), 0, 12) : 0;
+	n64_choice.bots = n64_debug_text("debug_bots", name, sizeof(name)) ? PIN(atoi(name), 0, 15) : 0;
 	n64_choice.bot_skill = n64_debug_text("debug_bot_skill", name, sizeof(name)) ? PIN(atoi(name), 0, 3) : 1;
 	/* (port.json flag "debug_game_type=<n>": the menu's game type) */
 	if (n64_debug_text("debug_game_type", name, sizeof(name)))
@@ -233,6 +275,15 @@ void n64_game_setup(
 #endif
 	if (n64_debug_text("debug_vehicles", name, sizeof(name)))
 		n64_choice.vehicle_set = PIN(atoi(name), 0, N64_VEHICLES_COUNT - 1);
+#ifdef HALO_N64_CAMPAIGN
+	/* (the campaign cartridge: its level for one player, as the menu starts
+	it; port.json flag "debug_campaign=<difficulty 0-3>", normal without) */
+	n64_choice.campaign = TRUE;
+	n64_choice.firefight = FALSE;
+	n64_choice.player_count = 1;
+	n64_choice.difficulty = n64_debug_text("debug_campaign", difficulty, sizeof(difficulty)) ?
+		PIN(atoi(difficulty), 0, 3) : 1;
+#endif
 	n64_choice.big_head = n64_debug_flag("debug_big_head");
 	n64_choice.paintball = n64_debug_flag("debug_paintball");
 	if (n64_debug_flag("debug_golden_style"))
@@ -405,6 +456,17 @@ void n64_game_results(
 		n64_choice.to_title = TRUE;
 		return;
 	}
+#ifdef HALO_N64_ONLINE
+	if (n64_choice.online)
+	{
+		/* (an online game: back to ONLINE, the Link's game list; its scores
+		were the Link's game's) */
+		n64_online_end();
+		n64_choice.online = FALSE;
+		n64_choice.to_online = TRUE;
+		return;
+	}
+#endif
 	if (n64_firefight_active())
 	{
 		n64_result_count = n64_firefight_results(n64_result_text, 6);
@@ -537,9 +599,16 @@ void n64_game_pause_frame(
 			return;
 		}
 		n64_paused = TRUE;
-		game_time_set_paused(TRUE);
 		n64_input_blocked = 1;
-		n64_sound_pause(1);
+#ifdef HALO_N64_ONLINE
+		/* (an online game's clock is the Link's game's: it goes on, the
+		player standing meanwhile; the scoreboard is the Link's game's) */
+		if (!n64_choice.online)
+#endif
+		{
+			game_time_set_paused(TRUE);
+			n64_sound_pause(1);
+		}
 		n64_pause_controls = 0;
 		n64_pause_selected = 0;
 		memset(n64_pause_stick, 0, sizeof(n64_pause_stick));
@@ -577,6 +646,19 @@ void n64_game_pause_frame(
 			else
 			{
 				n64_pause_end();
+#ifdef HALO_N64_ONLINE
+				/* (an online game: the Link leaves it too; back to ONLINE) */
+				if (n64_choice.online)
+				{
+					extern void n64_link_leave(void);
+
+					n64_input_blocked = 0;
+					n64_link_leave();
+					n64_online_end();
+					main_goto_main_menu();
+					return;
+				}
+#endif
 				n64_quit_to_title = TRUE;
 				main_goto_main_menu();
 				return;
@@ -592,6 +674,27 @@ void n64_game_pause_frame(
 		return;
 	}
 
+#ifdef HALO_N64_ONLINE
+	if (n64_choice.online)
+	{
+		/* (the Link's game's players and scores, n64_link.c's SCORES) */
+		const struct n64_online_scores *scores = n64_online_scores();
+		static char title[32];
+
+		snprintf(title, sizeof(title), "%s", scores->valid && scores->game[0] ? scores->game : "ONLINE");
+		screen.title = title;
+		if (scores->valid && scores->teams)
+			snprintf(note, sizeof(note), "RED %ld   BLUE %ld   (%d PLAYERS)", scores->red, scores->blue, scores->total);
+		else
+			snprintf(note, sizeof(note), "%s   %d PLAYERS", n64_menu_map_name(n64_choice.map), scores->valid ? scores->total : 1);
+		screen.note = note;
+		screen.rows = scores->rows;
+		screen.row_count = scores->valid ? scores->count : 0;
+		screen.selected = n64_pause_selected;
+		n64_hud_pause(&screen);
+		return;
+	}
+#endif
 	screen.title = "PAUSED";
 	screen.note = NULL;
 	if (n64_firefight_status(note, sizeof(note)))
@@ -725,6 +828,10 @@ void n64_game_local_player(
 	*color = (short)n64_choice.colors[index];
 	*team = (short)(n64_choice.firefight ? 0 :
 		n64_menu_game_teams(n64_choice.game_type) ? n64_choice.teams[index] : index);
+#ifdef HALO_N64_ONLINE
+	if (n64_choice.online)
+		*team = (short)(n64_choice.online_teams ? n64_choice.online_team & 1 : 0);
+#endif
 #ifdef HALO_N64_CAMPAIGN
 	if (n64_choice.campaign)
 		*team = 1; /* _game_team_player: n64_campaign.c's Marines */
@@ -1442,6 +1549,14 @@ void n64_game_tick(
 	n64_campaign_tick();
 #endif
 	game_tick();
+#ifdef HALO_N64_ONLINE
+	{
+		/* (an online game: the unit kept, the Link's state taken) */
+		extern void n64_online_game_tick_end(void);
+
+		n64_online_game_tick_end();
+	}
+#endif
 	n64_profile_zone = 0;
 	/* (the audio fed between ticks too: a slow frame runs several) */
 	n64_sound_poll();

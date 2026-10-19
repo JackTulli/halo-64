@@ -549,6 +549,15 @@ static long update_client_pending_game_time = NONE;
 void update_client_queue(
 	struct player_action const *action)
 {
+#ifdef HALO_N64_ONLINE
+	{
+		/* (an online game's: the frame's action, sent to the Link with each
+		tick's, n64_online_game.c) */
+		extern void n64_online_game_queue_action(short local_player_index, struct player_action const *action);
+
+		n64_online_game_queue_action(update_client_globals.current_local_player, action);
+	}
+#endif
 	update_client_globals.saved_action_collection.actions[
 		update_client_globals.current_local_player] = *action;
 #ifdef HALO_LINUX
