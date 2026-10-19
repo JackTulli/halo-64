@@ -78,7 +78,8 @@ everything by tag index).
 
 ### Halo 64 Link (the computer)
 
-ChupathingyCE v0.7.5d with:
+Its source is [JackTulli/halo64-link](https://github.com/JackTulli/halo64-link)
+(how to build and run it: its `link/README.md`). ChupathingyCE v0.7.5d with:
 
 - the dedicated server's headless platform (no window, no sound);
 - `link_input.c` in place of the server's input: the N64's controllers as
@@ -122,8 +123,11 @@ motion sensor's blips for other players, hosting from the N64.
 
 No emulator has a flashcart's USB port (ares has only the IS-Viewer's
 one-way text). ares is given one: an emulated cart USB port whose bytes go
-to and come from a TCP socket on the computer (a
-small patch), and the Link speaks to that socket as it would to the cable.
+to and come from a TCP socket on the computer (a small patch:
+halo64-link's `link/ares/`), and the Link speaks to that socket as it would
+to the cable. A real SummerCart64 is reached the same way, through a small
+bridge on the computer (halo64-link's `link/sc64/`, not yet tried on a
+cart).
 The whole chain then runs on one computer:
 
     ares (patched) + halo-online.z64  <--TCP-->  Halo 64 Link  <--UDP-->  ChupathingyCE dedicated server (Xbox maps)
