@@ -76,8 +76,13 @@ working notebook.
   warthog by the Marine base, and lighter scenery. No cutscenes or scripts
   yet, and the level's second half (its other structure BSP) is not on it
   yet.
-
-No networking.
+- **Online play** (an online cartridge, `halo-online.z64`; in progress):
+  join ChupathingyCE v0.7.5d's games -- the internet's (halo.milenko.org's
+  list) and the local network's -- through a computer beside the N64
+  running [Halo 64 Link](https://github.com/JackTulli/halo64-link), wired
+  by a SummerCart64's USB port (or, with no flashcart, a patched ares'
+  emulated one). The N64 plays its own player at once and the Link, which
+  plays the real game, corrects it. Below: "The online cartridge".
 
 ## Building
 
@@ -261,6 +266,30 @@ build reads only the folder named by `--pc-maps`. More on what the PC
 cartridge adds is in
 [`port/n64/PC_EXPANSION_INTEGRATION.md`](port/n64/PC_EXPANSION_INTEGRATION.md).
 
+### The online cartridge (optional)
+
+`halo-online.z64` plays online (its own build of the game: port.json
+"online", `HALO_N64_ONLINE`, with the multiplayer cartridge's maps). The
+ROM Builder doesn't make it; from the sources, once the build above works:
+
+```sh
+ninja -f build/n64/build.ninja online   # build/n64/halo-online.z64
+```
+
+Playing it needs three more things:
+
+| What | Where |
+|---|---|
+| **Halo 64 Link**, on Linux or in WSL 2 on Windows | [JackTulli/halo64-link](https://github.com/JackTulli/halo64-link): `ninja link-x86` (its `link/README.md`) |
+| **The same Xbox maps** (`ui.map` and the 13 multiplayer maps) | `build/xbox/disc/maps`: the cartridge's maps are converted from them and the Link names everything by their tag indices, so they must be the same files |
+| **The cable** | a SummerCart64 and halo64-link's bridge (`link/sc64/`); with no flashcart, ares built with halo64-link's `link/ares/ares-usb.patch` |
+
+On Windows with a SummerCart64, halo64-link's `link/sc64/make-kit.sh` packs
+the cartridge, the Link with its libraries, the maps and the bridge into one
+folder that runs with nothing installed but WSL 2. The whole guide --
+building each part, running it, playing, and how it works -- is
+[`port/n64/docs/online/README.md`](port/n64/docs/online/README.md).
+
 ## Playing
 
 The game needs the **Expansion Pak** (8 MB). It is developed and tested in
@@ -285,6 +314,12 @@ During a game, any player's **START** pauses it: the scoreboard (every
 player and bot, the best first, the leading team's first in a team game)
 with one button, **MAIN MENU** (A), back to the title. START or B goes on
 with the game.
+
+**Online** (`halo-online.z64`, with Halo 64 Link running: "The online
+cartridge" above): the title's **ONLINE** lists the games the Link finds; R
+sets your player name, Z refreshes the list, A joins a game. In a game
+START shows the players and scores without pausing (MAIN MENU leaves the
+game), and START and Z together leave at once.
 
 ### Controls
 
