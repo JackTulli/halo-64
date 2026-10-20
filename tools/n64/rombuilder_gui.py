@@ -34,6 +34,9 @@ CARTRIDGE_TEXT = {
                      "six more PC maps, weapons and vehicles on a separate cartridge; also needs your Halo PC copy"),
     "custom": ("Custom Edition maps", "halo-custom-edition.z64",
                f"Halo Custom Edition multiplayer maps you add (up to {CUSTOM_MAP_LIMIT}) on a cartridge of their own"),
+    "online": ("Online (Halo 64 Online)", "halo-online.z64",
+               "the multiplayer maps played online, on an N64 with a SummerCart64 wired to your PC; also writes "
+               "the Halo64Online folder with Halo 64 Link and the rest it needs (its README.txt says how)"),
 }
 # what a Custom Edition map comes as
 CE_FILES = (".map", ".zip")
@@ -45,6 +48,13 @@ def custom_included():
     Custom Edition tools and program"""
     root = payload_root()
     return root is None or ((root / "ce-tools").is_dir() and (root / "elf" / "custom").is_dir())
+
+
+def online_included():
+    """whether this copy can make the online cartridge (its program is in
+    the package)"""
+    root = payload_root()
+    return root is None or (root / "elf" / "online").is_dir()
 
 
 def pc_expansion_included():
@@ -160,13 +170,15 @@ class App:
         rows = {}
         row = 0
         for key, (name, file, description) in CARTRIDGE_TEXT.items():
-            included = (key != "pc_expansion" or pc_included) and (key != "custom" or custom_included())
-            var = tk.BooleanVar(value=included and self.settings.get(key, key not in ("pc_expansion", "custom")))
+            included = ((key != "pc_expansion" or pc_included) and (key != "custom" or custom_included()) and
+                        (key != "online" or online_included()))
+            var = tk.BooleanVar(value=included and self.settings.get(key, key not in ("pc_expansion", "custom", "online")))
             self.choice[key] = var
             ttk.Checkbutton(choices, text=f"{name}   ({file})", variable=var, command=self.toggle_pc_inputs,
                             state="normal" if included else "disabled").grid(row=row, column=0, sticky="w")
             if not included:
                 description += (" (not in this download: it carries no PC conversion tools)" if key == "pc_expansion"
+                                else " (not in this download)" if key == "online"
                                 else " (not in this download: it carries no Custom Edition conversion tools)")
             ttk.Label(choices, text=description, style="Small.TLabel", wraplength=670).grid(row=row + 1, column=0, sticky="w",
                                                                             padx=(28, 0), pady=(0, 6))

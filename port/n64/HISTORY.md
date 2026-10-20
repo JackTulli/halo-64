@@ -5,6 +5,40 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+19-20 October: Halo 64 Online, and the ROM Builder makes it; ULTRA
+DETAIL.
+
+- 3D RESOLUTION has a fifth step: HIGH DETAIL is now Perfect Dark's high
+  resolution alone, 640x240 at 240p (520x240, 480x240 where the map leaves
+  less room), and ULTRA DETAIL the old high detail, 480i where the map
+  leaves the memory, else as high detail (`try_high_detail` starts its
+  list of modes at 480i or at 640x240, `n64_render_set_high_detail`'s
+  level). A record saved with the old high detail (3, byte 9 set) reads as
+  ultra detail, as it was.
+- Online: leaving a game from the pause menu (or START + Z) left Halo 64
+  Link in the game's map, waiting for a main menu that never came, so it
+  answered none of the N64's requests after; the Link now goes back to the
+  main menu as the game's own Quit does (halo64-link's `link_director.c`).
+
+- A separate online cartridge (`halo-online.z64`, port.json "online",
+  `HALO_N64_ONLINE`) plays ChupathingyCE v0.7.5d's games -- the internet's
+  list and the local network's -- through Halo 64 Link, ChupathingyCE built
+  headless as the N64's computer side (JackTulli/halo64-link), over a
+  flashcart's USB port (ares gets an emulated one). The N64 plays its own
+  unit at once and the Link's state corrects it (link protocol 2:
+  CONTROL each tick, the unit's state in each frame); the rest is drawn
+  from the Link's frames and its events replayed: effects, sounds, the
+  announcer, hits, HUD messages, the scoreboard, the HUD's view of the game
+  (port/n64/docs/online/README.md).
+- The ROM Builder's **Online** box: the multiplayer cartridge's files with
+  the online program, and the `Halo64Online` folder for a Windows PC with a
+  SummerCart64 (`write_online_kit` in `tools/n64/rombuilder.py`): the
+  package carries halo64-link's kit (`link/sc64/make-kit.sh --template`:
+  the Link and a test server static on musl, built `--portable` in an
+  Alpine x86 chroot, the bridge packaged with PyInstaller, launchers,
+  licences) and the builder adds the cartridge and the Xbox maps it was made
+  from (the Link names everything by their tag indices).
+
 16 October: the PC expansion merged, its crashes fixed, a VEHICLES
 setting, and the campaign level tuned.
 

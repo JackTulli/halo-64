@@ -12,7 +12,14 @@ ed64romconfig put each cartridge together. The Windows program
 so does a command line:
 
     python3 -m tools.n64.rombuilder <disc image or maps folder> -o <folder>
-        [--multiplayer] [--campaign] [--jobs N] [--work <folder>] [--font <Halo.ttf>]
+        [--multiplayer] [--campaign] [--online] [--jobs N] [--work <folder>] [--font <Halo.ttf>]
+
+--online makes Halo 64 Online's cartridge (the multiplayer cartridge's
+files, its own program) and, when the builder carries Halo 64 Link's kit
+(the package's payload/online-kit, or N64_ONLINE_KIT from the repository:
+halo64-link's link/sc64/make-kit.sh --template), the Halo64Online folder
+beside it: the kit, the cartridge and the Xbox maps the Link plays, for a
+PC with a SummerCart64.
 
     # optional, separate PC expansion (also requires Xbox data):
     python3 -m tools.n64.rombuilder <Xbox maps> -o <folder> --pc-expansion
@@ -54,9 +61,14 @@ CARTRIDGES = {
     "campaign": {"rom": "halo-campaign.z64", "elf": "campaign"},
     "pc_expansion": {"rom": "halo-pc-expansion.z64", "elf": "pc-expansion"},
     "custom": {"rom": "halo-custom-edition.z64", "elf": "custom"},
+    # (Halo 64 Online: the multiplayer cartridge's files, its own program)
+    "online": {"rom": "halo-online.z64", "elf": "online"},
 }
 # what a conversion costs, roughly (the progress bar's shares)
-WEIGHTS = {"map": 10, "campaign map": 60, "ce map": 20, "ui": 6, "music": 4, "sounds": 2, "pack": 2, "rom": 1}
+WEIGHTS = {"map": 10, "campaign map": 60, "ce map": 20, "ui": 6, "music": 4, "sounds": 2, "pack": 2, "rom": 1,
+           "online kit": 3}
+# Halo 64 Online's folder for a PC with a SummerCart64, beside the ROMs
+ONLINE_FOLDER = "Halo64Online"
 # the most Custom Edition maps a cartridge takes (n64_menu.c CUSTOM_MAP_LIMIT)
 CUSTOM_MAP_LIMIT = 24
 # a Custom Edition map's file at most (and so a .zip member's)
@@ -98,7 +110,7 @@ def elf_files(cartridge):
         folder = root / "elf" / CARTRIDGES[cartridge]["elf"]
     else:
         folder = REPO / "build" / "n64" / ({"campaign": "campaign", "pc_expansion": "pc-expansion",
-                                            "custom": "custom"}.get(cartridge, ""))
+                                            "custom": "custom", "online": "online"}.get(cartridge, ""))
     return folder / "halo.elf.stripped", folder / "halo.elf.sym"
 
 
@@ -131,6 +143,17 @@ def ce_tools_folder():
         return root / "ce-tools"
     folder = os.environ.get("N64_CE_TOOLS")
     return Path(folder) if folder else None
+
+
+def online_kit_folder():
+    """Halo 64 Online's kit without the cartridge and the maps -- Halo 64
+    Link, the SummerCart64 bridge, the launchers (halo64-link's
+    link/sc64/make-kit.sh --template) -- or None: the package's, or (from
+    the repository) N64_ONLINE_KIT"""
+    root = payload_root()
+    folder = root / "online-kit" if root else (Path(os.environ["N64_ONLINE_KIT"])
+                                               if os.environ.get("N64_ONLINE_KIT") else None)
+    return folder if folder and (folder / "play-sc64.bat").is_file() else None
 
 
 def halo_font():
@@ -305,6 +328,9 @@ class RomBuilder:
         # what the player should hear of when the build is done (Custom
         # Edition maps left out)
         self.notes = []
+        # the multiplayer cartridge's packed files, once made (the online
+        # cartridge's too)
+        self.multiplayer_dfs = None
 
     # (what each cartridge needs)
     def maps_for(self, cartridge):
@@ -320,7 +346,7 @@ class RomBuilder:
             # (the custom cartridge's: the multiplayer maps' tags stand in
             # for Custom Edition's shared ones, ce_prepare.py)
             names.update(self.config["maps"] if cartridge in ("pc_expansion", "custom") else self.maps_for(cartridge))
-            if cartridge in ("multiplayer", "pc_expansion", "custom"):
+            if cartridge in ("multiplayer", "pc_expansion", "custom", "online"):
                 # (Firefight's Covenant come from a30, convert.py)
                 names.add("a30")
         return sorted(names)
@@ -406,11 +432,17 @@ class RomBuilder:
         self.work.mkdir(parents=True, exist_ok=True)
         self.total = 0
         for cartridge in self.cartridges:
+            # (the online cartridge with the multiplayer one: their files once)
+            if cartridge == "online" and "multiplayer" in self.cartridges:
+                self.total += WEIGHTS["rom"]
+                continue
             maps = self.maps_for(cartridge) if cartridge != "custom" else self.custom_inputs
             if cartridge == "custom":
                 self.total += len(maps) * WEIGHTS["ce map"]
             self.total += len(maps) * WEIGHTS["campaign map" if cartridge == "campaign" else "map"]
             self.total += WEIGHTS["ui"] + WEIGHTS["music"] + WEIGHTS["sounds"] + WEIGHTS["pack"] + WEIGHTS["rom"]
+        if "online" in self.cartridges:
+            self.total += WEIGHTS["online kit"]
         if self.source.disc:
             self.total += 10
         self.log(f"{self.source.describe()}; {self.jobs} conversion(s) at a time; work folder {self.work}")
@@ -428,8 +460,16 @@ class RomBuilder:
                 self.prepare_pc()
             if "custom" in self.cartridges:
                 self.prepare_custom(maps)
-            for cartridge in self.cartridges:
-                made.append(self.build(cartridge, maps))
+            # (the multiplayer cartridge before the online one, whose files it shares)
+            for cartridge in sorted(self.cartridges, key=lambda c: c == "online"):
+                if cartridge == "online":
+                    made.append(self.build_online(maps))
+                else:
+                    made.append(self.build(cartridge, maps))
+            if "online" in self.cartridges:
+                kit = self.write_online_kit(maps)
+                if kit:
+                    made.append(kit)
         finally:
             shutil.rmtree(self.input_stage, ignore_errors=True)
         self.report(1.0, "Done")
@@ -524,8 +564,42 @@ class RomBuilder:
             self.log(f"{result['source']}: on the cartridge as {result['display']} ({name})")
         shutil.copyfile(maps / "a30.map", self.custom_folder / "a30.map")
 
-    def build(self, cartridge, maps):
-        config = self.config[cartridge] if cartridge in ("campaign", "pc_expansion", "custom") else self.config
+    def build_online(self, maps):
+        """Halo 64 Online's cartridge: the multiplayer cartridge's files (made
+        now if that cartridge isn't), with the online program"""
+        if self.multiplayer_dfs is None:
+            return self.build("multiplayer", maps, rom_cartridge="online")
+        return self.make_rom("online", self.multiplayer_dfs, "online")
+
+    def write_online_kit(self, maps):
+        """Halo 64 Online's folder for a PC with a SummerCart64, beside the
+        ROMs: the kit (Halo 64 Link, the bridge, the launchers), the online
+        cartridge, and the Xbox maps the Link plays -- the very ones the
+        cartridge was made from (the Link names everything by their tags).
+        Its README.txt is the player's guide. None when this builder carries
+        no kit."""
+        template = online_kit_folder()
+        if template is None:
+            self.notes.append("This builder carries no Halo 64 Link, so only the online cartridge was made: "
+                              "Halo 64 Link is built from github.com/JackTulli/halo64-link (its link/README.md).")
+            return None
+        folder = self.output / ONLINE_FOLDER
+        # (a folder made before: the kit's parts replaced, its logs kept)
+        for part in ("link", "sc64", "maps"):
+            shutil.rmtree(folder / part, ignore_errors=True)
+        shutil.copytree(template, folder, dirs_exist_ok=True)
+        (folder / "maps").mkdir(parents=True, exist_ok=True)
+        for name in ["ui", *self.config["maps"]]:
+            self.check_cancel()
+            shutil.copyfile(maps / f"{name}.map", folder / "maps" / f"{name}.map")
+        shutil.copyfile(self.output / CARTRIDGES["online"]["rom"], folder / CARTRIDGES["online"]["rom"])
+        self.step(WEIGHTS["online kit"], f"{ONLINE_FOLDER} folder written")
+        self.log(f"{folder}: Halo 64 Online for a PC with a SummerCart64 (its README.txt says how to play)")
+        return folder
+
+    def build(self, cartridge, maps, rom_cartridge=None):
+        """a cartridge's files, then its ROM (rom_cartridge: another
+        cartridge's ROM of these files, the online one's)"""
         names = self.maps_for(cartridge)
         variant = self.input_stage / cartridge
         fsdir = variant / "filesystem"
@@ -600,7 +674,13 @@ class RomBuilder:
         dfs = variant / "halo.dfs"
         self.run_tool(f"Packing the files ({label})", [tool("mkdfs"), str(dfs), str(packed_fs)])
         self.step(WEIGHTS["pack"], f"Files packed ({label})")
-        # the ROM: the program, its symbols, the files
+        if cartridge == "multiplayer":
+            self.multiplayer_dfs = dfs
+        return self.make_rom(rom_cartridge or cartridge, dfs, "online" if rom_cartridge == "online" else label)
+
+    def make_rom(self, cartridge, dfs, label):
+        """the ROM: the cartridge's program, its symbols, the files"""
+        config = self.config[cartridge] if cartridge in ("campaign", "pc_expansion", "custom", "online") else self.config
         elf, symbols = elf_files(cartridge)
         rom = self.output / CARTRIDGES[cartridge]["rom"]
         # Reserve a unique owned temporary file so rejection/cleanup cannot
@@ -860,6 +940,7 @@ def main():
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--multiplayer", action="store_true")
     parser.add_argument("--campaign", action="store_true")
+    parser.add_argument("--online", action="store_true", help="Halo 64 Online's cartridge (halo-online.z64)")
     parser.add_argument("--pc-expansion", action="store_true", help="separate 19-map PC expansion cartridge")
     parser.add_argument("--pc-source", type=Path, help="your PC retail ISO or installed maps folder (PC expansion only)")
     parser.add_argument("--pc-tools", type=Path, help="trusted local Invader and FFmpeg tools (source runs only)")
@@ -872,7 +953,7 @@ def main():
     parser.add_argument("--work", type=Path)
     parser.add_argument("--font", type=Path)
     args = parser.parse_args()
-    cartridges = [c for c in ("multiplayer", "campaign", "pc_expansion") if getattr(args, c)]
+    cartridges = [c for c in ("multiplayer", "campaign", "pc_expansion", "online") if getattr(args, c)]
     if args.custom_edition:
         cartridges.append("custom")
     cartridges = cartridges or ["multiplayer", "campaign"]

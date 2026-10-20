@@ -17,8 +17,8 @@ team), any of them chooses the game type, the map and the score to win;
 START (or A on "START GAME") plays. Settings: particles on or off, the 3D's
 resolution (standard; medium, the game's 3D drawn at four fifths
 of the width and widened; chunky, half as wide, its pixels twice as wide:
-n64_render_set_chunky; high detail, 480i where the map leaves the memory,
-else 640x240 at 240p: n64_render_set_high_detail), the
+n64_render_set_chunky; high detail, 640x240 at 240p; ultra detail, 480i
+where the map leaves the memory: n64_render_set_high_detail), the
 anamorphic widescreen picture (n64_render_set_anamorphic), the view
 models' quality (n64_render_set_view_model_quality), the animation rate
 (full, or half: n64_half_animation_rate), the HUD's inset from
@@ -208,7 +208,7 @@ static struct
 	struct shown_picture map_picture, type_picture;
 	/* the settings (particles: on unless turned off); the 3D's resolution:
 	0 standard, 1 medium (256 of 320), 2 chunky (half), 3 high detail
-	(n64_render_set_high_detail) */
+	(640x240), 4 ultra detail (480i: n64_render_set_high_detail) */
 	int chunky;
 	/* the anamorphic picture */
 	int widescreen;
@@ -875,15 +875,17 @@ enum { SETTING_CHUNKY, SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_VIEW_MODEL
 
 /* the 3D's resolutions from the lowest (menu.chunky's values) */
 #define RESOLUTION_HIGH 3
-static const int resolution_order[4] = {2, 1, 0, RESOLUTION_HIGH};
+#define RESOLUTION_ULTRA 4
+#define RESOLUTION_COUNT 5
+static const int resolution_order[RESOLUTION_COUNT] = {2, 1, 0, RESOLUTION_HIGH, RESOLUTION_ULTRA};
 
 static int resolution_step(int chunky, int step)
 {
 	int i = 0;
 
-	while (i < 3 && resolution_order[i] != chunky)
+	while (i < RESOLUTION_COUNT - 1 && resolution_order[i] != chunky)
 		i++;
-	return resolution_order[(i + step + 4) % 4];
+	return resolution_order[(i + step + RESOLUTION_COUNT) % RESOLUTION_COUNT];
 }
 static const char *const terrain_details[4] = {"FULL", "HIGH", "MEDIUM", "LOW"};
 
@@ -926,9 +928,10 @@ static void settings_pack(unsigned char *bytes)
 	bytes[6] = (unsigned char)menu.half_animation;
 	bytes[7] = (unsigned char)menu.no_particles;
 	bytes[8] = (unsigned char)menu.view_model;
-	/* (byte 9 was the display's 480i: set with high detail, for the records
-	read before) */
-	bytes[9] = (unsigned char)(menu.chunky == RESOLUTION_HIGH);
+	/* (byte 9 was the display's 480i, then high detail when that was 480i:
+	set with ultra detail, so a record from then -- 3 with byte 9 -- is read
+	as the ultra detail it was) */
+	bytes[9] = (unsigned char)(menu.chunky == RESOLUTION_ULTRA);
 	bytes[10] = (unsigned char)menu.widescreen;
 	bytes[11] = (unsigned char)menu.hud_inset;
 	bytes[12] = (unsigned char)menu.fps_counter;
@@ -956,10 +959,11 @@ static int settings_unpack(const unsigned char *bytes)
 {
 	if (memcmp(bytes, "H64S", 4) || bytes[4] != SAVED_VERSION || bytes[SAVED_BYTES - 1] != saved_checksum(bytes))
 		return 0;
-	menu.chunky = bytes[5] <= RESOLUTION_HIGH ? bytes[5] : 0;
-	/* (480i asked for in a record from before high detail: high detail) */
-	if (bytes[9] && menu.chunky == 0)
-		menu.chunky = RESOLUTION_HIGH;
+	menu.chunky = bytes[5] < RESOLUTION_COUNT ? bytes[5] : 0;
+	/* (480i asked for in a record from before high detail, or high detail
+	when it was 480i: ultra detail) */
+	if (bytes[9] && (menu.chunky == 0 || menu.chunky == RESOLUTION_HIGH))
+		menu.chunky = RESOLUTION_ULTRA;
 	menu.half_animation = bytes[6] != 0;
 	menu.no_particles = bytes[7] != 0;
 	menu.view_model = bytes[8] <= 3 ? bytes[8] : 0;
@@ -1447,7 +1451,7 @@ static void draw_settings(int item)
 {
 	/* what the chosen row does, under the list */
 	static const char *const help[SETTING_COUNT][2] = {
-		{"MEDIUM 256 ACROSS, CHUNKY HALF; HIGH DETAIL: 480I", "WHERE THE MAP HAS ROOM, ELSE 640 ACROSS AT 240P"},
+		{"MEDIUM 256 ACROSS, CHUNKY HALF, HIGH 640X240,", "ULTRA 480I (LESS WHERE THE MAP LEAVES NO ROOM)"},
 		{"HALF: POSES, YOUR GUN'S TOO, AT HALF THE RATE", "(HALVED AGAIN WITH 3 OR 4 PLAYERS)"},
 		{"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
 		{"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES;", "OFF IN SPLIT: LOW, NONE WITH 3-4 PLAYERS (FASTER)"},
@@ -1462,7 +1466,8 @@ static void draw_settings(int item)
 	page("SETTINGS", NULL);
 	/* (nine rows, 25 apart) */
 	setting_row(112, 528, 98, item == SETTING_CHUNKY, menu.large, "3D RESOLUTION",
-		menu.chunky == RESOLUTION_HIGH ? "HIGH DETAIL" : menu.chunky == 2 ? "CHUNKY" :
+		menu.chunky == RESOLUTION_ULTRA ? "ULTRA DETAIL" : menu.chunky == RESOLUTION_HIGH ? "HIGH DETAIL" :
+		menu.chunky == 2 ? "CHUNKY" :
 		menu.chunky == 1 ? "MEDIUM" : "STANDARD");
 	setting_row(112, 528, 123, item == SETTING_ANIMATIONS, menu.large, "ANIMATIONS",
 		menu.half_animation ? "HALF RATE" : "FULL RATE");
@@ -1928,7 +1933,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 	if (cycle)
 	{
 		c->map = (c->map + 1) % (c->firefight ? FIREFIGHT_MAP_COUNT : MAP_COUNT);
-		menu.chunky = n64_debug_flag("debug_high_detail") ? RESOLUTION_HIGH : 0;
+		menu.chunky = n64_debug_flag("debug_ultra_detail") ? RESOLUTION_ULTRA :
+			n64_debug_flag("debug_high_detail") ? RESOLUTION_HIGH : 0;
 		menu.terrain_detail = 0;
 		debugf("n64: cycle: next map %s\n", n64_menu_map_folder(c->map));
 	}
@@ -2145,7 +2151,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					setting = (setting + SETTING_COUNT - 1) % SETTING_COUNT;
 				if (pad->down)
 					setting = (setting + 1) % SETTING_COUNT;
-				/* (chunky, medium, standard, high detail: right is higher) */
+				/* (chunky, medium, standard, high detail, ultra detail: right
+				is higher) */
 				if (setting == SETTING_CHUNKY && pad->left)
 					menu.chunky = resolution_step(menu.chunky, -1);
 				else if (setting == SETTING_CHUNKY && (pad->right || pad->pressed.a))
@@ -2338,14 +2345,15 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			draw_loading(c);
 			n64_render_frame_end();
 			/* the game in chunky mode or not from its first frame */
-			n64_render_set_chunky(menu.chunky == RESOLUTION_HIGH ? 0 : menu.chunky);
+			n64_render_set_chunky(menu.chunky >= RESOLUTION_HIGH ? 0 : menu.chunky);
 			n64_particles_set_enabled(!menu.no_particles && c->enhanced_fx != N64_IMPACT_FX_OFF);
 			n64_particles_set_enhanced(c->enhanced_fx == N64_IMPACT_FX_ENHANCED);
 			n64_render_set_view_model_quality(menu.view_model);
 			n64_hud_set_inset(menu.hud_inset);
 			n64_render_show_counter(menu.fps_counter);
 			n64_render_set_terrain_detail(menu.terrain_detail);
-			n64_render_set_high_detail(menu.chunky == RESOLUTION_HIGH);
+			n64_render_set_high_detail(menu.chunky == RESOLUTION_ULTRA ? N64_DETAIL_ULTRA :
+				menu.chunky == RESOLUTION_HIGH ? N64_DETAIL_HIGH : 0);
 			n64_half_animation_rate = menu.half_animation;
 			settings_save();
 			n64_render_set_anamorphic(menu.widescreen);

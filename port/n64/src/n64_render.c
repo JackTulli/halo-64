@@ -23,14 +23,15 @@ units" everything here is drawn in), already lit.
 #include "n64.h"
 
 /* the screen: the game's 320x240, or the menu's 640x480 interlaced
-(n64_render_set_menu_display), or the game's in high detail (Settings: 3D
-RESOLUTION HIGH DETAIL: 480i where the map leaves room, else 640x240 at
-240p, n64_render_set_high_detail) */
+(n64_render_set_menu_display), or the game's in more detail (Settings: 3D
+RESOLUTION HIGH DETAIL, 640x240 at 240p, or ULTRA DETAIL, 480i where the map
+leaves room: n64_render_set_high_detail) */
 static int screen_width = 320, screen_height = 240;
 enum { DISPLAY_GAME, DISPLAY_MENU, DISPLAY_GAME_HIGH };
 static int display_mode = DISPLAY_GAME;
-/* high detail as asked, tried for this game yet, the frames left to say it
-didn't fit; the anamorphic picture (Settings: WIDESCREEN) */
+/* the detail asked for (N64_DETAIL_HIGH, N64_DETAIL_ULTRA, 0), tried for
+this game yet, the frames left to say it didn't fit; the anamorphic picture
+(Settings: WIDESCREEN) */
 static int want_high_detail, tried_high_detail, notice_high_detail_frames;
 static int anamorphic;
 #define SCREEN_WIDTH screen_width
@@ -937,9 +938,9 @@ int n64_render_screen_width(void)
 
 /* ---------- high detail in the game, and the anamorphic picture */
 
-void n64_render_set_high_detail(int on)
+void n64_render_set_high_detail(int level)
 {
-	want_high_detail = on != 0;
+	want_high_detail = level >= N64_DETAIL_ULTRA ? N64_DETAIL_ULTRA : level > 0 ? N64_DETAIL_HIGH : 0;
 }
 
 void n64_render_set_anamorphic(int on)
@@ -1000,14 +1001,15 @@ static int display_fits(int width, int height, int count)
 	return fits;
 }
 
-/* The game's display in high detail, the first of these the map leaves
-room for: 480i -- 640x480 (two buffers of 600 KB and the z-buffer's 600
-KB, where 320x240 took 600 KB in all), else 512x480 (480 KB each,
-stretched to the same 4:3), each frame shown as both fields (INTERLACE_FULL,
-as the menu) -- else, as Perfect Dark's high resolution, 640x240 at 240p:
-twice the pixels across, the same lines (300 KB each, three buffers or
-two), else 520x240, else 480x240; else 320x240 as it was and a word on the
-screen. */
+/* The game's display in more detail, the first of these the map leaves
+room for. Ultra detail starts at 480i -- 640x480 (two buffers of 600 KB and
+the z-buffer's 600 KB, where 320x240 took 600 KB in all), else 512x480 (480
+KB each, stretched to the same 4:3), each frame shown as both fields
+(INTERLACE_FULL, as the menu); high detail at Perfect Dark's high
+resolution, 640x240 at 240p: twice the pixels across, the same lines (300
+KB each, three buffers or two), else 520x240, else 480x240. Neither
+fitting: 320x240 as it was and a word on the screen. */
+#define FIRST_HIGH_DETAIL_MODE 2
 static void try_high_detail(void)
 {
 	static const struct
@@ -1025,7 +1027,8 @@ static void try_high_detail(void)
 	drop_all_models();
 	/* (the models' memory freed: their releases were deferred) */
 	rspq_wait();
-	for (int i = 0; i < (int)(sizeof(modes) / sizeof(modes[0])); i++)
+	for (int i = want_high_detail == N64_DETAIL_ULTRA ? 0 : FIRST_HIGH_DETAIL_MODE;
+		i < (int)(sizeof(modes) / sizeof(modes[0])); i++)
 	{
 		/* the buffers in the maps' home past the map's image, as many as
 		fit there (a smaller map leaves room), the rest and the z-buffer
@@ -1052,8 +1055,9 @@ static void try_high_detail(void)
 			display_mode = DISPLAY_GAME_HIGH;
 			n64_hud_forget_recordings();
 			sys_get_heap_stats(&heap);
-			debugf("n64: high detail %dx%d%s, %d buffers (%d in the maps' home), heap %d KB free\n", screen_width,
-				screen_height, modes[i].interlaced ? " interlaced" : "", modes[i].buffers, in_home, heap.free / 1024);
+			debugf("n64: %s detail %dx%d%s, %d buffers (%d in the maps' home), heap %d KB free\n",
+				want_high_detail == N64_DETAIL_ULTRA ? "ultra" : "high", screen_width, screen_height,
+				modes[i].interlaced ? " interlaced" : "", modes[i].buffers, in_home, heap.free / 1024);
 			return;
 		}
 	}
@@ -1064,7 +1068,8 @@ static void try_high_detail(void)
 		char pieces[200];
 
 		n64_heap_describe(pieces, sizeof(pieces));
-		debugf("n64: no room for high detail on this map (heap %lu KB free: %s)\n", n64_heap_free() / 1024, pieces);
+		debugf("n64: no room for %s detail on this map (heap %lu KB free: %s)\n",
+			want_high_detail == N64_DETAIL_ULTRA ? "ultra" : "high", n64_heap_free() / 1024, pieces);
 	}
 }
 
@@ -3764,12 +3769,12 @@ static void draw_counter(void)
 	}
 	if (notice_high_detail_frames)
 	{
-		/* (high detail asked for, but the map left no room for it) */
+		/* (high or ultra detail asked for, but the map left no room for it) */
 		notice_high_detail_frames--;
 		rdpq_sync_pipe();
 		rdpq_set_scissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 24, SCREEN_HEIGHT / 2,
-			"NOT ENOUGH MEMORY FOR HIGH DETAIL ON THIS MAP");
+			"NOT ENOUGH MEMORY FOR %s DETAIL ON THIS MAP", want_high_detail == N64_DETAIL_ULTRA ? "ULTRA" : "HIGH");
 	}
 	if (renderer.hide_counter)
 		return;

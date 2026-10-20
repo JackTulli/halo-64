@@ -6,6 +6,13 @@ Windows Python that has pillow, tkinterdnd2, sv-ttk and pyinstaller:
         [--pc-expansion-elf build/n64/pc-expansion --pc-tools <trusted tools>
          --pc-tool-notices <matching licence/source-offer files>]
         [--custom-elf build/n64/custom --ce-tools <invader-lite and ogg2wav for Windows>]
+        [--online-kit <halo64-link's link/sc64/make-kit.sh --template folder>]
+
+The online cartridge's program comes from build/n64/online when the build
+has it (ninja target online); --online-kit adds Halo 64 Link's kit (the
+Link, the SummerCart64 bridge, the launchers and their licences), which the
+builder fills with the cartridge and the player's maps (the Halo64Online
+folder).
 
 The Custom Edition cartridge (--custom-elf, --ce-tools, together): its
 program (ninja target custom) and the tools that make Custom Edition maps
@@ -93,8 +100,18 @@ def main():
     parser.add_argument("--pc-tool-notices", type=Path, help="licence/source-offer notices matching your supplied PC tool builds")
     parser.add_argument("--custom-elf", type=Path, help="the Custom Edition cartridge's program folder (build/n64/custom)")
     parser.add_argument("--ce-tools", type=Path, help="invader-lite's Windows tools and ogg2wav.exe (tools/n64/invader_lite)")
+    parser.add_argument("--online-kit", type=Path,
+                        help="Halo 64 Link's kit without the cartridge and maps (halo64-link: link/sc64/make-kit.sh --template)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
+    if args.online_kit:
+        if not (args.elf / "online" / "halo.elf.stripped").is_file():
+            parser.error("the online kit needs the online cartridge's program (ninja -f build/n64/build.ninja online)")
+        for name in ("play-sc64.bat", "README.txt", "link/halo64-link", "link/start-link.sh", "sc64/sc64_bridge.exe"):
+            if not (args.online_kit / name).is_file():
+                parser.error(f"the online kit has no {name}")
+        if (args.online_kit / "halo-online.z64").exists() or (args.online_kit / "maps").exists():
+            parser.error("the online kit must not hold a cartridge or maps (make-kit.sh --template)")
     if bool(args.custom_elf) != bool(args.ce_tools):
         parser.error("the Custom Edition cartridge needs --custom-elf and --ce-tools together")
     if args.ce_tools:
@@ -142,6 +159,9 @@ def main():
             programs.append(("pc-expansion", args.pc_expansion_elf))
         if args.custom_elf:
             programs.append(("custom", args.custom_elf))
+        # (Halo 64 Online's program, when the build has it: ninja target online)
+        if (args.elf / "online" / "halo.elf.stripped").is_file():
+            programs.append(("online", args.elf / "online"))
         for cartridge, folder in programs:
             target = payload / "elf" / cartridge
             target.mkdir(parents=True)
@@ -182,6 +202,8 @@ def main():
                 inventory.append({"name": binary.name, "bytes": binary.stat().st_size,
                                   "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()})
             (payload / "ce-tools.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+        if args.online_kit:
+            shutil.copytree(args.online_kit, payload / "online-kit", ignore=shutil.ignore_patterns("data"))
         png, ico = make_icon(payload)
         notices = stage / "notices"
         notices.mkdir()
@@ -201,6 +223,14 @@ def main():
                              "libraries as tools/n64/invader_lite in the halo-64 sources describes, and ogg2wav "
                              "(stb_vorbis); see custom-edition-tools-NOTICE.txt for their licences and sources. "
                              "No Custom Edition maps come with it: add your own.\n")
+        if args.online_kit:
+            shutil.copytree(args.online_kit / "link" / "licenses", notices / "online-kit-licenses")
+            with (notices / "README.txt").open("a", encoding="utf-8") as readme:
+                readme.write("\nHalo 64 Online: the builder writes the Halo64Online folder with Halo 64 Link "
+                             "(ChupathingyCE v0.7.5d built as the N64's computer side, CC0, statically linked with "
+                             "musl; https://github.com/JackTulli/halo64-link), its test server, the SummerCart64 "
+                             "bridge (Python, packaged with PyInstaller) and their launchers; online-kit-licenses/ "
+                             "has the notices their parts' licences ask for (link/licenses/ in that folder too).\n")
         libdragon_license = args.tools / "libdragon-LICENSE.md"
         if libdragon_license.is_file():
             shutil.copy2(libdragon_license, notices / "libdragon-LICENSE.md")

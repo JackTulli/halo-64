@@ -35,6 +35,26 @@ simulated cart, not on a real one yet.
 | The cable | a **SummerCart64** (firmware 2.x) and its USB cable, with the bridge (halo64-link's `link/sc64/`); or, without a flashcart, **ares** built with halo64-link's `link/ares/ares-usb.patch` |
 | An internet connection | for the internet's games; a test game on one computer needs none |
 
+## The easy way: the ROM Builder (Windows)
+
+Halo 64's ROM Builder (this repository's releases) makes the online
+cartridge too: tick **Online**. From your Xbox disc it writes
+`halo-online.z64` and, beside it, a `Halo64Online` folder with everything
+else a Windows PC with a SummerCart64 needs: Halo 64 Link and a test server
+(static Linux programs that run in WSL 2: nothing to install in Ubuntu),
+the maps the Link plays (the very ones the cartridge was made from), the
+SummerCart64 bridge, launchers and the licences. Then:
+
+1. Put `halo-online.z64` on the SummerCart64's SD card and start it from
+   the flashcart menu (save type EEPROM 4 kbit, which its header asks for).
+2. Plug the cart's USB port into the PC and close sc64deployer and
+   UNFLoader.
+3. Run `Halo64Online\play-sc64.bat` (or `play-sc64-local.bat` for a test
+   game on the PC alone, a local server and a bot).
+
+The folder's `README.txt` is the player's guide, with what to do when
+something goes wrong. It holds your maps: keep it to yourself.
+
 ## Building
 
 ### 1. The cartridge
@@ -52,8 +72,7 @@ ninja -f build/n64/build.ninja online     # build/n64/halo-online.z64
 
 It is its own build of the game (port.json "online", `HALO_N64_ONLINE`)
 with the multiplayer cartridge's maps, so once the multiplayer cartridge has
-been built only the program is compiled again. The ROM Builder doesn't make
-it.
+been built only the program is compiled again.
 
 ### 2. Halo 64 Link
 
@@ -86,9 +105,10 @@ maps); the first configure downloads SDL's headers once.
 
 ### A SummerCart64 on Windows: the kit
 
-halo64-link's `link/sc64/make-kit.sh` packs everything into one folder: the
-cartridge, the Link and the test server with the 32-bit libraries they need
-(so Ubuntu needs nothing installed), the maps, the bridge and launchers:
+halo64-link's `link/sc64/make-kit.sh` packs everything into one folder, the
+same one the ROM Builder writes: the cartridge, the Link and the test server
+(static, or with the 32-bit libraries they need: Ubuntu needs nothing
+installed), the maps, the bridge and launchers:
 
 ```sh
 cd ~/halo64-link

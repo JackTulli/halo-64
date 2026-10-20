@@ -94,7 +94,10 @@ its `maps` folder on its window, tick the cartridges (multiplayer and the
 campaign's "Halo"), choose where they go and press **Build ROMs**. It
 converts your maps on your PC (a first build takes a while: every sound is
 converted once, then kept for the next) and writes `halo-n64.z64` and
-`halo-campaign.z64`. It needs about 3 GB of free memory and 3 GB of disk
+`halo-campaign.z64`. Its **Online** box makes the online cartridge,
+`halo-online.z64`, and a `Halo64Online` folder beside it with everything a
+PC needs to play online through a SummerCart64 ("The online cartridge"
+below). It needs about 3 GB of free memory and 3 GB of disk
 for its work folder (`%LOCALAPPDATA%\Halo64RomBuilder`). No Halo data comes
 with it: it carries the game's program, built from this repository, and
 the tools that turn your maps into the cartridge's files.
@@ -269,14 +272,22 @@ cartridge adds is in
 ### The online cartridge (optional)
 
 `halo-online.z64` plays online (its own build of the game: port.json
-"online", `HALO_N64_ONLINE`, with the multiplayer cartridge's maps). The
-ROM Builder doesn't make it; from the sources, once the build above works:
+"online", `HALO_N64_ONLINE`, with the multiplayer cartridge's maps).
+
+**The easy way**: tick **Online** in the ROM Builder. Beside the cartridge
+it writes a `Halo64Online` folder for a Windows PC with a SummerCart64:
+Halo 64 Link and a test server (Linux programs that run in WSL 2, with
+nothing to install in Ubuntu), the maps from your disc that the Link plays,
+the SummerCart64 bridge, the cartridge again and `play-sc64.bat`, which
+starts it all. Its `README.txt` says how to play.
+
+From the sources, once the build above works:
 
 ```sh
 ninja -f build/n64/build.ninja online   # build/n64/halo-online.z64
 ```
 
-Playing it needs three more things:
+Playing it needs three more things (the ROM Builder's folder has them all):
 
 | What | Where |
 |---|---|
@@ -285,8 +296,8 @@ Playing it needs three more things:
 | **The cable** | a SummerCart64 and halo64-link's bridge (`link/sc64/`); with no flashcart, ares built with halo64-link's `link/ares/ares-usb.patch` |
 
 On Windows with a SummerCart64, halo64-link's `link/sc64/make-kit.sh` packs
-the cartridge, the Link with its libraries, the maps and the bridge into one
-folder that runs with nothing installed but WSL 2. The whole guide --
+the cartridge, the Link, the maps and the bridge into the same folder the
+ROM Builder writes, from your own builds. The whole guide --
 building each part, running it, playing, and how it works -- is
 [`port/n64/docs/online/README.md`](port/n64/docs/online/README.md).
 
@@ -368,7 +379,7 @@ gamepad that has motors).
 
 | Setting | What it does |
 |---|---|
-| 3D RESOLUTION | chunky (160 wide, each pixel doubled; the HUD stays sharp), medium (the 3D drawn 256 wide and widened), standard (320 wide) or high detail: 480i on the maps with the memory for it, else 640x240 at 240p, twice the pixels across as Perfect Dark's high resolution. Lower is faster. |
+| 3D RESOLUTION | chunky (160 wide, each pixel doubled; the HUD stays sharp), medium (the 3D drawn 256 wide and widened), standard (320 wide), high detail (640x240 at 240p, twice the pixels across as Perfect Dark's high resolution; 520 or 480 across on maps without the memory for 640) or ultra detail (480i on the maps with the memory for it, else as high detail). Lower is faster. |
 | ANIMATIONS | full or half rate: half poses the characters, vehicles and your gun every other tick (halved again with 3 or 4 players), and the bots think less often. Faster. |
 | PARTICLES | muzzle flashes, sparks, dust and blood on or off |
 | VIEW MODEL | your gun and arms in low, medium or high detail, or off in split (low, and not drawn with 3 or 4 players: the biggest saving there) |
@@ -491,7 +502,8 @@ Cartridge flags are files on the ROM's file system, listed in `port.json`
   none), `debug_title_time=<seconds>` (the title's camera path from there),
   `debug_cycle=<seconds>` (after so many seconds a game goes back to the
   menu, which starts the next map by itself: every map in turn, through the
-  menu), `debug_high_detail` (3D RESOLUTION high detail without the menu),
+  menu), `debug_high_detail`, `debug_ultra_detail` (3D RESOLUTION high or
+  ultra detail without the menu),
   `debug_view_model=<0-3>`.
 - Drawing: `debug_chase` (view 1 follows its player), `debug_overview`,
   `debug_untextured`, `debug_no_level`, `debug_no_objects`,

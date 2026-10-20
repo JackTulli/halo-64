@@ -288,8 +288,10 @@ void n64_game_setup(
 	n64_choice.paintball = n64_debug_flag("debug_paintball");
 	if (n64_debug_flag("debug_golden_style"))
 		for (i = 0; i < 4; i++) n64_controls[i].scheme = N64_SCHEME_GOLDEN_STYLE;
-	/* (port.json flag "debug_high_detail": the 3D in high detail) */
-	n64_render_set_high_detail(n64_debug_flag("debug_high_detail"));
+	/* (port.json flags "debug_high_detail", "debug_ultra_detail": the 3D in
+	high detail, 640x240, or ultra, 480i) */
+	n64_render_set_high_detail(n64_debug_flag("debug_ultra_detail") ? N64_DETAIL_ULTRA :
+		n64_debug_flag("debug_high_detail") ? N64_DETAIL_HIGH : 0);
 	for (i = 0; i < 4; i++)
 	{
 		static short const colors[4] = {2, 3, 6, 5};

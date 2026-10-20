@@ -317,12 +317,15 @@ that size), or back to the game's 320x240: the old display's memory freed
 first, the game's buffers where they were before the menu */
 void n64_render_set_menu_display(int on);
 int n64_render_screen_width(void);
-/* Settings: the game in high detail -- 480i where the map leaves room
-(640x480, else 512x480), else 640x240 at 240p (Perfect Dark's high
-resolution), else 320x240 and a word on the screen -- tried once the map is
-in; the anamorphic picture (16:9 squeezed into 4:3: a wider view across, the
-HUD squeezed about each view's middle) */
-void n64_render_set_high_detail(int on);
+/* Settings: the game in more detail, tried once the map is in -- level 1,
+HIGH DETAIL: 640x240 at 240p (Perfect Dark's high resolution), else 520x240
+or 480x240 where the map leaves less room; level 2, ULTRA DETAIL: 480i
+(640x480, else 512x480), else as high detail; else 320x240 and a word on
+the screen. 0: off. The anamorphic picture (16:9 squeezed into 4:3: a wider
+view across, the HUD squeezed about each view's middle) */
+#define N64_DETAIL_HIGH 1
+#define N64_DETAIL_ULTRA 2
+void n64_render_set_high_detail(int level);
 void n64_render_set_anamorphic(int on);
 /* the N64's pixels for one of the game's units (it lays the views and the
 HUD out on a 640x480 screen), across and down; the HUD's squeeze */
