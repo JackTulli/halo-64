@@ -145,6 +145,78 @@ DETAIL_SIZE = 64
 COLOUR_SATURATION = 38
 COLOUR_TINT = 25
 
+# the format chosen for a level texture, by its bitmap's name: the texture
+# picker's choices (texture_choices.json beside this file, or the file
+# N64_TEXTURE_CHOICES names), each one of these; a texture without one is
+# chosen as above (greyscale unless it needs colour)
+#   colour-32x64      RGBA16, 64x32 or 32x64 (the way round that loses least)
+#   ci4-64x64         CI4, 16 colours, 64 a side at most (write_texture)
+#   grey-64x64        I4 (IA4 cut out) of 4096 texels (grey_texture)
+#   grey-128x64       I4 of 8192 texels (GREYSCALE_TEXELS)
+#   ...-tint          the grey times a colour on the vertices (the choice's,
+#                     else grey_tint's): the colour back for free
+TEXTURE_CHOICES = Path(__file__).with_name("texture_choices.json")
+TEXTURE_OPTIONS = ("colour-32x64", "ci4-64x64", "grey-64x64", "grey-128x64", "grey-64x64-tint", "grey-128x64-tint")
+# the second picker's sections (models.py; detail_texture, overlay_texture):
+# the objects' (keyed by bitmap name, "<name> (first person)" for the
+# first-person atlas) take the levels' options; the ground's grain, drawn
+# beside its colour tile (2 KB at most), and the rock and snow overlays
+#   grain-i4-64x64        I4 64x64 (now: I4 64x64 drawn at its 32x32 level)
+#   grain-i8-32x32        I8 32x32, 256 greys
+#   grain-i8-64x32        I8 64x32
+#   grain-i4-64x64-micro  I4 64x64 with the shader's micro detail map in it
+#   overlay-i4-32x32      I4 32x32 with mipmaps (now: I4 64x64 with them)
+#   overlay-i8-64x32      I8 64x32 with mipmaps
+#   overlay-i8-64x64      I8 64x64, 4 KB: no room for mipmaps
+#   overlay-i4-128x64     I4 128x64, 4 KB: no mipmaps either
+SECTION_OPTIONS = {
+    "textures": TEXTURE_OPTIONS,
+    "objects": TEXTURE_OPTIONS,
+    "grain": ("now", "grain-i4-64x64", "grain-i8-32x32", "grain-i8-64x32", "grain-i4-64x64-micro"),
+    "overlays": ("now", "overlay-i4-32x32", "overlay-i8-64x32", "overlay-i8-64x64", "overlay-i4-128x64"),
+}
+# a tint's channels at most (the vertices' light is clamped anyway)
+TINT_MAXIMUM = 4.0
+
+
+def texture_choices(section="textures"):
+    """{bitmap name (lower case): (option, tint or None)} from the choices
+    file's section; empty without one"""
+    import json
+    path = Path(os.environ.get("N64_TEXTURE_CHOICES") or TEXTURE_CHOICES)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    choices = {}
+    for name, entry in (data.get(section) or {}).items():
+        option = entry if isinstance(entry, str) else (entry or {}).get("option")
+        if option not in SECTION_OPTIONS[section]:
+            continue
+        tint = entry.get("tint") if isinstance(entry, dict) else None
+        if tint is not None and not (len(tint) == 3 and all(isinstance(t, (int, float)) and 0 <= t <= TINT_MAXIMUM
+                                                             for t in tint)):
+            raise ValueError(f"{path}: {name}: a tint is three numbers from 0 to {TINT_MAXIMUM}")
+        choices[name.lower()] = (option, tuple(float(t) for t in tint) if tint else None)
+    return choices
+
+
+def fit_box(img, long_side, short_side):
+    """a size within long x short (no side larger than the image's, powers
+    of two), the way round that loses least of the image"""
+    w, h = img.size
+    lum = img.convert("L")
+    best = None
+    for bw, bh in ((long_side, short_side), (short_side, long_side)):
+        size = (min(bw, 1 << int(math.log2(max(1, w)))), min(bh, 1 << int(math.log2(max(1, h)))))
+        back = lum.resize(size, Image.LANCZOS).resize(lum.size, Image.BILINEAR)
+        error = sum((a - b) ** 2 for a, b in zip(lum.getdata(), back.getdata()))
+        if best is None or error < best[0]:
+            best = (error, size)
+        if long_side == short_side:
+            break
+    return best[1]
+
 from .toolpaths import tool  # noqa: E402
 
 MKSPRITE = tool("mksprite")
@@ -172,10 +244,13 @@ def pack_normal(n):
 
 
 class Texture:
-    def __init__(self, name, width, height, colour=(1.0, 1.0, 1.0)):
+    def __init__(self, name, width, height, colour=(1.0, 1.0, 1.0), mipmapped=False):
         self.name, self.width, self.height = name, width, height
         # the texture's average colour (0..1), for drawing it untextured
         self.colour = colour
+        # whether it has mipmaps (a tiled batch's detail map is drawn at its
+        # TILE_DETAIL_LEVEL then, else whole: terrain_tiles.py)
+        self.mipmapped = mipmapped
 
 
 # an alpha-tested texture (cutout_texture): texels under this alpha are cut
@@ -477,8 +552,15 @@ class LevelBuilder:
         # original images (grey_texture), the colour left to the lighting
         self.greyscale = False
         self.grey_by_bitmap = {}
-        # each material's factor on its vertices' light (grey_texture)
+        # each material's factor on its vertices' light (grey_texture), and
+        # its tint (a tinted grey's colour: TEXTURE_OPTIONS)
         self.material_shade = []
+        self.material_tint = []
+        # the texture picker's choices (texture_choices): the levels', the
+        # ground grain's and the overlays'
+        self.texture_choices = texture_choices()
+        self.grain_choices = texture_choices("grain")
+        self.overlay_choices = texture_choices("overlays")
         # natural terrain (terrain_materials): detail maps for textures,
         # the base map's colour on the vertices
         self.terrain_detail = False
@@ -520,9 +602,11 @@ class LevelBuilder:
 
     # ---------- textures
 
-    def texture(self, bitmap_datum):
-        if bitmap_datum in self.texture_by_bitmap:
-            return self.texture_by_bitmap[bitmap_datum]
+    def texture(self, bitmap_datum, fmt=None, box=None):
+        """a bitmap's texture (in this format and box: write_texture)"""
+        key = bitmap_datum if fmt is None and box is None else (bitmap_datum, fmt, box)
+        if key in self.texture_by_bitmap:
+            return self.texture_by_bitmap[key]
         tag = self.map.tag(bitmap_datum)
         index = -1
         if tag is not None:
@@ -533,9 +617,31 @@ class LevelBuilder:
                 except ValueError:
                     img = None
                 if img is not None:
-                    index = self.write_texture(img, tag.name)
-        self.texture_by_bitmap[bitmap_datum] = index
+                    index = self.write_texture(img, tag.name, fmt=fmt, box=box)
+        self.texture_by_bitmap[key] = index
         return index
+
+    def texture_choice(self, bitmap_datum):
+        """the texture picker's (option, tint or None) for a bitmap, or None"""
+        tag = self.map.tag(bitmap_datum) if bitmap_datum != 0xFFFFFFFF else None
+        return self.texture_choices.get(tag.name.lower()) if tag is not None else None
+
+    def grey_tint(self, bitmap_datum):
+        """the colour that times a bitmap's greys fits its colours best
+        (least squares over its opaque texels), for a tinted grey without
+        one of its own"""
+        tag = self.map.tag(bitmap_datum)
+        images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+        try:
+            img = decode(self.map, images[0], 256).convert("RGB") if images else None
+        except ValueError:
+            img = None
+        if img is None:
+            return (1.0, 1.0, 1.0)
+        grey = list(img.convert("L").getdata())
+        rgb = list(img.getdata())
+        gg = sum(g * g for g in grey) or 1
+        return tuple(min(TINT_MAXIMUM, sum(p[k] * g for p, g in zip(rgb, grey)) / gg) for k in range(3))
 
     def has_cutout(self, bitmap_datum):
         """whether a bitmap has transparent texels to cut out (at least
@@ -606,26 +712,29 @@ class LevelBuilder:
         img.putalpha(alpha)
         return img
 
-    def environment_texture(self, base, bump, bump_scale=1.0):
+    def environment_texture(self, base, bump, bump_scale=1.0, fmt=None, box=None):
         """A coloured alpha-tested environment texture, keyed by its mask
         as well as its RGB map; the same base can have different masks.
         """
-        key = ("environment-cutout", base, bump, bump_scale or 1.0)
+        key = ("environment-cutout", base, bump, bump_scale or 1.0, fmt, box)
         if key not in self.texture_by_bitmap:
             tag = self.map.tag(base)
             images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
             img = decode(self.map, images[0], 64) if images else None
             self.texture_by_bitmap[key] = self.write_texture(
-                self.environment_alpha(img, bump, bump_scale), tag.name, cutout=True) if img is not None else -1
+                self.environment_alpha(img, bump, bump_scale), tag.name, fmt=fmt, cutout=True,
+                box=box) if img is not None else -1
         return self.texture_by_bitmap[key]
 
-    def write_texture(self, img, tag_name, mask=None, fmt=None, cutout=False):
+    def write_texture(self, img, tag_name, mask=None, fmt=None, cutout=False, box=None):
         """a texture from an image; with a mask (L, the image's size: a
         player's colour change), a CI4 texture's palette is split: entries
         0-7 for the texels outside the mask, 8-15 for those in it (the
         renderer tints the upper half); cut out (alpha-tested), a CI4
         texture's transparent texels keep their own palette entry
-        (cutout_palette: mksprite's quantizer drops the alpha)"""
+        (cutout_palette: mksprite's quantizer drops the alpha). With a box
+        (long, short), its size is the box's way round that loses least
+        (fit_box): the texture picker's full colour 32x64"""
         # at most 64 texels a side and 4 KB of TMEM with mipmaps: CI4 64x64
         # is 2 KB, its mipmaps about 0.7 KB more
         fmt = fmt or TEXTURE_FORMAT
@@ -634,6 +743,8 @@ class LevelBuilder:
         scale = min(1.0, limit / max(w, h))
         w2 = max(4, 1 << int(math.log2(max(1, int(w * scale)))))
         h2 = max(4, 1 << int(math.log2(max(1, int(h * scale)))))
+        if box is not None:
+            w2, h2 = (max(4, side) for side in fit_box(img, *box))
         img = img.resize((w2, h2), Image.LANCZOS)
         if mask is not None:
             mask = mask.resize((w2, h2), Image.BILINEAR)
@@ -684,16 +795,17 @@ class LevelBuilder:
         self.used_textures.add(name)
         return name
 
-    def grey_texture(self, bitmap_datum, alpha_test, alpha_source=None):
+    def grey_texture(self, bitmap_datum, alpha_test, alpha_source=None, limit=None):
         """an environment texture in greyscale (I4; IA4 with a cut-out):
-        GREYSCALE_TEXELS from an original image of up to 256 a side, as
+        GREYSCALE_TEXELS (or limit) from an original image of up to 256 a side, as
         wide and high as tells the most of it (within twice the original's
         proportions: further, it streaks), its greys stretched to the full
         range. Returns the texture and the factor for its vertices' light
         (the stretch undone; the renderer doubles, MATERIAL_DOUBLE: in the
         texture the doubling turned bright textures white, on the vertices
         bright light dark)."""
-        key = (bitmap_datum, alpha_test, alpha_source)
+        limit = limit or GREYSCALE_TEXELS
+        key = (bitmap_datum, alpha_test, alpha_source, limit)
         if key in self.grey_by_bitmap:
             return self.grey_by_bitmap[key]
         tag = self.map.tag(bitmap_datum)
@@ -712,7 +824,7 @@ class LevelBuilder:
             img = img.resize((max(1, int(img.width * k)), max(1, int(img.height * k))), Image.LANCZOS)
         lum = img.convert("L")
         width, height = lum.size
-        texels = min(GREYSCALE_TEXELS, 1 << int(math.log2(max(16, width * height))))
+        texels = min(limit, 1 << int(math.log2(max(16, width * height))))
         aspect = width / height
         best = None
         w = 4
@@ -753,7 +865,7 @@ class LevelBuilder:
         if shader_datum in self.material_by_shader:
             return self.material_by_shader[shader_datum]
         tag = self.map.tag(shader_datum)
-        texture, flags, shade = -1, 0, 1.0
+        texture, flags, shade, tint = -1, 0, 1.0, None
         if tag is not None:
             group = tag.group_name
             if group == "senv":
@@ -773,17 +885,30 @@ class LevelBuilder:
                     if first is not None:
                         self.material_by_shader[shader_datum] = first
                         return first
-                if self.greyscale and not self.base_needs_colour(base):
+                # (the texture picker's format for it, else greyscale unless
+                # it needs its colour: TEXTURE_OPTIONS)
+                choice = self.texture_choice(base)
+                if choice is not None:
+                    option = choice[0]
+                else:
+                    option = "grey-128x64" if self.greyscale and not self.base_needs_colour(base) else "ci4-64x64"
+                if option.startswith("grey"):
                     texture, shade = self.grey_texture(base, bool(env_flags & 1),
-                                                       (bump, bump_scale) if env_flags & 1 else None)
+                                                       (bump, bump_scale) if env_flags & 1 else None,
+                                                       GREYSCALE_TEXELS if option.startswith("grey-128x64")
+                                                       else GREYSCALE_TEXELS // 2)
                     if texture >= 0:
                         flags |= MATERIAL_DOUBLE
+                        if option.endswith("-tint"):
+                            tint = choice[1] or self.grey_tint(base)
                 else:
-                    texture = self.environment_texture(base, bump, bump_scale) if env_flags & 1 else self.texture(base)
+                    fmt, box = ("RGBA16", (64, 32)) if option == "colour-32x64" else (None, None)
+                    texture = (self.environment_texture(base, bump, bump_scale, fmt=fmt, box=box) if env_flags & 1
+                               else self.texture(base, fmt=fmt, box=box))
                 overlay = self.overlay_material(tag, base) if texture >= 0 and not env_flags & 1 else None
                 if overlay is not None:
                     shade /= overlay[1]
-                    index = self.add_material(texture, flags, shade)
+                    index = self.add_material(texture, flags, shade, tint=tint)
                     self.overlay_of[index] = overlay[0]
                     self.material_by_shader[shader_datum] = index
                     return index
@@ -809,7 +934,7 @@ class LevelBuilder:
                 texture = self.first_map(tag)
         if texture < 0:
             flags |= MATERIAL_UNTEXTURED
-        index = self.add_material(texture, flags, shade)
+        index = self.add_material(texture, flags, shade, tint=tint)
         self.material_by_shader[shader_datum] = index
         return index
 
@@ -845,29 +970,48 @@ class LevelBuilder:
         a side: the factor it darkens by, its brightest 1 (Halo's detail
         multiplies by the texel over the map's mean; here over its
         brightest, the contrast cut to keep the mean at OVERLAY_MEAN).
-        Returns the texture, the image's size and the texels' mean"""
+        Returns the texture, the image's size and the texels' mean.
+
+        The texture picker's format for it, if it has one (overlay_choices:
+        SECTION_OPTIONS): I4 32x32 or I8 64x32 with mipmaps, or I8 64x64 or
+        I4 128x64 without (4 KB: no room for them)"""
         tag = self.map.tag(bitmap_datum)
+        choice = self.overlay_choices.get(tag.name.lower()) if tag is not None else None
+        option = choice[0] if choice else "now"
         images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
         try:
-            img = decode(self.map, images[0], DETAIL_SIZE) if images else None
+            img = decode(self.map, images[0], 2 * DETAIL_SIZE if option == "overlay-i4-128x64" else DETAIL_SIZE) \
+                if images else None
         except ValueError:
             img = None
         if img is None:
             return -1, None, 1.0
-        grey = img.convert("L").resize((DETAIL_SIZE, DETAIL_SIZE), Image.LANCZOS)
+        fmt, mipmaps = "I4", True
+        size = (DETAIL_SIZE, DETAIL_SIZE)
+        if option == "overlay-i4-32x32":
+            size = (32, 32)
+        elif option == "overlay-i8-64x32":
+            fmt, size = "I8", fit_box(img, 64, 32)
+        elif option == "overlay-i8-64x64":
+            fmt, size, mipmaps = "I8", (64, 64), False
+        elif option == "overlay-i4-128x64":
+            size, mipmaps = fit_box(img, 128, 64), False
+        grey = img.convert("L").resize(size, Image.LANCZOS)
         values = list(grey.getdata())
         top = max(values) or 1
         mean = sum(values) / len(values) / top
         cut = min(1.0, (1.0 - OVERLAY_MEAN) / (1.0 - mean)) if mean < 1.0 else 1.0
-        grey = grey.point(lambda v: max(OVERLAY_FLOOR_LEVEL, int(round(15 * (1.0 - cut * (1.0 - v / top))))) * 17)
+        steps = 15 if fmt == "I4" else 255
+        floor = OVERLAY_FLOOR_LEVEL * steps // 15
+        grey = grey.point(lambda v: int(round(max(floor, round(steps * (1.0 - cut * (1.0 - v / top)))) * 255 / steps)))
         levels = list(grey.getdata())
         index = len(self.textures)
         work_dir = self.out_dir / "tex" / f".{self.map_name}"
         work_dir.mkdir(parents=True, exist_ok=True)
         png = work_dir / f"{self.texture_prefix}o{index:02d}.png"
         grey.save(png)
-        name = self.make_sprite(png, "I4", mipmaps=True)
-        self.textures.append(Texture(name, DETAIL_SIZE, DETAIL_SIZE, (1.0, 1.0, 1.0)))
+        name = self.make_sprite(png, fmt, mipmaps=mipmaps)
+        self.textures.append(Texture(name, size[0], size[1], (1.0, 1.0, 1.0), mipmapped=mipmaps))
         return index, (images[0].width, images[0].height), sum(levels) / len(levels) / 255.0
 
     def dropped_shader(self, tag):
@@ -925,9 +1069,10 @@ class LevelBuilder:
         colour = tuple(min(1.0, (a + b) / 2 * WATER_SHADE) for a, b in zip(*tints))
         return colour if max(colour) > 0.02 else WATER_DEFAULT_COLOUR
 
-    def add_material(self, texture, flags, shade=1.0, terrain=None, uv_scale=(1.0, 1.0)):
+    def add_material(self, texture, flags, shade=1.0, terrain=None, uv_scale=(1.0, 1.0), tint=None):
         self.materials.append((texture, flags))
         self.material_shade.append(shade)
+        self.material_tint.append(tuple(tint) if tint else (1.0, 1.0, 1.0))
         self.material_terrain.append(terrain)
         self.material_uv_scale.append(uv_scale)
         return len(self.materials) - 1
@@ -960,6 +1105,11 @@ class LevelBuilder:
         # Halo's "rescale detail maps": a detail map's scale is also in
         # base map texels to its own
         rescale = read("diffuse flags", "<H") & 1
+        # (the micro detail map, for a grain chosen with it: how many times
+        # it repeats across one of a detail map's)
+        micro_datum = struct.unpack("<I", self.map.read(tag.address + f["micro detail map"] + 12, 4))[0]
+        micro_scale = read("micro detail map scale", "<f")
+        micro_size = self.bitmap_size(micro_datum) if micro_scale > 0 else None
         details = []
         for field in ("primary detail map", "secondary detail map"):
             datum = struct.unpack("<I", self.map.read(tag.address + f[field] + 12, 4))[0]
@@ -967,7 +1117,14 @@ class LevelBuilder:
             if datum == 0xFFFFFFFF or scale <= 0:
                 details.append(None)
                 continue
-            texture, size = self.detail_texture(datum)
+            micro = None
+            if micro_size:
+                repeats = micro_scale / scale
+                detail_size = self.bitmap_size(datum)
+                if rescale and detail_size:
+                    repeats *= detail_size[0] / micro_size[0]
+                micro = (micro_datum, round(repeats, 3))
+            texture, size = self.detail_texture(datum, micro)
             if texture < 0:
                 details.append(None)
                 continue
@@ -1032,23 +1189,35 @@ class LevelBuilder:
         primary = primary or secondary or identity
         return primary, secondary or primary, micro or identity
 
-    def detail_texture(self, bitmap_datum):
+    def detail_texture(self, bitmap_datum, micro=None):
         """a detail map as an I4 texture with mipmaps, DETAIL_SIZE a side,
         about grey: the renderer draws light x (0.5 + texel), so a texel
         of 0.5 leaves the base map's colour as it is; Halo's detail maps
         multiply by twice the texel (biased), here over the map's mean,
         the base map's colour unchanged on average. Returns the texture and
-        the original image's size"""
-        if bitmap_datum in self.detail_by_bitmap:
-            return self.detail_by_bitmap[bitmap_datum]
-        result = (-1, None)
+        the original image's size.
+
+        The texture picker's grain for it, if it has one (grain_choices:
+        SECTION_OPTIONS), instead: I4 64x64, I8 32x32 or 64x32, or I4
+        64x64 with the shader's micro detail map multiplied in (micro: its
+        bitmap and how many times it repeats across one of the detail's) --
+        without mipmaps beside a colour tile (colour_tiles: the tile takes
+        the rest of TMEM, the grain drawn whole), with them elsewhere"""
         tag = self.map.tag(bitmap_datum)
+        choice = self.grain_choices.get(tag.name.lower()) if tag is not None else None
+        option = choice[0] if choice else "now"
+        if option != "grain-i4-64x64-micro":
+            micro = None
+        key = bitmap_datum if option == "now" else (bitmap_datum, option, micro)
+        if key in self.detail_by_bitmap:
+            return self.detail_by_bitmap[key]
+        result = (-1, None)
         images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
         try:
             img = decode(self.map, images[0], DETAIL_SIZE) if images else None
         except ValueError:
             img = None
-        if img is not None:
+        if img is not None and option == "now":
             grey = img.convert("L").resize((DETAIL_SIZE, DETAIL_SIZE), Image.LANCZOS)
             mean = sum(grey.getdata()) / (DETAIL_SIZE * DETAIL_SIZE) or 1.0
             grey = grey.point(lambda v: int(round(round(max(0.0, min(1.0, v / mean - 0.5)) * 15) * 17)))
@@ -1058,10 +1227,59 @@ class LevelBuilder:
             png = work_dir / f"{self.texture_prefix}d{index:02d}.png"
             grey.save(png)
             name = self.make_sprite(png, "I4", mipmaps=True)
-            self.textures.append(Texture(name, DETAIL_SIZE, DETAIL_SIZE, (0.5, 0.5, 0.5)))
+            self.textures.append(Texture(name, DETAIL_SIZE, DETAIL_SIZE, (0.5, 0.5, 0.5), mipmapped=True))
             result = (index, (images[0].width, images[0].height))
-        self.detail_by_bitmap[bitmap_datum] = result
+        elif img is not None:
+            fmt = "I8" if option.startswith("grain-i8") else "I4"
+            size = (32, 32) if option == "grain-i8-32x32" else fit_box(img, 64, 32) if option == "grain-i8-64x32" \
+                else (64, 64)
+            grey = img.convert("L").resize(size, Image.LANCZOS)
+            values = list(grey.getdata())
+            mean = sum(values) / len(values) or 1.0
+            grain = [max(0.0, min(1.0, v / mean - 0.5)) for v in values]
+            if micro is not None:
+                grain = self.with_micro(grain, size, *micro)
+            levels = 255 if fmt == "I8" else 15
+            grey = Image.new("L", size)
+            grey.putdata([int(round(round(g * levels) * 255 / levels)) for g in grain])
+            index = len(self.textures)
+            work_dir = self.out_dir / "tex" / f".{self.map_name}"
+            work_dir.mkdir(parents=True, exist_ok=True)
+            png = work_dir / f"{self.texture_prefix}d{index:02d}.png"
+            grey.save(png)
+            mipmapped = not self.colour_tiles
+            name = self.make_sprite(png, fmt, mipmaps=mipmapped)
+            self.textures.append(Texture(name, size[0], size[1], (0.5, 0.5, 0.5), mipmapped=mipmapped))
+            result = (index, (images[0].width, images[0].height))
+        self.detail_by_bitmap[key] = result
         return result
+
+    def with_micro(self, grain, size, micro_datum, repeats):
+        """a grain (0..1 about 0.5, the renderer's 0.5 + texel) with a micro
+        detail map's multiplied in: the micro map about its mean, repeating
+        repeats times (1-8) across the grain"""
+        tag = self.map.tag(micro_datum)
+        images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+        try:
+            img = decode(self.map, images[0], DETAIL_SIZE) if images else None
+        except ValueError:
+            img = None
+        if img is None:
+            return grain
+        k = max(1, min(8, round(repeats)))
+        w, h = size
+        side_w, side_h = max(4, w // k), max(4, h // k)
+        micro = img.convert("L").resize((side_w, side_h), Image.LANCZOS)
+        values = list(micro.getdata())
+        mean = sum(values) / len(values) or 1.0
+        return [max(0.0, min(1.0, (0.5 + g) * values[(y % side_h) * side_w + x % side_w] / mean - 0.5))
+                for (y, x), g in zip(((y, x) for y in range(h) for x in range(w)), grain)]
+
+    def bitmap_size(self, bitmap_datum):
+        """a bitmap's first image's size, or None"""
+        tag = self.map.tag(bitmap_datum) if bitmap_datum != 0xFFFFFFFF else None
+        images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
+        return (images[0].width, images[0].height) if images else None
 
     def triangle_material(self, material, triangle):
         """a terrain triangle's material: the detail map its base map's
@@ -1120,7 +1338,14 @@ class LevelBuilder:
 
         from .walk import Walker
         Walker(self.map, self.defs).walk(tag, on_dependency=on_dependency)
-        return self.texture(found[0]) if found else -1
+        if not found:
+            return -1
+        # (the texture picker's full colour for it; a transparent texture
+        # keeps its colour, so a grey choice is not taken)
+        choice = self.texture_choice(found[0])
+        if choice is not None and choice[0] == "colour-32x64":
+            return self.texture(found[0], fmt="RGBA16", box=(64, 32))
+        return self.texture(found[0])
 
     # ---------- geometry
 
@@ -1297,8 +1522,9 @@ class LevelBuilder:
     def fit_detail_scales(self, surface_info):
         """halves a detail map's scale until every triangle of it fits a
         batch's coordinates (GREYSCALE_UV_EXTENT, less one repeat): Blood
-        Gulch's sand repeats every 1.4 units, its triangles span 14"""
-        limit = GREYSCALE_UV_EXTENT - DETAIL_SIZE
+        Gulch's sand repeats every 1.4 units, its triangles span 14. (A
+        detail or overlay texture the texture picker made wider than
+        DETAIL_SIZE counts at its own size)"""
         widest = {}
         for triangles in surface_info:
             for t in triangles or ():
@@ -1313,9 +1539,17 @@ class LevelBuilder:
         for material, scale in enumerate(self.material_uv_scale):
             if scale == (1.0, 1.0):
                 continue
+            texture = self.materials[material][0]
+            side = max(DETAIL_SIZE, self.textures[texture].width, self.textures[texture].height) if texture >= 0 \
+                else DETAIL_SIZE
+            # (as many repeats as a DETAIL_SIZE texture's: a triangle's
+            # coordinates centred, within +-6.5 repeats, 832 texels at 128)
+            limit = (GREYSCALE_UV_EXTENT - DETAIL_SIZE) * side / DETAIL_SIZE
             su, sv = scale
-            while max(widest.get((material, 0), 0.0) * su, widest.get((material, 1), 0.0) * sv) * DETAIL_SIZE > limit:
+            while max(widest.get((material, 0), 0.0) * su, widest.get((material, 1), 0.0) * sv) * side > limit:
                 su, sv = su / 2, sv / 2
+            if (su, sv) != scale and side > DETAIL_SIZE:
+                print(f"{self.map_name}: {self.textures[texture].name}: detail scale halved to fit (its {side} texels)")
             self.material_uv_scale[material] = (su, sv)
 
     def split_by_lightmap(self, triangle, depth=0):
@@ -1442,6 +1676,11 @@ class LevelBuilder:
         if material in self.overlay_of:
             overlay_scale = self.material_uv_scale[self.overlay_of[material]]
             scale = (max(scale[0], overlay_scale[0]), max(scale[1], overlay_scale[1]))
+            # (and its texels: the texture picker's overlays can be wider)
+            overlay_texture = self.materials[self.overlay_of[material]][0]
+            if overlay_texture >= 0:
+                size = (max(size[0], self.textures[overlay_texture].width),
+                        max(size[1], self.textures[overlay_texture].height))
         by_vertex = {}
         for t, tri in enumerate(triangles):
             for v in tri[1:]:
@@ -1619,6 +1858,8 @@ class LevelBuilder:
             texture, flags = self.materials[material]
             tw, th = (self.textures[texture].width, self.textures[texture].height) if texture >= 0 else (32, 32)
             shade = self.material_shade[material]
+            # (a tinted grey's colour, on its vertices)
+            tint = self.material_tint[material]
             # the vertices' light at most DOUBLE_SHADE_LIMIT where the
             # renderer doubles texture x light
             top = DOUBLE_SHADE_LIMIT if flags & MATERIAL_DOUBLE else 255
@@ -1627,7 +1868,9 @@ class LevelBuilder:
             # a tiled terrain batch's coordinates in its detail map's texels
             # at the level the renderer draws (terrain_tiles.py)
             tiled = tiles is not None and flags & MATERIAL_TILED
-            if tiled:
+            # (a grain without mipmaps -- the texture picker's: detail_texture
+            # -- is drawn whole, the renderer taking its only level)
+            if tiled and self.textures[texture].mipmapped:
                 from .terrain_tiles import TILE_DETAIL_LEVEL
                 tw, th = tw >> TILE_DETAIL_LEVEL, th >> TILE_DETAIL_LEVEL
             # the batch's coordinates about 0 (whole repeats off): s10.5 holds
@@ -1657,7 +1900,7 @@ class LevelBuilder:
                         # are -- Halo's detail maps double), times the light
                         colour = terrain.tinted(terrain.sampler.sample(v[2]))
                         light = [min(1.0, max(0.0, l * c)) for l, c in zip(light, colour)]
-                    r, g, b_, = (min(top, int(round(c * shade * 255))) for c in light)
+                    r, g, b_, = (min(top, int(round(c * shade * t * 255))) for c, t in zip(light, tint))
                     return (r << 24) | (g << 16) | (b_ << 8) | 255
                 vertex_data += struct.pack(">3hH3hHII2h2h", *pos(a), pack_normal(a[1]), *pos(b), pack_normal(b[1]),
                                            rgba(a), rgba(b), *st(a), *st(b))

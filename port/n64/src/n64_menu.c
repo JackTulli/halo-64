@@ -223,6 +223,9 @@ static struct
 	/* TERRAIN DETAIL (n64_render_set_terrain_detail): full, high, medium,
 	low */
 	int terrain_detail;
+	/* DECALS off (n64_paint_set_decals), ANTI-ALIASING and DEDITHER on
+	(n64_render_set_antialias, n64_render_set_dedither) */
+	int no_decals, antialias, dedither;
 	/* the CONTROLS page: each controller's chosen row (CONTROL_*), and the
 	controller whose row the help line explains */
 	int control_row[4];
@@ -870,8 +873,9 @@ enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE
 /* the buzz a controller gives when its rumble is turned on (frames) */
 #define RUMBLE_PULSE_FRAMES 12
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
-enum { SETTING_CHUNKY, SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_VIEW_MODEL, SETTING_TERRAIN,
-	SETTING_WIDESCREEN, SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
+enum { SETTING_CHUNKY, SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_TERRAIN,
+	SETTING_WIDESCREEN, SETTING_ANTIALIAS, SETTING_DEDITHER, SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK,
+	SETTING_COUNT };
 
 /* the 3D's resolutions from the lowest (menu.chunky's values) */
 #define RESOLUTION_HIGH 3
@@ -936,6 +940,9 @@ static void settings_pack(unsigned char *bytes)
 	bytes[11] = (unsigned char)menu.hud_inset;
 	bytes[12] = (unsigned char)menu.fps_counter;
 	bytes[14] = (unsigned char)menu.terrain_detail;
+	/* (byte 15, a bit each, 0 in the records kept before them: DECALS off,
+	ANTI-ALIASING on, DEDITHER on) */
+	bytes[15] = (unsigned char)((menu.no_decals != 0) | (menu.antialias != 0) << 1 | (menu.dedither != 0) << 2);
 	/* (a bit a controller with its Rumble Pak off: 0 in the records kept
 	before there was one, so theirs are on) */
 	for (int p = 0; p < 4; p++)
@@ -971,6 +978,11 @@ static int settings_unpack(const unsigned char *bytes)
 	menu.hud_inset = bytes[11] <= HUD_INSET_MAXIMUM && !(bytes[11] % HUD_INSET_STEP) ? bytes[11] : 0;
 	menu.fps_counter = bytes[12] != 0;
 	menu.terrain_detail = bytes[14] <= 3 ? bytes[14] : 0;
+	menu.no_decals = bytes[15] & 1;
+	menu.antialias = (bytes[15] >> 1) & 1;
+	menu.dedither = (bytes[15] >> 2) & 1;
+	/* (the menu's display made next takes it too) */
+	n64_render_set_dedither(menu.dedither);
 	for (int p = 0; p < 4; p++)
 	{
 		const unsigned char *controls = bytes + SAVED_CONTROLS + p * 6;
@@ -1451,46 +1463,53 @@ static void draw_settings(int item)
 {
 	/* what the chosen row does, under the list */
 	static const char *const help[SETTING_COUNT][2] = {
-		{"MEDIUM 256 ACROSS, CHUNKY HALF, HIGH 640X240,", "ULTRA 480I (LESS WHERE THE MAP LEAVES NO ROOM)"},
-		{"HALF: POSES, YOUR GUN'S TOO, AT HALF THE RATE", "(HALVED AGAIN WITH 3 OR 4 PLAYERS)"},
-		{"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
-		{"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES;", "OFF IN SPLIT: LOW, NONE WITH 3-4 PLAYERS (FASTER)"},
-		{"FULL: GROUND DETAIL AT EVERY DISTANCE; HIGH: IT", "FADES; MEDIUM: LESS ON ROCK; LOW: NONE (FASTER)"},
-		{"ANAMORPHIC: A 16:9 PICTURE, FOR A SCREEN", "THAT STRETCHES THE IMAGE TO 16:9"},
-		{"MOVES THE HUD IN FROM THE SCREEN'S EDGES, FOR", "TELEVISIONS THAT CUT THEM OFF"},
-		{"FRAMES A SECOND AND TIMINGS AT THE TOP", ""},
-		{"BACK TO THE TITLE", ""},
+		[SETTING_CHUNKY] = {"MEDIUM 256 ACROSS, CHUNKY HALF, HIGH 640X240,", "ULTRA 480I (LESS WHERE THE MAP LEAVES NO ROOM)"},
+		[SETTING_ANIMATIONS] = {"HALF: POSES, YOUR GUN'S TOO, AT HALF THE RATE", "(HALVED AGAIN WITH 3 OR 4 PLAYERS)"},
+		[SETTING_PARTICLES] = {"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
+		[SETTING_DECALS] = {"BULLET HOLES, BLOOD AND SCORCH MARKS ON", "WALLS AND FLOORS (OFF: A LITTLE FASTER)"},
+		[SETTING_VIEW_MODEL] = {"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES;", "OFF IN SPLIT: LOW, NONE WITH 3-4 PLAYERS (FASTER)"},
+		[SETTING_TERRAIN] = {"FULL: GROUND DETAIL AT EVERY DISTANCE; HIGH: IT", "FADES; MEDIUM: LESS ON ROCK; LOW: NONE (FASTER)"},
+		[SETTING_WIDESCREEN] = {"ANAMORPHIC: A 16:9 PICTURE, FOR A SCREEN", "THAT STRETCHES THE IMAGE TO 16:9"},
+		[SETTING_ANTIALIAS] = {"SMOOTHS THE EDGES OF WALLS, GROUND AND OBJECTS", "(THE N64'S OWN ANTI-ALIASING: SLOWER)"},
+		[SETTING_DEDITHER] = {"THE N64'S FILTER THAT SMOOTHS THE DITHER", "OUT OF THE PICTURE'S COLOURS"},
+		[SETTING_HUD_INSET] = {"MOVES THE HUD IN FROM THE SCREEN'S EDGES, FOR", "TELEVISIONS THAT CUT THEM OFF"},
+		[SETTING_COUNTER] = {"FRAMES A SECOND AND TIMINGS AT THE TOP", ""},
+		[SETTING_BACK] = {"BACK TO THE TITLE", ""},
 	};
 	char value[32];
+	/* (eleven rows, 23 apart, BACK under them) */
+	int y = 90;
 
 	page("SETTINGS", NULL);
-	/* (nine rows, 25 apart) */
-	setting_row(112, 528, 98, item == SETTING_CHUNKY, menu.large, "3D RESOLUTION",
+	setting_row(112, 528, y, item == SETTING_CHUNKY, menu.large, "3D RESOLUTION",
 		menu.chunky == RESOLUTION_ULTRA ? "ULTRA DETAIL" : menu.chunky == RESOLUTION_HIGH ? "HIGH DETAIL" :
 		menu.chunky == 2 ? "CHUNKY" :
 		menu.chunky == 1 ? "MEDIUM" : "STANDARD");
-	setting_row(112, 528, 123, item == SETTING_ANIMATIONS, menu.large, "ANIMATIONS",
+	setting_row(112, 528, y += 23, item == SETTING_ANIMATIONS, menu.large, "ANIMATIONS",
 		menu.half_animation ? "HALF RATE" : "FULL RATE");
-	setting_row(112, 528, 148, item == SETTING_PARTICLES, menu.large, "PARTICLES", menu.no_particles ? "OFF" : "ON");
-	setting_row(112, 528, 173, item == SETTING_VIEW_MODEL, menu.large, "VIEW MODEL",
+	setting_row(112, 528, y += 23, item == SETTING_PARTICLES, menu.large, "PARTICLES", menu.no_particles ? "OFF" : "ON");
+	setting_row(112, 528, y += 23, item == SETTING_DECALS, menu.large, "DECALS", menu.no_decals ? "OFF" : "ON");
+	setting_row(112, 528, y += 23, item == SETTING_VIEW_MODEL, menu.large, "VIEW MODEL",
 		menu.view_model == 3 ? "OFF IN SPLIT" : menu.view_model == 2 ? "HIGH" : menu.view_model == 1 ? "MEDIUM" : "LOW");
-	setting_row(112, 528, 198, item == SETTING_TERRAIN, menu.large, "TERRAIN DETAIL",
+	setting_row(112, 528, y += 23, item == SETTING_TERRAIN, menu.large, "TERRAIN DETAIL",
 		terrain_details[menu.terrain_detail >= 0 && menu.terrain_detail <= 3 ? menu.terrain_detail : 0]);
 	if (menu.hud_inset)
 		snprintf(value, sizeof(value), "%d PIXELS", menu.hud_inset);
 	else
 		snprintf(value, sizeof(value), "OFF");
-	setting_row(112, 528, 223, item == SETTING_WIDESCREEN, menu.large, "WIDESCREEN",
+	setting_row(112, 528, y += 23, item == SETTING_WIDESCREEN, menu.large, "WIDESCREEN",
 		menu.widescreen ? "ANAMORPHIC" : "OFF");
-	setting_row(112, 528, 248, item == SETTING_HUD_INSET, menu.large, "HUD INSET", value);
-	setting_row(112, 528, 273, item == SETTING_COUNTER, menu.large, "FPS COUNTER", menu.fps_counter ? "ON" : "OFF");
-	list_item(SCREEN_W / 2, 307, 180, item == SETTING_BACK, "BACK");
-	panel(112, 352, 528, 404, 0x80102040);
-	frame_line(112, 352, 528, 404, 0x806080A0);
+	setting_row(112, 528, y += 23, item == SETTING_ANTIALIAS, menu.large, "ANTI-ALIASING", menu.antialias ? "ON" : "OFF");
+	setting_row(112, 528, y += 23, item == SETTING_DEDITHER, menu.large, "DEDITHER", menu.dedither ? "ON" : "OFF");
+	setting_row(112, 528, y += 23, item == SETTING_HUD_INSET, menu.large, "HUD INSET", value);
+	setting_row(112, 528, y += 23, item == SETTING_COUNTER, menu.large, "FPS COUNTER", menu.fps_counter ? "ON" : "OFF");
+	list_item(SCREEN_W / 2, y + 32, 180, item == SETTING_BACK, "BACK");
+	panel(112, 370, 528, 422, 0x80102040);
+	frame_line(112, 370, 528, 422, 0x806080A0);
 	for (int line = 0; line < 2; line++)
 	{
 		if (help[item][line][0])
-			text_centered(menu.small, SCREEN_W / 2, (help[item][1][0] ? 374 : 383) + line * 18, TEXT_COLOR,
+			text_centered(menu.small, SCREEN_W / 2, (help[item][1][0] ? 392 : 401) + line * 18, TEXT_COLOR,
 				help[item][line]);
 	}
 	text_centered(menu.small, SCREEN_W / 2, 448, TEXT_DIM, "A, LEFT, RIGHT  CHANGE        B  BACK");
@@ -2163,6 +2182,16 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					menu.widescreen = !menu.widescreen;
 				if (setting == SETTING_PARTICLES && (pad->left || pad->right || pad->pressed.a))
 					menu.no_particles = !menu.no_particles;
+				if (setting == SETTING_DECALS && (pad->left || pad->right || pad->pressed.a))
+					menu.no_decals = !menu.no_decals;
+				if (setting == SETTING_ANTIALIAS && (pad->left || pad->right || pad->pressed.a))
+					menu.antialias = !menu.antialias;
+				if (setting == SETTING_DEDITHER && (pad->left || pad->right || pad->pressed.a))
+				{
+					menu.dedither = !menu.dedither;
+					/* (from the next display: the game's) */
+					n64_render_set_dedither(menu.dedither);
+				}
 				if (setting == SETTING_VIEW_MODEL && pad->left)
 					menu.view_model = (menu.view_model + 3) % 4;
 				else if (setting == SETTING_VIEW_MODEL && (pad->right || pad->pressed.a))
@@ -2352,6 +2381,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_hud_set_inset(menu.hud_inset);
 			n64_render_show_counter(menu.fps_counter);
 			n64_render_set_terrain_detail(menu.terrain_detail);
+			n64_paint_set_decals(!menu.no_decals);
+			n64_render_set_antialias(menu.antialias);
 			n64_render_set_high_detail(menu.chunky == RESOLUTION_ULTRA ? N64_DETAIL_ULTRA :
 				menu.chunky == RESOLUTION_HIGH ? N64_DETAIL_HIGH : 0);
 			n64_half_animation_rate = menu.half_animation;

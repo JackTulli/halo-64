@@ -382,9 +382,12 @@ gamepad that has motors).
 | 3D RESOLUTION | chunky (160 wide, each pixel doubled; the HUD stays sharp), medium (the 3D drawn 256 wide and widened), standard (320 wide), high detail (640x240 at 240p, twice the pixels across as Perfect Dark's high resolution; 520 or 480 across on maps without the memory for 640) or ultra detail (480i on the maps with the memory for it, else as high detail). Lower is faster. |
 | ANIMATIONS | full or half rate: half poses the characters, vehicles and your gun every other tick (halved again with 3 or 4 players), and the bots think less often. Faster. |
 | PARTICLES | muzzle flashes, sparks, dust and blood on or off |
+| DECALS | bullet holes, blood and scorch marks on walls and floors on or off |
 | VIEW MODEL | your gun and arms in low, medium or high detail, or off in split (low, and not drawn with 3 or 4 players: the biggest saving there) |
 | TERRAIN DETAIL | full (the detail maps everywhere: the ground's at every distance, rock and earth's drawn over them), high (the ground's detail fades out a few steps away, before it can shimmer), medium (high without rock and earth's second pass) or low (no detail maps: the ground's colour alone). Lower is faster. |
 | WIDESCREEN | off, or anamorphic 16:9 for a television that stretches the picture |
+| ANTI-ALIASING | the N64's own anti-aliasing on walls, ground and objects (the RDP's coverage, smoothed by the video filter): smoother edges, slower. Off by default |
+| DEDITHER | the N64's video filter that rebuilds the colours from the 16-bit picture's dither. Off by default; it takes effect from the next game |
 | HUD INSET | moves the HUD in from the edges, for televisions that cut them off |
 | FPS COUNTER | frames a second and timings at the top of the screen |
 
@@ -424,10 +427,15 @@ the Xbox had a 733 MHz CPU and 64 MB. What it takes to fit:
 - **Memory.** Each map is converted to a big-endian image of only the tags
   the game needs, relocated at load. The game state is trimmed to what it
   uses, models and textures are streamed from the cartridge into a cache,
-  animations are streamed, and textures are 4-bit (CI4/I4) with mipmaps
-  and detail textures where they matter. High detail's 480i needs 1.8 MB
-  for its buffers, so it is only used where the map leaves room; elsewhere
-  it is 640x240 at 240p (1.2 MB).
+  animations are streamed, and textures are mostly 4-bit (CI4/I4) with
+  mipmaps and detail textures where they matter. Each level texture's
+  format -- 16 colours, greyscale (tinted on the vertices, or not) or 15-bit
+  colour, and its size -- was picked by eye, texture by texture, from the
+  cartridge's real texels side by side (`tools/n64/texture_choices.json`,
+  read by `tools/n64/level.py` and `models.py`; the pages are made from
+  your maps by `tools/n64/texture_picker/`). Ultra detail's 480i needs 1.8 MB for its
+  buffers, so it is only used where the map leaves room; elsewhere it is
+  high detail's 640x240 at 240p (1.2 MB).
 - **Drawing.** The level is drawn from tiny3d batches with the light baked
   into the vertices, culled by Halo's own potentially visible set and the
   view; objects are skinned from Halo's node matrices; draws are sorted by

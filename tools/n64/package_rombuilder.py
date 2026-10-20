@@ -241,6 +241,9 @@ def main():
             "--paths", str(source),
             "--distpath", str(stage / "dist"), "--workpath", str(stage / "build"), "--specpath", str(stage),
             "--add-data", f"{payload}{os.pathsep}payload",
+            # (the texture picker's choices, beside level.py, which reads them)
+            *(["--add-data", f"{source / 'tools' / 'n64' / 'texture_choices.json'}{os.pathsep}tools/n64"]
+              if (source / "tools" / "n64" / "texture_choices.json").is_file() else []),
             "--collect-all", "tkinterdnd2", "--collect-all", "sv_ttk",
             "--collect-submodules", "tools.n64",
             *[f"--hidden-import=tools.n64.{m}" for m in CONVERTERS],

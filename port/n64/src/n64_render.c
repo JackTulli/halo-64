@@ -34,6 +34,17 @@ this game yet, the frames left to say it didn't fit; the anamorphic picture
 (Settings: WIDESCREEN) */
 static int want_high_detail, tried_high_detail, notice_high_detail_frames;
 static int anamorphic;
+/* Settings: ANTI-ALIASING (the RDP's coverage on opaque surfaces, which the
+VI's filter smooths the edges with) and DEDITHER (the VI rebuilding colour
+from the 16-bit picture's dither; libdragon takes it at 320 across only
+with the VI's anti-aliasing filter, which is on either way: without the
+RDP's coverage it leaves the picture as it is) */
+static int want_antialias, want_dedither;
+
+static filter_options_t display_filters(void)
+{
+	return want_dedither ? FILTERS_RESAMPLE_ANTIALIAS_DEDITHER : FILTERS_RESAMPLE_ANTIALIAS;
+}
 #define SCREEN_WIDTH screen_width
 #define SCREEN_HEIGHT screen_height
 #define MAXIMUM_VIEWS 4
@@ -801,7 +812,7 @@ static void game_display_init(void)
 		n64_display_lend(home, available);
 		home_in_use = 1;
 	}
-	display_init(RESOLUTION_320x240, DEPTH_16_BPP, buffers, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
+	display_init(RESOLUTION_320x240, DEPTH_16_BPP, buffers, GAMMA_NONE, display_filters());
 	if (game_zbuf.buffer)
 		surface_free(&game_zbuf);
 	game_zbuf = surface_alloc(FMT_RGBA16, 320, 240);
@@ -888,7 +899,7 @@ void n64_render_set_menu_display(int on)
 			home_in_use = 1;
 		}
 		display_init((resolution_t){.width = 640, .height = 480, .interlaced = INTERLACE_FULL}, DEPTH_16_BPP, 2,
-			GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
+			GAMMA_NONE, display_filters());
 		if (home_in_use)
 		{
 			menu_zbuf = surface_alloc(FMT_RGBA16, 640, 480);
@@ -946,6 +957,13 @@ void n64_render_set_high_detail(int level)
 void n64_render_set_anamorphic(int on)
 {
 	anamorphic = on != 0;
+}
+
+/* Settings: DEDITHER, from the next display made (the game's at a map's
+start, the menu's when it comes back) */
+void n64_render_set_dedither(int on)
+{
+	want_dedither = on != 0;
 }
 
 /* the game lays its views and HUD out on a 640x480 screen: the N64's
@@ -1048,7 +1066,7 @@ static void try_high_detail(void)
 			}
 			display_init((resolution_t){.width = modes[i].width, .height = modes[i].height,
 				.interlaced = modes[i].interlaced ? INTERLACE_FULL : INTERLACE_OFF},
-				DEPTH_16_BPP, modes[i].buffers, GAMMA_NONE, FILTERS_RESAMPLE_ANTIALIAS);
+				DEPTH_16_BPP, modes[i].buffers, GAMMA_NONE, display_filters());
 			n64_display_lend(NULL, 0);
 			screen_width = modes[i].width;
 			screen_height = modes[i].height;
@@ -1408,10 +1426,41 @@ static void record_model_modes(void)
 		}
 		else
 			rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
+		/* (Settings: ANTI-ALIASING, on the opaque surfaces) */
+		if (want_antialias && !cloak && (kind == MODEL_MODE_TEXTURED || kind == MODEL_MODE_CUTOUT ||
+			kind == MODEL_MODE_UNTEXTURED))
+			rdpq_mode_antialias(AA_STANDARD);
 		rdpq_mode_end();
 		if (!cloak && kind == MODEL_MODE_BLEND)
 			rdpq_set_prim_color(RGBA32(255, 255, 255, GLOW_ALPHA));
 		model_modes[mode] = rspq_block_end();
+	}
+}
+
+/* Settings: ANTI-ALIASING. The render modes recorded with the other setting
+are dropped, recorded again when next used (record_model_modes, set_material) */
+void n64_render_set_antialias(int on)
+{
+	on = on != 0;
+	if (on == want_antialias)
+		return;
+	want_antialias = on;
+	rspq_wait();
+	for (int mode = 0; mode < MODEL_MODE_COUNT; mode++)
+	{
+		if (model_modes[mode])
+			rspq_block_free(model_modes[mode]);
+		model_modes[mode] = NULL;
+	}
+	record_model_modes();
+	for (int fog = 0; level.data && fog < 2; fog++)
+	{
+		for (int m = 0; level.material_blocks[fog] && m < level.header->material_count; m++)
+		{
+			if (level.material_blocks[fog][m])
+				rspq_block_free(level.material_blocks[fog][m]);
+			level.material_blocks[fog][m] = NULL;
+		}
 	}
 }
 
@@ -1908,7 +1957,10 @@ static void load_tiles(const char *level_path)
 	   the already validated resident tiles, as upstream intended. */
 	tiles.header = (struct tiles_header *)tiles.data;
 	data_cache_hit_writeback(tiles.resident, header.resident_size);
-	tiles.tmem = ((64 >> header.detail_level) * (64 >> header.detail_level) / 2 + 7) & ~7;
+	/* (the tile in TMEM's second half: the detail map's level drawn under it
+	-- 512 bytes, or 2 KB for a grain the texture picker chose, drawn whole:
+	tools/n64/level.py detail_texture -- in the first) */
+	tiles.tmem = 2048;
 	tiles.near_squared = TILE_NEAR_UNITS * WORLD_SCALE * TILE_NEAR_UNITS * WORLD_SCALE;
 	tiles.slot_size = (header.big_largest + 15) & ~15UL;
 	for (tiles.slot_count = header.big_largest ? TILE_SLOTS : 0; tiles.slot_count >= 6; tiles.slot_count -= 6)
@@ -2409,6 +2461,16 @@ static int detail_upload(sprite_t *sprite, int smallest)
 	return levels;
 }
 
+/* the mipmaps' blending for a detail map uploaded with this many levels
+(detail_upload): none for one alone */
+static void detail_mipmap(int levels)
+{
+	if (levels > 1)
+		rdpq_mode_mipmap(MIPMAP_INTERPOLATE, levels);
+	else
+		rdpq_mode_mipmap(MIPMAP_NONE, 0);
+}
+
 static void record_overlay(struct level_material *material)
 {
 	rdpq_sync_pipe();
@@ -2445,8 +2507,8 @@ static void record_overlay(struct level_material *material)
 	rdpq_mode_end();
 	rdpq_set_env_color(RGBA32(0, 0, 0, 255));
 	/* the levels down to 16x16, blended (two cycles, as rdpq does with a
-	sprite's mipmaps) */
-	rdpq_mode_mipmap(MIPMAP_INTERPOLATE, detail_upload(level.sprites[material->texture], DETAIL_SMALLEST));
+	sprite's mipmaps); an overlay of 4 KB (the texture picker's) has none */
+	detail_mipmap(detail_upload(level.sprites[material->texture], DETAIL_SMALLEST));
 	t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH | T3D_FLAG_TEXTURED |
 		(debug_cull_front ? T3D_FLAG_CULL_FRONT : T3D_FLAG_CULL_BACK));
 }
@@ -2545,7 +2607,14 @@ static void record_material(int index)
 	all zeros, which rdpq_mode_blender takes for no blender) -- rdpq keeps the
 	fog in the first. (Only where it is two cycles anyway: fog and a
 	blender together are two cycles) */
-	if (renderer.fog && textured && !(material->flags & MATERIAL_TRANSPARENT) &&
+	/* (Settings: ANTI-ALIASING, on the opaque surfaces: the blender's second
+	step is then the anti-aliasing's, the fog kept in the first, so the
+	pass-through below is not needed) */
+	int antialias = want_antialias && !(material->flags & (MATERIAL_TRANSPARENT | MATERIAL_WATER));
+
+	if (antialias)
+		rdpq_mode_antialias(AA_STANDARD);
+	else if (renderer.fog && textured && !(material->flags & MATERIAL_TRANSPARENT) &&
 		(material->flags & (MATERIAL_DOUBLE | MATERIAL_DETAIL)))
 		rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, ZERO, IN_RGB, ONE)));
 	rdpq_mode_end();
@@ -2558,8 +2627,12 @@ static void record_material(int index)
 	if (tiled)
 	{
 		/* the detail map's level the tiles are drawn under, in TMEM before
-		them (bind_tile) */
+		them (bind_tile); a grain without mipmaps (the texture picker's) is
+		drawn whole, the batches' coordinates in its texels */
 		surface_t pixels = sprite_get_lod_pixels(level.sprites[material->texture], tiles.header->detail_level);
+
+		if (!pixels.buffer)
+			pixels = sprite_get_pixels(level.sprites[material->texture]);
 
 		rdpq_tex_upload(TILE0, &pixels, &(rdpq_texparms_t){
 			.s.repeats = REPEAT_INFINITE, .t.repeats = REPEAT_INFINITE,
@@ -2568,7 +2641,7 @@ static void record_material(int index)
 	else if (textured && (material->flags & MATERIAL_DETAIL))
 	{
 		/* a detail map: its levels down to 16x16 (detail_upload), blended */
-		rdpq_mode_mipmap(MIPMAP_INTERPOLATE, detail_upload(level.sprites[material->texture], DETAIL_SMALLEST));
+		detail_mipmap(detail_upload(level.sprites[material->texture], DETAIL_SMALLEST));
 	}
 	else if (textured)
 	{
@@ -3110,6 +3183,40 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 	t3d_matrix_pop(1);
 }
 
+/* the current view as the particles and the paint project (n64_particles.c,
+n64_paint.c): the world's, or the first-person weapon's */
+static void particle_view(struct n64_particle_view *view, int first_person)
+{
+	short const *rect = renderer.rects[renderer.view_count - 1];
+
+	for (int k = 0; k < 3; k++)
+	{
+		view->eye[k] = renderer.eye[k];
+		view->right[k] = renderer.right[k];
+		view->up[k] = renderer.up[k];
+		view->forward[k] = renderer.forward[k];
+	}
+	view->pixels_per_unit = renderer.pixels_per_unit;
+	/* (the pixels per unit are the height's; across, as wide as a pixel
+	shows) */
+	view->x_scale = 1.f / display_pixel_aspect();
+	view->x0 = rect[0];
+	view->y0 = rect[1];
+	view->x1 = rect[2];
+	view->y1 = rect[3];
+	view->center_x = (rect[0] + rect[2]) * 0.5f;
+	view->center_y = (rect[1] + rect[3]) * 0.5f;
+	view->z_near = first_person ? 0.01171875f : renderer.z_near;
+	view->z_far = first_person ? 16.f : renderer.z_far;
+	view->fog_start = renderer.fog && !first_person ? renderer.fog_start : 0.f;
+	view->fog_end = renderer.fog && !first_person ? renderer.fog_end : 0.f;
+	view->local_player = renderer.local_player;
+	view->first_person = first_person;
+	view->chunky = renderer.unstretched;
+	view->chunky_scale = renderer.unstretched ?
+		(float)chunky_width(rect[2] - rect[0]) / (float)(rect[2] - rect[0]) : 1.f;
+}
+
 void n64_render_view(const struct n64_view *view)
 {
 	T3DViewport *viewport;
@@ -3200,6 +3307,17 @@ void n64_render_view(const struct n64_view *view)
 	t3d_light_set_count(0);
 	render_phase(PHASE_LEVEL);
 	draw_level(viewport, view);
+	{
+		/* the game's decals (bullet holes, blood, scorch marks) and paint,
+		on the level before the objects: n64_paint.c draws them a little
+		toward the eye, and the objects in front of them then cover them
+		(after the objects, the pull showed them over a player against the
+		wall) */
+		struct n64_particle_view marks;
+
+		particle_view(&marks, 0);
+		n64_paint_draw(&marks);
+	}
 	render_phase(PHASE_OBJECTS);
 	renderer.first_person = 0;
 	renderer.viewport = viewport;
@@ -3300,37 +3418,10 @@ after its objects) or the first-person ones (after the weapon) */
 static void draw_particles(int first_person)
 {
 	struct n64_particle_view view;
-	short const *rect = renderer.rects[renderer.view_count - 1];
 
 	if (!renderer.view_count)
 		return;
-	for (int k = 0; k < 3; k++)
-	{
-		view.eye[k] = renderer.eye[k];
-		view.right[k] = renderer.right[k];
-		view.up[k] = renderer.up[k];
-		view.forward[k] = renderer.forward[k];
-	}
-	view.pixels_per_unit = renderer.pixels_per_unit;
-	/* (the pixels per unit are the height's; across, as wide as a pixel
-	shows) */
-	view.x_scale = 1.f / display_pixel_aspect();
-	view.x0 = rect[0];
-	view.y0 = rect[1];
-	view.x1 = rect[2];
-	view.y1 = rect[3];
-	view.center_x = (rect[0] + rect[2]) * 0.5f;
-	view.center_y = (rect[1] + rect[3]) * 0.5f;
-	view.z_near = first_person ? 0.01171875f : renderer.z_near;
-	view.z_far = first_person ? 16.f : renderer.z_far;
-	view.fog_start = renderer.fog && !first_person ? renderer.fog_start : 0.f;
-	view.fog_end = renderer.fog && !first_person ? renderer.fog_end : 0.f;
-	view.local_player = renderer.local_player;
-	view.first_person = first_person;
-	view.chunky = renderer.unstretched;
-	view.chunky_scale = renderer.unstretched ?
-		(float)chunky_width(rect[2] - rect[0]) / (float)(rect[2] - rect[0]) : 1.f;
-	if (!first_person) n64_paint_draw(&view);
+	particle_view(&view, first_person);
 	n64_particles_draw(&view);
 	/* (their mode and TMEM -- the whole of it, the palettes' half too --
 	are the models' no longer) */

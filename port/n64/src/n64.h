@@ -214,6 +214,9 @@ void n64_decal_submit(const struct n64_paint_vertex *vertices, int count, const 
 void n64_paint_update(float dt);
 struct n64_particle_view;
 void n64_paint_draw(const struct n64_particle_view *view);
+/* Settings: DECALS -- the game's own (bullet holes, blood, scorch marks) on
+or off; paintball's paint is the game setup's */
+void n64_paint_set_decals(int on);
 /* Shared immutable ink art and palette; no per-view mark search. */
 const unsigned char *n64_paint_mask(int pattern);
 const unsigned char *n64_paint_color(int color);
@@ -327,6 +330,11 @@ view across, the HUD squeezed about each view's middle) */
 #define N64_DETAIL_ULTRA 2
 void n64_render_set_high_detail(int level);
 void n64_render_set_anamorphic(int on);
+/* Settings: ANTI-ALIASING (the RDP's coverage on opaque surfaces, the VI's
+filter smoothing their edges) and DEDITHER (the VI rebuilding colour from
+the dither: from the next display made) */
+void n64_render_set_antialias(int on);
+void n64_render_set_dedither(int on);
 /* the N64's pixels for one of the game's units (it lays the views and the
 HUD out on a 640x480 screen), across and down; the HUD's squeeze */
 float n64_render_layout_scale_x(void);

@@ -5,6 +5,60 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+20 October: the level textures' formats picked by eye; decals that hold;
+DECALS, ANTI-ALIASING and DEDITHER settings.
+
+- The game's decals (bullet holes, blood, scorch marks) and paintball's
+  paint came and went with the angle, pieces of them missing: they were
+  drawn in the RDP's decal mode, which passes only where the mark's depth
+  equals the wall's, but a mark lies on the exact plane while the wall was
+  drawn from vertices at 1/64 of a unit, and the depth buffer tells
+  surfaces apart only by about d^2 / (near x 32768) at d units (5 cm at
+  10, Halo's near plane being 1/16). `n64_paint.c` now draws each mark a
+  little toward the eye along its vertices' rays (the same place on the
+  screen; 0.012 units, past the vertices' rounding, plus three of the depth
+  buffer's steps at its distance) with an ordinary depth test, and
+  `n64_render.c` draws the marks right after the level, before the
+  objects, which then cover a mark they stand in front of.
+- SETTINGS: DECALS on or off (`n64_paint_set_decals`: no new marks, the
+  old ones gone; paintball's paint is the game setup's); ANTI-ALIASING (the
+  RDP's coverage on the opaque level and model surfaces, the blender's
+  second step taking the pass-through's place so the fog stays in the
+  first, `n64_render_set_antialias`, the recorded modes re-recorded); and
+  DEDITHER (the VI's filter: `FILTERS_RESAMPLE_ANTIALIAS_DEDITHER`, the only
+  dedithering libdragon takes at 320 across, from the next display made).
+  Saved in the settings record's byte 15, a bit each.
+
+- A page showed every non-terrain level texture of the 13 multiplayer maps
+  and the campaign level (59) as the cartridge would hold it in six
+  formats -- full colour (RGBA16) 32x64, 16 colours (CI4) 64x64, greyscale
+  (I4; IA4 cut out) of 4096 or 8192 texels, and those greys tinted --
+  each made by mksprite and decoded back. The format picked for each is
+  `tools/n64/texture_choices.json`, which `tools/n64/level.py` reads
+  (`texture_choices`, by bitmap name; a texture without a choice is chosen
+  as before). Most are now tinted greys: twice a 16-colour texture's texels
+  with the colour back on the vertices (`material_tint`, times the light;
+  the tint is the least-squares fit of the original's colours over its
+  greys), so Chill Out's purple metal, the Covenant's blues and the cliffs'
+  reds keep their colour at greyscale's sharpness. A few keep 16 colours,
+  and three are full colour 32x64 (the Covenant's metal, two lights).
+- A second page did the same for the objects (154 textures: weapons held
+  and on the ground, vehicles, characters, scenery) and the terrain (6
+  ground grains, 4 rock and snow overlays); its sections are in the same
+  file (`objects`, `grain`, `overlays`). 47 objects are now tinted greys,
+  their tint and the grey's stretch multiplied into the models' baked
+  vertex light (`models.py` `texture_colour`; no player's colour on them,
+  as the page said: the tree leaves and the first-person hands); a
+  first-person atlas picked grey is cut into windows of 128x64 I4 from a
+  256 atlas, one stretch over the whole. The ground grain beside the colour
+  tiles is now drawn whole -- 64x64 I4 with the micro detail map's grain
+  multiplied in, or 64x32 I8 -- the tile moved to TMEM's second half and
+  the batches' coordinates in the grain's own texels (`Texture.mipmapped`);
+  elsewhere (3-4 players, the campaign) the same grains keep mipmaps. The
+  four overlays are 128x64 I4 without mipmaps (4 KB: `detail_mipmap`), and
+  `fit_detail_scales` lets a wider texture's triangles span as many repeats
+  as a 64 one's.
+
 19-20 October: Halo 64 Online, and the ROM Builder makes it; ULTRA
 DETAIL.
 

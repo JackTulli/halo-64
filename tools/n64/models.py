@@ -55,7 +55,8 @@ from .level import is_light_volume
 from .stages import evaluate as evaluate_stages
 from .decimate import decimate
 from .level import (LevelBuilder, MATERIAL_ALPHA_TEST, MATERIAL_BLEND, MATERIAL_CHANGE_COLOR, MATERIAL_GLOW,
-                    MATERIAL_TRANSPARENT, MATERIAL_TWO_SIDED, MATERIAL_UNTEXTURED, pack_normal, unpack_normal)
+                    MATERIAL_TRANSPARENT, MATERIAL_TWO_SIDED, MATERIAL_UNTEXTURED, GREYSCALE_TEXELS, Texture,
+                    pack_normal, unpack_normal, texture_choices)
 
 MODEL_SCALE = 1024.0
 MAXIMUM_CACHE = 70
@@ -275,6 +276,12 @@ class ModelConverter:
         self.lod_preferences = {}
         # by model tag index: a budget that overrides its group's
         self.budget_overrides = {}
+        # the texture picker's choices of the objects' textures (by bitmap
+        # name, "<name> (first person)" for a first-person atlas: level.py
+        # texture_choices), and what a grey texture's vertices are
+        # multiplied by (its stretch undone, times its tint: by texture)
+        self.object_choices = texture_choices("objects")
+        self.texture_colour = {}
 
     def f(self, name):
         return {fl.name: o for o, fl in self.defs.fields(name)}
@@ -361,6 +368,10 @@ class ModelConverter:
             # whole over their bodies)
             cut = (not model_flags & 4 or model_flags & 8) and self.textures.has_cutout(base)
             cut_flags = (MATERIAL_ALPHA_TEST | (DECAL if model_flags & 8 else 0)) if cut else 0
+            texture = self.chosen_texture(base, bool(cut), None,
+                                          player_colour=bool(change_source and self.map.tag(multipurpose) is not None))
+            if texture is not None:
+                return texture, flags | cut_flags, (base, None)
             if change_source and self.map.tag(multipurpose) is not None:
                 texture = self.masked_texture(base, multipurpose, cut, channel)
                 if texture >= 0:
@@ -375,9 +386,15 @@ class ModelConverter:
             if env_flags & 1:
                 bump = struct.unpack("<I", self.map.read(tag.address + so["bump map"] + 12, 4))[0]
                 scale = struct.unpack("<f", self.map.read(tag.address + so["bump map scale"], 4))[0] or 1.0
+                texture = self.chosen_texture(base, True, (bump, scale))
+                if texture is not None:
+                    return texture, MATERIAL_ALPHA_TEST, None
                 # Keep the composed mask intact; base-only atlas windows
                 # would throw the bump alpha away again.
                 return self.textures.environment_texture(base, bump, scale), MATERIAL_ALPHA_TEST, None
+            texture = self.chosen_texture(base, False, None)
+            if texture is not None:
+                return texture, 0, (base, None)
             return self.textures.texture(base), 0, (base, None)
         # transparent shaders (glowing screens, sights, meters): meters and
         # numeric displays need Halo's own drawing and are left out (texture
@@ -433,6 +450,69 @@ class ModelConverter:
         if texture in self.solid_glows:
             flags |= MATERIAL_BLEND
         return texture, flags, None
+
+    def object_choice(self, bitmap_datum, first_person=False):
+        """the texture picker's (option, tint or None) for an object's
+        bitmap (its first-person atlas's), or None"""
+        tag = self.map.tag(bitmap_datum) if bitmap_datum != 0xFFFFFFFF else None
+        if tag is None:
+            return None
+        return self.object_choices.get(tag.name.lower() + (" (first person)" if first_person else ""))
+
+    def chosen_texture(self, base, cutout, alpha_source, player_colour=False):
+        """an object texture in the format the texture picker chose for it
+        (a third-person one), or None to make it as before: greyscale (I4;
+        IA4 cut out) with its vertices multiplied by its stretch undone
+        and its tint (texture_colour), or full colour (RGBA16 64x32). A
+        texture with the player's colour keeps its 16 colours, the palette's
+        upper half the player's -- unless the picker chose otherwise, which
+        it said would lose the colour"""
+        choice = self.object_choice(base)
+        if choice is None or choice[0] == "ci4-64x64":
+            return None
+        if player_colour:
+            # (the picker said so: its other options lose the colour change)
+            print(f"{self.map.name}: {self.map.tag(base).name}: {choice[0]}, without the player's colour")
+        if choice[0] == "colour-32x64":
+            tag = self.map.tag(base)
+            img = decode(self.map, bitmap_images(self.map, tag, self.defs)[0], 64)
+            if cutout and alpha_source is not None:
+                img = self.textures.environment_alpha(img, *alpha_source)
+            return self.textures.write_texture(img, tag.name, fmt="RGBA16", cutout=cutout, box=(64, 32))
+        return self.grey_texture(base, cutout, alpha_source, choice)
+
+    def grey_texture(self, base, cutout, alpha_source, choice):
+        """level.py's grey texture of a bitmap (choice: the texture
+        picker's, its texels and tint), its vertices' multiplier noted, the
+        far version's colour the grey's mean times the tint"""
+        option, tint = choice
+        limit = GREYSCALE_TEXELS if option.startswith("grey-128x64") else GREYSCALE_TEXELS // 2
+        texture, shade = self.textures.grey_texture(base, cutout, alpha_source, limit)
+        if texture < 0:
+            return None
+        tint = (tint or self.textures.grey_tint(base)) if option.endswith("-tint") else (1.0, 1.0, 1.0)
+        self.texture_colour[texture] = tuple(shade * t for t in tint)
+        t = self.textures.textures[texture]
+        t.colour = tuple(min(1.0, c * k) for c, k in zip(t.colour, tint))
+        return texture
+
+    def grey_window(self, grey, alpha, name, colour):
+        """an atlas window of a grey first-person texture (I4; IA4 cut
+        out): its texture, its vertices' multiplier noted"""
+        index = len(self.textures.textures)
+        work_dir = self.textures.out_dir / "tex" / f".{self.textures.map_name}"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        png = work_dir / f"{self.textures.texture_prefix}w{index:02d}.png"
+        if alpha is not None:
+            Image.merge("LA", (grey, alpha)).save(png)
+        else:
+            grey.save(png)
+        sprite = self.textures.make_sprite(png, "IA4" if alpha is not None else "I4")
+        mean = sum(grey.getdata()) / (grey.width * grey.height) / 255.0
+        self.textures.textures.append(Texture(sprite, grey.width, grey.height,
+                                              tuple(min(1.0, mean * c) for c in colour)))
+        self.texture_colour[index] = colour
+        return index
 
     def stages_texture(self, shader_tag):
         """a transparent generic shader's stages evaluated (tools/n64/stages.py)
@@ -737,10 +817,21 @@ class ModelConverter:
         images = bitmap_images(self.map, tag, self.defs)
         if not images or max(images[0].width, images[0].height) <= WINDOW:
             return None
+        # (the texture picker's grey for this atlas: twice the texels in
+        # windows of 128x64 (4 KB of I4), or the same in windows of 64x64)
+        choice = self.object_choice(bitmap, first_person=True)
+        grey = choice is not None and choice[0].startswith("grey")
+        if grey and multipurpose is not None:
+            # (the picker said so: its other options lose the colour change)
+            print(f"{self.map.name}: {tag.name} (first person): {choice[0]}, without the player's colour")
+            multipurpose = None
+        wide = grey and choice[0].startswith("grey-128x64")
         # Preserve the PC Flamethrower's painted dragon face. Only this gun's
         # first-person body gets a 256px source atlas; each RDP window still
         # fits the existing 64px / CI4 TMEM limit. Other weapons keep budgets.
         atlas_limit = (128 if self.detail_atlas <= 64 else 256) if tag.name == "weapons\\flamethrower\\bitmaps\\flamethrower" else self.detail_atlas
+        if wide:
+            atlas_limit = 2 * self.detail_atlas
         try:
             atlas = decode(self.map, images[0], atlas_limit)
         except ValueError:
@@ -749,7 +840,21 @@ class ModelConverter:
         aw, ah = max(1, int(atlas.width * scale)), max(1, int(atlas.height * scale))
         atlas = atlas.resize((aw, ah), Image.LANCZOS)
         mask = self.change_mask(multipurpose, (aw, ah), channel) if multipurpose is not None else None
-        if multipurpose is not None:
+        grey_atlas = None
+        if grey:
+            whole = self.grey_texture(bitmap, cutout, None, choice)
+            if whole is None:
+                return None
+            # (one stretch over the whole atlas, so the windows match)
+            lum = atlas.convert("L")
+            top = max(lum.getdata()) or 1
+            levels = 7 if cutout else 15
+            lum = lum.point(lambda v: int(round(round(v / top * levels) * 255 / levels)))
+            alpha = atlas.getchannel("A").point(lambda v: 255 if v >= 128 else 0) if cutout else None
+            tint = (choice[1] or self.textures.grey_tint(bitmap)) if choice[0].endswith("-tint") else (1.0, 1.0, 1.0)
+            shapes = ((128, 64), (64, 128)) if wide else ((WINDOW, WINDOW),)
+            grey_atlas = (lum, alpha, tuple(top / 255.0 * t for t in tint), shapes)
+        elif multipurpose is not None:
             whole = self.masked_texture(bitmap, multipurpose, cutout, channel)
         elif cutout:
             whole = self.textures.cutout_texture(bitmap)[0]
@@ -757,13 +862,18 @@ class ModelConverter:
             whole = self.textures.texture(bitmap)
         if tag.name == "weapons\\flamethrower\\bitmaps\\flamethrower":
             triangles = split_painted_faces(vertices, triangles, (aw, ah))
-        return self.atlas_windows(atlas, mask, whole, tag.name, vertices, triangles, cutout)
+        return self.atlas_windows(atlas, mask, whole, tag.name, vertices, triangles, cutout, grey_atlas)
 
-    def atlas_windows(self, atlas, mask, whole, name, vertices, triangles, cutout=False):
+    def atlas_windows(self, atlas, mask, whole, name, vertices, triangles, cutout=False, grey=None):
         """texture_windows' grouping over an image already at its size: the
         triangles that fit a window's span get that window, the rest the
-        whole texture"""
+        whole texture. grey: (the atlas's greys, its cut-out alpha or None,
+        the vertices' multiplier, the windows' shapes) for grey windows"""
         aw, ah = atlas.size
+        shapes = grey[3] if grey else ((WINDOW, WINDOW),)
+
+        def fits(w, h):
+            return any(w <= a - 2 and h <= b - 2 for a, b in shapes)
 
         def extent(tri):
             us = [vertices[i][2][0] * aw for i in tri]
@@ -782,15 +892,14 @@ class ModelConverter:
 
         windows = []  # [x0, y0, x1, y1, triangles]
         coarse = []
-        span = WINDOW - 2
         for tri in sorted(triangles, key=z_order):
             x0, y0, x1, y1 = extent(tri)
-            if x1 - x0 > span or y1 - y0 > span or x0 < 0 or y0 < 0 or x1 > aw or y1 > ah:
+            if not fits(x1 - x0, y1 - y0) or x0 < 0 or y0 < 0 or x1 > aw or y1 > ah:
                 coarse.append(tri)
                 continue
             for w in windows:
                 nx0, ny0, nx1, ny1 = min(w[0], x0), min(w[1], y0), max(w[2], x1), max(w[3], y1)
-                if nx1 - nx0 <= span and ny1 - ny0 <= span:
+                if fits(nx1 - nx0, ny1 - ny0):
                     w[0:4] = [nx0, ny0, nx1, ny1]
                     w[4].append(tri)
                     break
@@ -805,10 +914,13 @@ class ModelConverter:
             wh = 1 << max(2, math.ceil(math.log2(max(1.0, y1 - y0 + 2))))
             ox = int(max(0, min(math.floor(x0) - 1, aw - ww)))
             oy = int(max(0, min(math.floor(y0) - 1, ah - wh)))
-            crop = atlas.crop((ox, oy, ox + ww, oy + wh))
-            texture = self.textures.write_texture(crop, f"{name} window",
-                                                  mask=mask.crop((ox, oy, ox + ww, oy + wh)) if mask else None,
-                                                  cutout=cutout)
+            box = (ox, oy, ox + ww, oy + wh)
+            if grey:
+                texture = self.grey_window(grey[0].crop(box), grey[1].crop(box) if grey[1] else None,
+                                           f"{name} window", grey[2])
+            else:
+                texture = self.textures.write_texture(atlas.crop(box), f"{name} window",
+                                                      mask=mask.crop(box) if mask else None, cutout=cutout)
             groups.append((texture, lambda uv, ox=ox, oy=oy: (uv[0] * aw - ox, uv[1] * ah - oy), tris))
         if coarse:
             groups.append((whole, None, coarse))
@@ -822,6 +934,11 @@ class ModelConverter:
         # triangles of the same nodes together: fewer segments per batch
         triangles = sorted(triangles, key=lambda t: tuple(sorted({vertices[i][0] for i in t})))
         tw, th = (self.textures.textures[texture].width, self.textures.textures[texture].height) if texture >= 0 else (32, 32)
+        # (a grey texture's vertices: times its stretch undone and its tint;
+        # no palette for a player's colour)
+        colour = self.texture_colour.get(texture)
+        if colour is not None:
+            flags &= ~MATERIAL_CHANGE_COLOR
         # a part whose texture coordinates span more than s10.5 holds (Blood
         # Gulch's trees: bark repeated ~100 times, 8,000 texels): its batches
         # each within MODEL_UV_EXTENT, the triangles in order of their
@@ -886,7 +1003,7 @@ class ModelConverter:
                 for i, a in enumerate(members):
                     slot_of.setdefault(a, slot + i)
                 for a, b in zip(members[0::2], members[1::2]):
-                    vertex_data += self.pack_pair(vertices[a], vertices[b], batch_st)
+                    vertex_data += self.pack_pair(vertices[a], vertices[b], batch_st, colour)
                 segments.append((node, slot, len(members), pair_offset))
                 slot += len(members)
             index_offset = len(index_data)
@@ -895,7 +1012,9 @@ class ModelConverter:
             batches.append((texture, flags & ~DECAL, segments, len(taken), index_offset))
 
     @staticmethod
-    def pack_pair(a, b, st_of):
+    def pack_pair(a, b, st_of, colour=None):
+        """two vertices (tiny3d's packed pair); colour: what their light is
+        multiplied by (a grey texture's: texture_colour)"""
         def pos(v):
             return [max(-32768, min(32767, int(round(c * MODEL_SCALE)))) for c in v[1]]
 
@@ -904,6 +1023,10 @@ class ModelConverter:
             return [max(-32768, min(32767, int(round(s_ * 32)))), max(-32768, min(32767, int(round(t_ * 32))))]
 
         def rgba(v):
+            if colour is not None:
+                light = v[3] if isinstance(v[3], tuple) else (v[3],) * 3
+                r, g, b = (int(round(max(0.0, min(1.0, c * k)) * 255)) for c, k in zip(light, colour))
+                return (r << 24) | (g << 16) | (b << 8) | 255
             if isinstance(v[3], tuple):
                 r, g, b = (int(round(min(1.0, c) * 255)) for c in v[3])
                 return (r << 24) | (g << 16) | (b << 8) | 255

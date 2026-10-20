@@ -28,6 +28,30 @@ static int next_mark;
 static unsigned char masks[3 * PAINT_CELL * PAINT_CELL / 2] __attribute__((aligned(16)));
 static int masks_loaded;
 static int paint_no_depth = -1;
+/* Settings: DECALS (the game's own marks: pattern 255) */
+static int decals_on = 1;
+/* A mark is drawn a little toward the eye, along each vertex's ray (the
+same place on the screen, nearer in depth), and tested against the depth
+as any surface is. It lies on the exact plane of the surface it marks, but
+that surface was drawn from vertices at 1/64 of a unit (tools/n64/level.py)
+and from a depth buffer that tells surfaces apart by about d^2 / (near x
+32768) at d units -- 5 cm at 10 with Halo's near plane of 1/16. In the
+RDP's decal mode (equal depths only) the marks came and went with the angle
+and lost pieces where the two disagreed. So: PAINT_PULL_MINIMUM units, past
+the vertices' rounding, and PAINT_PULL_STEPS of the depth buffer's steps
+at the mark's distance. (Drawn before the objects: n64_render.c, so the
+objects in front of a mark still cover it) */
+#define PAINT_PULL_MINIMUM 0.012f
+#define PAINT_PULL_STEPS 3.f
+
+void n64_paint_set_decals(int on)
+{
+	decals_on = on != 0;
+	if (!decals_on)
+		for (int i = 0; i < PAINT_MARKS; i++)
+			if (marks[i].pattern == 255)
+				marks[i].count = 0;
+}
 #define DECAL_SLOTS 4
 #define DECAL_BYTES (PAINT_CELL * PAINT_CELL / 2 + 32)
 static unsigned char decal_textures[DECAL_SLOTS][DECAL_BYTES] __attribute__((aligned(16)));
@@ -153,7 +177,7 @@ void n64_decal_submit(const struct n64_paint_vertex *v, int count, const char *n
 {
 	struct paint_mark *mark;
 	int slot;
-	if (count < 3 || count > N64_PAINT_VERTICES || !name || !color) return;
+	if (!decals_on || count < 3 || count > N64_PAINT_VERTICES || !name || !color) return;
 	slot = load_material(hash_text(map_hash, name));
 	if (slot < 0) return;
 	mark = &marks[next_mark];
@@ -225,13 +249,15 @@ void n64_paint_draw(const struct n64_particle_view *view)
 {
 	float m22 = (view->z_far + view->z_near) / (view->z_near - view->z_far);
 	float m32 = -2.f * view->z_far * view->z_near / (view->z_far - view->z_near);
+	/* (the depth buffer's step at distance d is about d^2 times this) */
+	float pull_rate = PAINT_PULL_STEPS / (n64_max_f(view->z_near, 0.001f) * 32768.f);
 	/* Diagnostic only: distinguish depth rejection from missing/offscreen
 	   marks. Production packages forbid all debug flags. */
 	if (paint_no_depth < 0) paint_no_depth = n64_debug_flag("debug_paint_no_depth");
 	rdpq_sync_pipe();
 	rdpq_set_mode_standard();
 	rdpq_mode_zbuf(!paint_no_depth, false);
-	rdpq_mode_zmode(paint_no_depth ? ZMODE_STANDARD : ZMODE_DECAL);
+	rdpq_mode_zmode(ZMODE_STANDARD);
 	rdpq_mode_persp(true);
 	rdpq_mode_filter(FILTER_BILINEAR);
 	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
@@ -246,14 +272,23 @@ void n64_paint_draw(const struct n64_particle_view *view)
 		surface_t surface;
 		if (!mark->count) continue;
 		if (mark->pattern != 255 && (!n64_paint_enabled() || !masks_loaded)) continue;
-		if (mark->pattern == 255 && (mark->native_slot >= DECAL_SLOTS || !decal_valid[mark->native_slot])) continue;
+		if (mark->pattern == 255 && (!decals_on || mark->native_slot >= DECAL_SLOTS ||
+			!decal_valid[mark->native_slot])) continue;
 		for (int v = 0; v < mark->count; v++)
 		{
-			float d[3];
+			float d[3], distance, pull;
 			for (int k = 0; k < 3; k++) d[k] = mark->v[v].position[k] - view->eye[k];
 			for (int k = 0; k < 3; k++) camera[v][k] = d[0] * (k == 0 ? view->right[0] : k == 1 ? view->up[0] : view->forward[0]) +
 				d[1] * (k == 0 ? view->right[1] : k == 1 ? view->up[1] : view->forward[1]) +
 				d[2] * (k == 0 ? view->right[2] : k == 1 ? view->up[2] : view->forward[2]);
+			/* toward the eye along the vertex's ray (PAINT_PULL_MINIMUM) */
+			distance = sqrtf(camera[v][0] * camera[v][0] + camera[v][1] * camera[v][1] + camera[v][2] * camera[v][2]);
+			if (!paint_no_depth && distance > 0.f)
+			{
+				pull = PAINT_PULL_MINIMUM + distance * distance * pull_rate;
+				pull = n64_max_f(0.5f, (distance - pull) / distance);
+				for (int k = 0; k < 3; k++) camera[v][k] *= pull;
+			}
 			camera[v][3] = mark->v[v].uv[0]; camera[v][4] = mark->v[v].uv[1];
 			if (camera[v][2] < min_z) min_z = camera[v][2];
 		}

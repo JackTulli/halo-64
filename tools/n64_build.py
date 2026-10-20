@@ -390,6 +390,10 @@ def main(argv=None):
                 # aircraft donor changes just like the weapon/ground donor.
                 sources += [posix(pc_maps / "timberland.map"),
                             posix(pc_maps / "deathisland.map")]
+            # (the texture picker's choices of the levels' textures: level.py)
+            choices = Path("tools/n64/texture_choices.json")
+            if choices.is_file():
+                sources.append(posix(choices))
             n.build(outputs, "convert_map", posix(map_source(name)), implicit=tool_sources + converter_tools + sources,
                     variables={"fsdir": q(fsdir), "map": q(out_map),
                                "map_backup": q(variant_dir / "maps-uncompressed" / f"{name}.map"),

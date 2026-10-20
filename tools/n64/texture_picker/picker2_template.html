@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Texture Picker 2</title>
+<style>
+:root {
+  --bg: #17181a;
+  --panel: #222326;
+  --panel-2: #2b2c30;
+  --line: #3a3b40;
+  --text: #e8e8ea;
+  --dim: #9a9ba2;
+  --accent: #7fd36b;
+  --accent-ink: #0f1a0c;
+  --now: #e2b34a;
+  --chip: #33343a;
+  --warn: #e08a6a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+header {
+  position: sticky; top: 0; z-index: 5; background: rgba(23, 24, 26, 0.96);
+  border-bottom: 1px solid var(--line); padding: 12px 16px; backdrop-filter: blur(6px);
+}
+.top { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+h1 { font-size: 17px; margin: 0 8px 0 0; font-weight: 650; }
+.counts { color: var(--dim); }
+.counts b { color: var(--text); font-weight: 600; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+select, input[type=search], button, .seg label {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 7px; padding: 6px 10px; font: inherit;
+}
+input[type=search] { width: 220px; max-width: 100%; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 650; }
+button:hover, select:hover { border-color: #5a5b62; }
+.seg { display: inline-flex; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg label { border-radius: 0; cursor: pointer; margin-left: -1px; }
+.seg label:first-of-type { border-radius: 7px 0 0 7px; margin-left: 0; }
+.seg label:last-of-type { border-radius: 0 7px 7px 0; }
+.seg input:checked + label { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.seg input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 1px; }
+.check, .size { display: inline-flex; gap: 6px; align-items: center; color: var(--dim); }
+details.legend { margin-top: 10px; color: var(--dim); }
+details.legend summary { cursor: pointer; }
+details.legend p { margin: 6px 0; max-width: 980px; }
+main { padding: 16px; display: grid; gap: 14px; }
+h2 { font-size: 15px; margin: 10px 0 0; color: var(--dim); font-weight: 600; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.card.changed { border-color: #4f6e47; }
+.head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin-bottom: 4px; }
+.name { font-weight: 650; font-size: 15px; word-break: break-word; }
+.path { color: var(--dim); font-size: 12px; word-break: break-all; }
+.detail { color: var(--dim); font-size: 12px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+.chip { background: var(--chip); color: var(--dim); border-radius: 999px; padding: 1px 9px; font-size: 12px; }
+.chip.strong { color: var(--text); }
+.chip.warn { color: var(--warn); }
+.row { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+.opt {
+  flex: 0 0 auto; background: var(--panel-2); border: 2px solid transparent; border-radius: 10px;
+  padding: 8px; text-align: left; color: var(--text); display: flex; flex-direction: column; gap: 6px; max-width: 320px;
+}
+.opt.ref { cursor: default; background: transparent; border: 1px dashed var(--line); }
+.opt[aria-pressed=true] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.opt:not(.ref):hover { border-color: #5a5b62; }
+.opt[aria-pressed=true]:hover { border-color: var(--accent); }
+.opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pv {
+  border-radius: 4px; background-color: #808080;
+  background-image: var(--img), conic-gradient(#9a9a9a 25%, #6e6e6e 0 50%, #9a9a9a 0 75%, #6e6e6e 0);
+  background-repeat: no-repeat, repeat;
+  background-size: var(--bs), 16px 16px;
+}
+body.tile .pv { background-repeat: repeat, repeat; }
+body.pixels .pv { image-rendering: pixelated; }
+.label { font-size: 12.5px; font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sub { font-size: 11.5px; color: var(--dim); }
+.badge { font-size: 10.5px; font-weight: 700; border-radius: 4px; padding: 0 5px; }
+.badge.now { background: var(--now); color: #2a1f05; }
+.badge.pick { background: var(--accent); color: var(--accent-ink); }
+.swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; border: 1px solid #0006; vertical-align: -1px; }
+.empty { color: var(--dim); text-align: center; padding: 40px; }
+.toast {
+  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; opacity: 0; transition: opacity .2s;
+  pointer-events: none;
+}
+.toast.show { opacity: 1; }
+/* (a small window: the header scrolls away, else it would cover the textures) */
+@media (max-width: 760px), (max-height: 640px) { header { position: static; } }
+@media (max-width: 600px) {
+  header { padding: 10px 16px; }
+  main { padding: 12px 16px; }
+  input[type=search] { width: 100%; }
+}
+</style>
+</head>
+<body class="pixels">
+<header>
+  <div class="top">
+    <h1>Halo 64 texture picker: objects and terrain</h1>
+    <span class="counts" id="counts"></span>
+  </div>
+  <div class="controls">
+    <select id="section" aria-label="Section"></select>
+    <select id="map" aria-label="Map"></select>
+    <input type="search" id="search" placeholder="Search names and models" aria-label="Search">
+    <span class="seg" role="radiogroup" aria-label="Display">
+      <input type="radio" name="disp" id="disp-px" value="pixels" checked><label for="disp-px">Pixels</label>
+      <input type="radio" name="disp" id="disp-sm" value="smooth"><label for="disp-sm">Smooth (N64 filtering)</label>
+    </span>
+    <label class="check"><input type="checkbox" id="tile"> Tile 2×2</label>
+    <label class="size">Size <input type="range" id="zoom" min="96" max="288" step="16" value="160"></label>
+    <span style="flex:1"></span>
+    <button id="reset" title="Every texture back to what the cartridge uses now">Reset to current</button>
+    <button id="load">Load choices…</button>
+    <input type="file" id="file" accept=".json,application/json" hidden>
+    <button class="primary" id="save">Save choices (JSON)</button>
+  </div>
+  <details class="legend">
+    <summary>What the options are</summary>
+    <p><b>Objects</b> (weapons, vehicles, characters, scenery): the same formats as the levels' picker — full colour (RGBA16),
+      16 colours (CI4: what they are now), greyscale (I4; IA4 for cut-outs) and greyscale tinted. A texture with the player's
+      colour has its 16 colours split 8 + 8 now; the other options would lose the player's colour unless the renderer learns
+      another way. First-person weapons and hands are drawn from an atlas cut into windows, so theirs have twice the texels.</p>
+    <p><b>Ground grain</b>: the detail map drawn over the ground's colour tiles. It shares the texture memory with the 2 KB tile,
+      so it can be 2 KB at most. Shown over the ground's average colour, as the renderer draws it (light × (0.5 + grain)).
+      "+ micro detail" multiplies Halo's finer micro detail map into the grain (now only its average brightness is kept).</p>
+    <p><b>Rock and snow overlays</b>: the detail drawn over cliffs, rock and snow in a pass of its own, darkening by its texel.
+      Shown over the surface's average colour. The 4 KB options leave no room for mipmaps, so far away they shimmer.</p>
+    <p>Every option is the real texels: made by libdragon's mksprite as the converter makes them, then decoded.
+      <span class="badge now">NOW</span> marks what the cartridge uses today.</p>
+  </details>
+</header>
+<main id="list"></main>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+const DATA = /*DATA*/null;
+const STORE_KEY = "halo64-texture-picks-objects-terrain-v1";
+const SECTIONS = {objects: "Objects", grain: "Ground grain", overlays: "Rock and snow overlays"};
+const byKey = new Map(DATA.textures.map(t => [t.section + "|" + t.key, t]));
+const keyOf = t => t.section + "|" + t.key;
+let picks = {};
+for (const t of DATA.textures) picks[keyOf(t)] = t.current;
+try {
+  const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
+  if (saved) applyChoices(saved, false);
+} catch (e) { /* no storage: the defaults */ }
+
+const $ = id => document.getElementById(id);
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+$("section").innerHTML = `<option value="">Everything (${DATA.textures.length})</option>` +
+  Object.entries(SECTIONS).map(([k, v]) => `<option value="${k}">${v} (${DATA.textures.filter(t => t.section === k).length})</option>`).join("");
+$("map").innerHTML = `<option value="">All maps</option>` +
+  DATA.maps.map(m => DATA.textures.some(t => t.maps.includes(m)) ? `<option value="${esc(m)}">${esc(m)}</option>` : "").join("");
+
+function hexOf(t) {
+  const top = Math.max(...t) || 1;
+  return "#" + t.map(v => Math.max(0, Math.min(255, Math.round(v / top * 255))).toString(16).padStart(2, "0")).join("");
+}
+function shortName(name) {
+  const parts = name.split("\\");
+  return parts[parts.length - 1];
+}
+function boxSize(t) {
+  const side = +$("zoom").value;
+  const [w, h] = t.size;
+  return w >= h ? [side, Math.max(16, Math.round(side * h / w))] : [Math.max(16, Math.round(side * w / h)), side];
+}
+function preview(src, t) {
+  const [w, h] = boxSize(t);
+  const tile = document.body.classList.contains("tile");
+  const bs = tile ? `${w / 2}px ${h / 2}px` : `${w}px ${h}px`;
+  return `<div class="pv" style="width:${w}px;height:${h}px;--img:url('${src}');--bs:${bs}"></div>`;
+}
+function card(t) {
+  const k = keyOf(t);
+  const pick = picks[k];
+  const options = t.options.map(o => {
+    const tint = o.id.endsWith("-tint") && t.tint ? ` <span class="swatch" style="background:${hexOf(t.tint)}"></span>` : "";
+    return `<button class="opt" data-key="${esc(k)}" data-opt="${esc(o.id)}" aria-pressed="${pick === o.id}">
+      ${preview(o.src, t)}
+      <span class="label">${esc(o.label)}${tint}
+        ${t.current === o.id ? '<span class="badge now">NOW</span>' : ""}
+        ${pick === o.id ? '<span class="badge pick">PICKED</span>' : ""}</span>
+      <span class="sub">${esc(o.sub)} · ${o.size[0]}×${o.size[1]}</span>
+    </button>`;
+  }).join("");
+  const chips = t.chips.map(c => `<span class="chip${c === "player colour" ? " warn" : ""}${/^(opaque|cut-out)$/.test(c) ? " strong" : ""}">${esc(c)}</span>`).join("");
+  return `<section class="card${pick !== t.current ? " changed" : ""}">
+    <div class="head"><span class="name">${esc(shortName(t.name))}</span><span class="path">${esc(t.name)}</span></div>
+    ${t.detail ? `<div class="detail">${esc(t.detail)}</div>` : ""}
+    <div class="meta">${chips}${t.maps.map(m => `<span class="chip">${esc(m)}</span>`).join("")}</div>
+    <div class="row">
+      <div class="opt ref">${preview(t.original, t)}<span class="label">Original</span><span class="sub">Halo's · ${t.size[0]}×${t.size[1]}</span></div>
+      ${options}
+    </div>
+  </section>`;
+}
+function render() {
+  const section = $("section").value, map = $("map").value;
+  const q = $("search").value.trim().toLowerCase();
+  const shown = DATA.textures.filter(t => (!section || t.section === section) && (!map || t.maps.includes(map)) &&
+    (!q || t.name.toLowerCase().includes(q) || (t.detail || "").toLowerCase().includes(q)));
+  let html = "", last = null;
+  for (const t of shown) {
+    if (t.section !== last) {
+      html += `<h2>${SECTIONS[t.section]} (${shown.filter(s => s.section === t.section).length})</h2>`;
+      last = t.section;
+    }
+    html += card(t);
+  }
+  $("list").innerHTML = html || `<div class="empty">No textures match.</div>`;
+  updateCounts();
+}
+function updateCounts() {
+  const changed = DATA.textures.filter(t => picks[keyOf(t)] !== t.current).length;
+  $("counts").innerHTML = `<b>${DATA.textures.length}</b> textures · <b>${changed}</b> changed from now`;
+}
+function choices() {
+  const out = {version: 1, about: "Halo 64 objects' and terrain's textures: the format picked for each (texture-picker-objects-terrain.html)",
+               objects: {}, grain: {}, overlays: {}};
+  for (const t of DATA.textures) {
+    const entry = {option: picks[keyOf(t)]};
+    if (entry.option.endsWith("-tint") && t.tint) entry.tint = t.tint;
+    out[t.section][t.key] = entry;
+  }
+  return out;
+}
+function applyChoices(json, announce) {
+  let n = 0;
+  for (const section of Object.keys(SECTIONS)) {
+    for (const [key, entry] of Object.entries(json[section] || {})) {
+      const t = byKey.get(section + "|" + key);
+      const option = typeof entry === "string" ? entry : entry && entry.option;
+      if (t && option && t.options.some(o => o.id === option)) { picks[keyOf(t)] = option; n++; }
+    }
+  }
+  if (announce) toast(`Loaded ${n} choices`);
+}
+function remember() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(choices())); } catch (e) { /* not kept */ }
+}
+function toast(text) {
+  const el = $("toast");
+  el.textContent = text;
+  el.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.remove("show"), 2200);
+}
+
+$("list").addEventListener("click", e => {
+  const button = e.target.closest("button.opt");
+  if (!button) return;
+  const k = button.dataset.key;
+  picks[k] = button.dataset.opt;
+  remember();
+  const card = button.closest(".card");
+  const t = byKey.get(k);
+  for (const b of card.querySelectorAll("button.opt")) {
+    const on = b.dataset.opt === picks[k];
+    b.setAttribute("aria-pressed", on);
+    const badge = b.querySelector(".badge.pick");
+    if (on && !badge) b.querySelector(".label").insertAdjacentHTML("beforeend", '<span class="badge pick">PICKED</span>');
+    if (!on && badge) badge.remove();
+  }
+  card.classList.toggle("changed", picks[k] !== t.current);
+  updateCounts();
+});
+for (const id of ["section", "map"]) $(id).addEventListener("change", render);
+$("search").addEventListener("input", render);
+for (const r of document.querySelectorAll("input[name=disp]"))
+  r.addEventListener("change", () => document.body.classList.toggle("pixels", $("disp-px").checked));
+$("tile").addEventListener("change", () => { document.body.classList.toggle("tile", $("tile").checked); render(); });
+$("zoom").addEventListener("input", render);
+$("reset").addEventListener("click", () => {
+  if (!confirm("Put every texture back to what the cartridge uses now?")) return;
+  for (const t of DATA.textures) picks[keyOf(t)] = t.current;
+  remember();
+  render();
+});
+$("save").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify(choices(), null, 2)], {type: "application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "texture-choices-objects-terrain.json";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  toast("Saved texture-choices-objects-terrain.json");
+});
+$("load").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", async () => {
+  const file = $("file").files[0];
+  if (!file) return;
+  try {
+    applyChoices(JSON.parse(await file.text()), true);
+    remember();
+    render();
+  } catch (e) {
+    toast("That file isn't a choices file");
+  }
+  $("file").value = "";
+});
+render();
+</script>
+</body>
+</html>
