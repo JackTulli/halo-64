@@ -52,8 +52,16 @@ void n64_paint_set_decals(int on)
 			if (marks[i].pattern == 255)
 				marks[i].count = 0;
 }
-#define DECAL_SLOTS 4
-#define DECAL_BYTES (PAINT_CELL * PAINT_CELL / 2 + 32)
+/* The game's own decals' textures (tools/n64/decal_bank.py, version 2): IA8
+32x32 -- the ink's brightness and coverage at sixteen levels each, as the
+paint's masks have -- then its tint (r, g, b) and whether it darkens. (The
+first bank's were CI4 with one bit of alpha, dithered: blood was a scatter
+of dots, a bullet hole a few black ones.) DECAL_SLOTS of them in memory: a
+plasma shot alone takes three (the burn and its two glows), and with four
+every new kind of mark threw one out with the marks that used it */
+#define DECAL_SLOTS 8
+#define DECAL_BYTES (PAINT_CELL * PAINT_CELL + 16)
+#define DECAL_BANK_VERSION 2
 static unsigned char decal_textures[DECAL_SLOTS][DECAL_BYTES] __attribute__((aligned(16)));
 static unsigned int decal_keys[DECAL_SLOTS], decal_use[DECAL_SLOTS], decal_clock, map_hash;
 static unsigned char decal_valid[DECAL_SLOTS];
@@ -133,7 +141,7 @@ static int load_material(unsigned int key)
 	file = fopen("rom:/decals/materials.bank", "rb");
 	if (!file) return -1;
 	if (fseek(file, 0, SEEK_END) || (size = ftell(file)) < 12 || fseek(file, 0, SEEK_SET) ||
-		fread(header, 1, 12, file) != 12 || memcmp(header, "NDEC", 4) || read_be32(header + 4) != 1) { fclose(file); return -1; }
+		fread(header, 1, 12, file) != 12 || memcmp(header, "NDEC", 4) || read_be32(header + 4) != DECAL_BANK_VERSION) { fclose(file); return -1; }
 	count = read_be32(header + 8);
 	if (!count || count > 4096 || 12u + count * 8u > (unsigned long)size) { fclose(file); return -1; }
 	for (unsigned int low = 0, high = count; low < high; )
@@ -147,10 +155,17 @@ static int load_material(unsigned int key)
 	}
 	if (!found || offset < 12u + count * 8u || offset > (unsigned long)size ||
 		(unsigned long)size - offset < DECAL_BYTES) { fclose(file); return -1; }
+	/* a free slot, else the one fewest marks still use (a glow's, gone in a
+	second or two, before a bullet hole's), the least recently used of
+	those */
+	int live[DECAL_SLOTS] = {0};
+	for (int i = 0; i < PAINT_MARKS; i++)
+		if (marks[i].count && marks[i].pattern == 255 && marks[i].native_slot < DECAL_SLOTS)
+			live[marks[i].native_slot]++;
 	for (int i = 0; i < DECAL_SLOTS; i++)
 	{
 		if (!decal_valid[i]) { slot = i; break; }
-		if (decal_use[i] < decal_use[slot]) slot = i;
+		if (live[i] < live[slot] || (live[i] == live[slot] && decal_use[i] < decal_use[slot])) slot = i;
 	}
 	/* CPU overwrite must wait for earlier queued texture/palette DMA. A
 	   queued RDP pipe sync alone cannot protect this source RAM. */
@@ -310,19 +325,25 @@ void n64_paint_draw(const struct n64_particle_view *view)
 		}
 		if (mark->pattern == 255)
 		{
+			/* the ink's brightness x its tint x the decal's colour, its coverage
+			x the decal's intensity and fade; a darkening decal's (Halo's
+			multiply: the colour fades the texture toward the neutral) has
+			its colour set how strongly */
 			unsigned char *texture = decal_textures[mark->native_slot];
-			rdpq_mode_tlut(TLUT_RGBA16);
+			const unsigned char *tint = texture + PAINT_CELL * PAINT_CELL;
+			int a = (int)(alpha * mark->rgba[3]);
+			int rgb[3];
+
+			for (int k = 0; k < 3; k++)
+				rgb[k] = tint[3] ? tint[k] : tint[k] * mark->rgba[k] / 255;
+			if (tint[3])
+				a = a * (mark->rgba[0] + mark->rgba[1] + mark->rgba[2]) / 765;
 			rdpq_mode_combiner(RDPQ_COMBINER1((TEX0, 0, PRIM, 0), (TEX0, 0, PRIM, 0)));
-			rdpq_set_prim_color(RGBA32(mark->rgba[0], mark->rgba[1], mark->rgba[2], (int)(alpha * mark->rgba[3])));
-			rdpq_tex_upload_tlut((uint16_t *)(texture + PAINT_CELL * PAINT_CELL / 2), 0, 16);
-			/* (a palette's load, then a SYNC_LOAD: n64_render.c upload_sprite,
-			issues 6 and 7) */
-			rdpq_sync_load();
-			surface = surface_make_linear(texture, FMT_CI4, PAINT_CELL, PAINT_CELL);
+			rdpq_set_prim_color(RGBA32(rgb[0], rgb[1], rgb[2], a));
+			surface = surface_make_linear(texture, FMT_IA8, PAINT_CELL, PAINT_CELL);
 		}
 		else
 		{
-			rdpq_mode_tlut(TLUT_NONE);
 			rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
 			rdpq_set_prim_color(RGBA32(colors[mark->color][0], colors[mark->color][1], colors[mark->color][2], (int)(alpha * 230.f)));
 			surface = surface_make_linear(masks + mark->pattern * PAINT_CELL * PAINT_CELL / 2, FMT_I4, PAINT_CELL, PAINT_CELL);
@@ -330,5 +351,4 @@ void n64_paint_draw(const struct n64_particle_view *view)
 		rdpq_tex_upload(TILE0, &surface, NULL);
 		for (int v = 1; v < count - 1; v++) rdpq_triangle(&TRIFMT_ZBUF_TEX, projected[0], projected[v], projected[v + 1]);
 	}
-	rdpq_mode_tlut(TLUT_NONE);
 }

@@ -40,10 +40,10 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
 NAME = "Halo64RomBuilder"
-TOOLS = ("mksprite", "audioconv64", "mkdfs", "n64tool", "ed64romconfig")
+# (mkasset compresses every cartridge's maps: compress_map.py)
+TOOLS = ("mksprite", "audioconv64", "mkdfs", "n64tool", "ed64romconfig", "mkasset")
 CONVERTERS = ("convert", "ui", "music", "soundbank", "prune", "pc_prepare", "pc_thumbnails", "paint_masks", "decal_bank",
               "compress_map", "fx_pool", "ce_prepare", "animation_decompress")
-PC_ASSET_TOOLS = ("mkasset",)
 PC_TOOLS = tuple("invader-" + name for name in ("extract", "convert", "refactor", "bludgeon", "edit", "sound", "build")) + ("ffmpeg",)
 # the Custom Edition maps' tools (tools/n64/ce_prepare.py)
 CE_TOOLS = tuple("invader-" + name for name in ("extract", "convert", "refactor", "bludgeon", "edit", "sound", "build")) + ("ogg2wav",)
@@ -59,8 +59,8 @@ https://github.com/JackTulli/halo-64
 It carries:
 
 - the Halo 64 program for each cartridge, built from the halo-64 sources;
-- libdragon's mksprite, audioconv64, mkdfs, n64tool and ed64romconfig
-  (https://github.com/DragonMinded/libdragon), built for Windows
+- libdragon's mksprite, audioconv64, mkdfs, n64tool, ed64romconfig and
+  mkasset (https://github.com/DragonMinded/libdragon), built for Windows
   (libdragon-LICENSE.md);
 - Invader's Halo tag definitions and fixed P8 palette (https://github.com/SnowyMouse/invader,
   GPL-3.0: invader-LICENSE.md; the source is at that address);
@@ -122,6 +122,9 @@ def main():
             if not (args.custom_elf / name).is_file():
                 parser.error(f"missing the Custom Edition program's {name} (ninja -f build/n64/build.ninja custom)")
 
+    for name in TOOLS:
+        if not (args.tools / f"{name}.exe").is_file():
+            parser.error(f"missing libdragon tool: {name}.exe (tools/n64/build_windows_tools.sh)")
     palette = args.invader / "src" / "bitmap" / "p8" / "p8_palette"
     if not palette.is_file() or palette.stat().st_size != 1024:
         parser.error("Invader src/bitmap/p8/p8_palette must contain exactly 1024 bytes")
@@ -129,9 +132,6 @@ def main():
     if any(selected) and not all(selected):
         parser.error("PC expansion packaging requires --pc-expansion-elf, --pc-tools and --pc-tool-notices together")
     if args.pc_expansion_elf:
-        for name in PC_ASSET_TOOLS:
-            if not (args.tools / f"{name}.exe").is_file():
-                parser.error(f"missing optional PC asset tool: {name}.exe (build Windows tools with --pc-expansion)")
         for name in PC_TOOLS:
             if not (args.pc_tools / f"{name}.exe").is_file():
                 parser.error(f"missing supplied PC tool: {name}.exe")
@@ -151,10 +151,7 @@ def main():
         (payload / "bin").mkdir(parents=True)
         for name in TOOLS:
             shutil.copy2(args.tools / f"{name}.exe", payload / "bin" / f"{name}.exe")
-        if args.pc_expansion_elf:
-            for name in PC_ASSET_TOOLS:
-                shutil.copy2(args.tools / f"{name}.exe", payload / "bin" / f"{name}.exe")
-        programs = [("multiplayer", args.elf), ("campaign", args.elf / "campaign")]
+        programs =[("multiplayer", args.elf), ("campaign", args.elf / "campaign")]
         if args.pc_expansion_elf:
             programs.append(("pc-expansion", args.pc_expansion_elf))
         if args.custom_elf:
@@ -212,7 +209,7 @@ def main():
         if args.pc_tool_notices:
             shutil.copytree(args.pc_tool_notices, notices / "pc-tools")
             with (notices / "README.txt").open("a", encoding="utf-8") as readme:
-                readme.write("\nOptional PC expansion: includes supplied libdragon mkasset, Invader executables and FFmpeg. "
+                readme.write("\nOptional PC expansion: includes supplied Invader executables and FFmpeg. "
                              "See pc-tools/ for their matching licences and source information. "
                              "Only code, tools and project-original paint art are bundled; supply your own Halo PC maps.\n")
         if args.ce_tools:

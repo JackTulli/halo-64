@@ -11,9 +11,12 @@ A sound tag ('snd!') or looping sound ('lsnd') the N64 keeps is a record of
 its own (tools/n64/sounds.py), what the tag instance's address points at:
 the sound's class, distances, random pitch, gain and its scale modifiers,
 its pitch ranges and their permutations (each a file of the map's sound
-list); a looping sound's tracks (start, loop and end sounds). The
-environment's sounds (ambience, devices, music) are left out by the
-converter, so their references are NONE.
+list); a looping sound's tracks (start, loop and end sounds). Doors' and
+machines' sounds and music are left out by the converter, so their
+references are NONE; the ambience is kept: the sound scenery's loops play
+as any object's, and the BSP's background sound -- the cluster the first
+local player is in picks it, as Halo's sound environments did -- plays
+unspatialized (update_background).
 
 As Halo's sound manager does (sound_manager.c): a sound starts unless its
 skip fraction says not; its pitch is random within its bounds, scaled by
@@ -36,7 +39,10 @@ shot cuts the last one's).
 #include "game/players.h"
 #include "math/real_math.h"
 #include "objects/objects.h"
+#include "scenario/scenario.h"
 #include "sound/game_sound.h"
+#include "structures/structures.h"
+#include "structures/structure_bsp_definitions.h"
 #include "sound/sound_definitions.h"
 #include "tag_files/tag_files.h"
 #include "tag_files/tag_groups.h"
@@ -195,6 +201,10 @@ static struct
 	struct playing_sound playing[MAXIMUM_PLAYING_SOUNDS];
 	struct looping_sound looping[MAXIMUM_LOOPING_SOUNDS];
 	struct listener listeners[MAXIMUM_LOCAL_PLAYERS];
+	/* the background sound playing (update_background): its looping sound
+	definition and index, or NONE */
+	long background_definition_index;
+	long background_looping_index;
 	unsigned long random;
 	short next_salt;
 	long frame;
@@ -846,6 +856,8 @@ void game_sound_initialize(void)
 	}
 	for (i = 0; i < MAXIMUM_LOOPING_SOUNDS; i++)
 		n64_sounds.looping[i].definition_index = NONE;
+	n64_sounds.background_definition_index = NONE;
+	n64_sounds.background_looping_index = NONE;
 }
 
 void game_sound_initialize_for_new_map(void)
@@ -864,6 +876,8 @@ void game_sound_dispose_from_old_map(void)
 		playing_free(i);
 	n64_sound_unload_map();
 	n64_sounds.loaded = FALSE;
+	n64_sounds.background_definition_index = NONE;
+	n64_sounds.background_looping_index = NONE;
 }
 
 void sound_stop_all(void)
@@ -877,6 +891,9 @@ void sound_stop_all(void)
 	}
 	for (i = 0; i < MAXIMUM_PLAYING_SOUNDS; i++)
 		playing_free(i);
+	/* (the background sound starts again at the next update) */
+	n64_sounds.background_definition_index = NONE;
+	n64_sounds.background_looping_index = NONE;
 }
 
 void sound_stop_impulse(long sound_index)
@@ -974,6 +991,61 @@ void unattached_looping_sound_stop(long looping_sound_index)
 		looping->stopping = TRUE;
 }
 
+/* the background sound of the cluster the first local player's camera is
+in (the BSP's background sound palette), or NONE. Halo chose among the
+players' clusters by their sound environments' priority
+(scenario_get_sound_environment), and took a cluster's background sound
+only where it had a sound environment; the N64 has none (the converter
+leaves them out: no reverb), so the first player's cluster is the one */
+static long background_sound_now(void)
+{
+	struct structure_bsp *bsp = global_structure_bsp_get();
+	short i;
+
+	if (!bsp)
+		return NONE;
+	for (i = 0; i < MAXIMUM_LOCAL_PLAYERS; i++)
+	{
+		struct listener const *listener = &n64_sounds.listeners[i];
+		struct structure_cluster *cluster;
+		struct location location;
+		short palette_index;
+
+		if (!listener->valid)
+			continue;
+		scenario_location_from_point(&location, &listener->position);
+		if (location.cluster_index == NONE || location.cluster_index >= bsp->clusters.count)
+			continue;
+		cluster = TAG_BLOCK_GET_ELEMENT(&bsp->clusters, location.cluster_index, struct structure_cluster);
+		palette_index = cluster->background_sound_palette_index;
+		if (palette_index == NONE || palette_index < 0 || palette_index >= bsp->background_sound_palette.count)
+			return NONE;
+		return TAG_BLOCK_GET_ELEMENT(&bsp->background_sound_palette, palette_index,
+			struct structure_background_sound_palette_entry)->background_sound.index;
+	}
+
+	return NONE;
+}
+
+/* the background sound (Halo's game_sound_update): an unattached looping
+sound, unspatialized, started when the player comes into a cluster of
+another and the old one's stopped (its end sounds played) */
+static void update_background(void)
+{
+	long definition_index = background_sound_now();
+
+	if (definition_index != NONE && !looping_sound_get(definition_index))
+		definition_index = NONE;
+	if (definition_index == n64_sounds.background_definition_index)
+		return;
+	if (n64_sounds.background_looping_index != NONE)
+		unattached_looping_sound_stop(n64_sounds.background_looping_index);
+	n64_sounds.background_looping_index = definition_index == NONE ? NONE :
+		unattached_looping_sound_start(definition_index, NONE, 1.f);
+	/* (no room for it among the looping sounds: tried again next frame) */
+	n64_sounds.background_definition_index = n64_sounds.background_looping_index != NONE ? definition_index : NONE;
+}
+
 void game_sound_update(real dt)
 {
 	short i;
@@ -982,6 +1054,7 @@ void game_sound_update(real dt)
 	if (!n64_sounds.loaded)
 		return;
 	update_listeners();
+	update_background();
 	for (i = 0; i < MAXIMUM_LOOPING_SOUNDS; i++)
 	{
 		if (n64_sounds.looping[i].definition_index != NONE)

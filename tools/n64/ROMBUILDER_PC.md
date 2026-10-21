@@ -28,13 +28,13 @@ python -m tools.n64.rombuilder "D:\OwnedHaloXbox\maps" -o "D:\HaloROMs" --pc-exp
 
 The PC path is validated as retail version 7, copied and hashed, normalized with Invader and FFmpeg into six Xbox-version-5 converter intermediates, and explicitly passed to the PC expansion converters. The original thirteen Xbox inputs stay separate; no sibling folder enables PC imports automatically. Original PC UI thumbnails are extracted explicitly. All nineteen PC expansion maps then pass through libdragon `mkasset` at LZ4 level 1 with a 64 KiB window; the helper verifies the complete decoded map is byte-identical before replacing the generated map. After raw filesystem pruning, the reviewed FX helper derives a separate packed filesystem that shares only exact effect-record bytes. Raw source files stay unchanged, and no pruning or edits occur after pooling. The PC DFS uses that final packed tree; default multiplayer and campaign keep their existing installer asset flow. All final ROMs are checked against the 64 MiB cartridge maximum before publication; a failed or oversized build preserves the previous ROM and removes its own temporary output. PC and Xbox inputs are read-only. Temporary input/tag/audio/filesystem data is removed after completion or failure; converter logs remain in the work directory. Successful PC input, normalization and exact FX pooling manifests persist under `work/receipts/<run>/` with input/output/tool hashes.
 
-To build the native Windows tools from a trusted libdragon source tree on a MinGW-w64 cross-build host, include the optional third flag for the PC compressor:
+To build the native Windows tools from a trusted libdragon source tree on a MinGW-w64 cross-build host:
 
 ```sh
-tools/n64/build_windows_tools.sh /path/to/libdragon build/windows-tools --pc-expansion
+tools/n64/build_windows_tools.sh /path/to/libdragon build/windows-tools
 ```
 
-Omit that flag to build the original five-tool vanilla set. The PC packaging options require `mkasset.exe` in `--tools`; vanilla packaging does not.
+It builds six tools, `mkasset.exe` among them: every cartridge's maps are compressed now, so every package needs it in `--tools`. (The old `--pc-expansion` flag is still taken and changes nothing.)
 
 To package a release using installed PyInstaller, Pillow, tkinterdnd2 and sv-ttk:
 

@@ -1,8 +1,16 @@
-"""Export owned Halo decal artwork as a bounded N64 CI4 material bank.
+"""Export owned Halo decal artwork as a bounded N64 material bank.
 
 The stock port omitted native decals. This bank keeps the source silhouettes
 and ink colors; Xbox multiply/max/add are approximated with alpha-over ink.
 No map tag bytes, damage, projectile settings, or source pixels are modified.
+
+Each material (version 2) is IA8, 32x32 -- the ink's intensity and its
+coverage, sixteen levels each, as paintball's I4 masks have -- then its
+tint (the ink's colour: the renderer draws intensity x tint x the decal's
+colour) and whether it darkens (Halo's multiply and double multiply: there
+the decal's colour sets how strongly, not the ink's colour). The first
+bank was CI4 with one bit of alpha, dithered: blood came out as a scatter
+of dots, a bullet hole as a few black ones.
 """
 import argparse
 import hashlib
@@ -16,8 +24,11 @@ from PIL import Image
 from .paint_masks import configure
 
 CELL = 32
-PAYLOAD = CELL * CELL // 2 + 32
-BAYER = ((0, 8, 2, 10), (12, 4, 14, 6), (3, 11, 1, 9), (15, 7, 13, 5))
+VERSION = 2
+# IA8 texels, then the tint (r, g, b, darkens) and padding to 16 bytes
+PAYLOAD = CELL * CELL + 16
+# Halo's framebuffer blend functions that darken (multiply, double multiply)
+DARKENING = (1, 2)
 
 
 def name_hash(name):
@@ -47,29 +58,46 @@ def sprite_image(xmap, bitmap, defs):
     images = bitmap_images(xmap, bitmap, defs)
     if not 0 <= index < len(images) or not all(math.isfinite(v) for v in box):
         raise ValueError(f'Invalid decal sprite: {bitmap.name}')
-    image = decode(xmap, images[index], 128)
+    image = decode(xmap, images[index], 128).convert('RGBA')
     w, h = image.size
     bounds = (max(0, int(box[0] * w)), max(0, int(box[1] * h)),
               min(w, math.ceil(box[2] * w)), min(h, math.ceil(box[3] * h)))
     if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
         raise ValueError(f'Empty decal sprite: {bitmap.name}')
-    return image.crop(bounds).resize((CELL, CELL), Image.Resampling.LANCZOS).convert('RGBA')
+    # (the colour and the alpha resized apart: PIL resizes RGBA premultiplied,
+    # which turned the colour black wherever the alpha was 0 -- and the
+    # multiplying decals' alpha is not theirs to use: material_ink)
+    sprite = image.crop(bounds)
+    rgb = sprite.convert('RGB').resize((CELL, CELL), Image.Resampling.LANCZOS)
+    alpha = sprite.getchannel('A').resize((CELL, CELL), Image.Resampling.LANCZOS)
+    return Image.merge('RGBA', (*rgb.split(), alpha))
 
 
 def material_ink(image, blend):
+    """a decal sprite as ink over the surface: (ink colour, coverage). Halo's
+    Xbox decal shader (rasterizer_xbox_decals.c) takes the texture's alpha in
+    its alpha blend alone; multiply and double multiply darken by the colour
+    (white, or 0.5 grey doubled, leaves the surface as it is), add and max
+    brighten by it. Plasma burns and the sniper's mark, their alpha 0 where
+    they darken, came out empty when it counted"""
     result = []
     for r, g, b, alpha in image.getdata():
-        if blend in (1, 2):
+        if blend in DARKENING:
             scale = 2 if blend == 2 else 1
             rgb = [min(255, value * scale) for value in (r, g, b)]
             coverage = 255 - min(rgb)
             ink = [max(0, min(255, round((value - (255 - coverage)) * 255 / coverage)))
                    if coverage else 0 for value in rgb]
-            result.append((*ink, coverage * alpha // 255))
-        elif blend in (3, 6, 7):
+            result.append((*ink, coverage))
+        elif blend in (3, 6):
             coverage = max(r, g, b)
             ink = [min(255, value * 255 // coverage) if coverage else 0 for value in (r, g, b)]
-            result.append((*ink, coverage * alpha // 255))
+            result.append((*ink, coverage))
+        elif blend == 7:
+            # (alpha multiply add: the surface times 1 - alpha, plus the colour)
+            coverage = max(alpha, r, g, b)
+            ink = [min(255, value * 255 // coverage) if coverage else 0 for value in (r, g, b)]
+            result.append((*ink, coverage))
         else:
             result.append((r, g, b, alpha))
     out = Image.new('RGBA', image.size)
@@ -77,37 +105,36 @@ def material_ink(image, blend):
     return out
 
 
-def pack_material(image):
-    """CI4 + RGBA16: transparent entry 0, fifteen original-ink colors.
-
-    A fixed ordered alpha dither approximates soft original coverage within
-    RGBA16's one-bit alpha; no opaque neutral-white/gray cards are introduced.
-    """
+def pack_material(image, darkens=False):
+    """IA8 + tint: each texel's ink brightness and coverage at sixteen levels
+    (as paintball's masks), the ink's hue on average as the tint (coverage
+    and brightness weighted; white for black ink). Transparent texels take
+    the visible ones' mean brightness, so the RDP's filter brings no dark
+    fringe in at the edges. Returns the payload, a preview and the count of
+    transparent texels"""
     pixels = list(image.getdata())
-    visible_rgb = [rgb[:3] for rgb in pixels if rgb[3] > 8]
-    if not visible_rgb:
-        raise ValueError('Empty authored decal material')
-    sample = Image.new('RGB', (len(visible_rgb), 1))
-    sample.putdata(visible_rgb)
-    quantized = sample.quantize(colors=15, method=Image.Quantize.MEDIANCUT)
-    palette_rgb = quantized.getpalette()[:45]
-    palette_rgb += [0] * (45 - len(palette_rgb))
-    colors = [tuple(palette_rgb[i:i + 3]) for i in range(0, 45, 3)]
-    palette = [0] + [((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | 1 for r, g, b in colors]
-    indices = []
-    for index, (r, g, b, alpha) in enumerate(pixels):
-        threshold = (BAYER[(index // CELL) & 3][index & 3] + .5) * 16
-        if alpha <= threshold:
-            indices.append(0)
-        else:
-            indices.append(1 + min(range(15), key=lambda c: sum((a - z) ** 2 for a, z in zip((r, g, b), colors[c]))))
-    packed = bytes((indices[i] << 4) | indices[i + 1] for i in range(0, len(indices), 2))
-    packed += struct.pack('>16H', *palette)
+    weights, hue = 0.0, [0.0, 0.0, 0.0]
+    for r, g, b, alpha in pixels:
+        value = max(r, g, b)
+        if value:
+            for k, c in enumerate((r, g, b)):
+                hue[k] += c / value * alpha * value
+            weights += alpha * value
+    tint = [255, 255, 255]
+    if weights:
+        top = max(hue) or 1.0
+        tint = [max(0, min(255, round(c / top * 255))) for c in hue]
+    # (each texel's brightness: its largest channel, as the tint's is 255)
+    levels = [(min(15, round(max(p[:3]) / 255 * 15)), min(15, round(p[3] / 255 * 15))) for p in pixels]
+    visible = [i for i, a in levels if a]
+    fill = round(sum(visible) / len(visible)) if visible else 0
+    levels = [(i if a else fill, a) for i, a in levels]
+    packed = bytes((i << 4) | a for i, a in levels)
+    packed += bytes((*tint, 1 if darkens else 0)) + bytes(PAYLOAD - CELL * CELL - 4)
     preview = Image.new('RGBA', (CELL, CELL))
-    preview.putdata([((palette[i] >> 11) * 255 // 31, ((palette[i] >> 6) & 31) * 255 // 31,
-                      ((palette[i] >> 1) & 31) * 255 // 31, 255 if i else 0) for i in indices])
+    preview.putdata([(*(round(i * 17 * t / 255) for t in tint), a * 17) for i, a in levels])
     assert len(packed) == PAYLOAD
-    return packed, preview, indices.count(0)
+    return packed, preview, sum(1 for _, a in levels if not a)
 
 
 def build(paths, *, definitions=None, campaign=False, pc_expansion=False, pc_maps=None):
@@ -134,12 +161,13 @@ def build(paths, *, definitions=None, campaign=False, pc_expansion=False, pc_map
             if key in seen_names and seen_names[key] != material_name:
                 raise ValueError(f'Decal name hash collision: {tag.name}')
             seen_names[key] = material_name
-            payload, preview, transparent = pack_material(material_ink(sprite_image(xmap, bitmap, defs), blend))
+            payload, preview, transparent = pack_material(material_ink(sprite_image(xmap, bitmap, defs), blend),
+                                                          darkens=blend in DARKENING)
             records[key] = dict(map=name, name=tag.name, bitmap=bitmap.name, blend=blend, payload=payload,
                                 preview=preview, transparent_texels=transparent)
             count += 1
         maps.append(dict(name=name, authored_materials=count))
-    header = b'NDEC' + struct.pack('>II', 1, len(records))
+    header = b'NDEC' + struct.pack('>II', VERSION, len(records))
     index, data, entries = bytearray(), bytearray(), []
     shared = {}
     for key, material in sorted(records.items()):
@@ -154,9 +182,9 @@ def build(paths, *, definitions=None, campaign=False, pc_expansion=False, pc_map
                             blend=material['blend'], transparent_texels=material['transparent_texels'], offset=offset,
                             sha256=hashlib.sha256(material['payload']).hexdigest()))
     bank = header + index + data
-    return bank, records, dict(maps=maps, materials=entries, cache_bytes=4 * PAYLOAD,
-        shared_marks=32, cell=CELL, format='CI4 + 16-entry RGBA16 palette',
-        approximation='Source ink alpha-over; multiply neutral white/double-multiply gray removed; ordered alpha dither; first sprite only',
+    return bank, records, dict(maps=maps, materials=entries, cache_bytes=8 * PAYLOAD,
+        shared_marks=32, cell=CELL, format='IA8 + tint (r, g, b, darkens)',
+        approximation='Source ink alpha-over; multiply neutral white/double-multiply gray removed; first sprite only',
         bank_bytes=len(bank), sha256=hashlib.sha256(bank).hexdigest())
 
 

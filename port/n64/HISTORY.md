@@ -6,7 +6,44 @@ building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
 21 October: Battle Creek's rocks back to their colour; the team colour
-back on the first-person hands.
+back on the first-person hands; the game's decals whole; the maps'
+ambient sounds.
+
+- The maps had no ambience: since the first sounds (8 October) the
+  converter left out Halo's environment classes. `tools/n64/sounds.py`
+  now keeps the ambience (nature, machinery, computers) and the devices'
+  steady hums (force fields, Covenant computers), not doors, machinery (the
+  alert lights' klaxon on Wizard) or music: every multiplayer map's
+  background loop, Battle Creek's stream and Damnation's falls (sound scenery, which
+  was placed all along, silent), Damnation's Covenant uplink and Rat Race's
+  shield generator -- 5.5 MB more in the multiplayer cartridges' sound
+  bank. The background sound is the BSP's, of the cluster the first local
+  player's camera is in (`n64_sound_game.c` `update_background`), an
+  unattached looping sound, unspatialized, changed as the player crosses
+  into a cluster of another; Halo chose it through the clusters' sound
+  environments, which the N64 does not keep (no reverb).
+- The ROM Builder compresses every cartridge's maps now, as the ninja build
+  does (`compress_map.py`, LZ4 by libdragon's `mkasset`, which the package
+  carries as a sixth tool): uncompressed, its multiplayer cartridge was ~62
+  of the 64 MiB a cartridge may be, with no room for the ambience.
+
+- Blood, bullet holes, scorch and plasma marks were still broken while
+  paintball's paint looked right, though both are drawn alike
+  (`n64_paint.c`). The difference was the textures: the paint's are I4
+  masks, sixteen levels of coverage; the decals' (`tools/n64/decal_bank.py`)
+  were CI4 with one bit of alpha, dithered, so blood came out as a scatter
+  of dots and a bullet hole as two to ten black ones. And the bank used the
+  texture's alpha in Halo's multiply modes, where Halo's Xbox shader
+  (`rasterizer_xbox_decals.c`) darkens by the colour alone -- plasma burns
+  and the sniper's mark, alpha 0 where they darken, were all but empty --
+  after a premultiplied resize had turned their colour black where the
+  alpha was 0. The bank (version 2) is now IA8 32x32 (brightness and
+  coverage, sixteen levels each) with the ink's tint and whether it darkens
+  (a darkening decal's colour sets how strongly, as in Halo); the colour and
+  the alpha are resized apart. The renderer keeps eight of them, not four
+  (a plasma shot alone takes three: the burn and its two glows; each new
+  kind of mark threw one out with every mark using it and waited for the
+  RDP), and gives up the one fewest marks still use.
 
 - Battle Creek's cliffs and boulders, tinted greys since the texture
   picker, came out lime green. A doubled material's vertex colour stops at

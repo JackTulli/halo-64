@@ -94,7 +94,11 @@ class BuilderTests(unittest.TestCase):
         conversions = [a for m, a in builder.calls if m == "convert"]
         self.assertEqual(len(conversions), 14)
         self.assertFalse(any("--pc-expansion" in a or "--pc-maps" in a for a in conversions))
-        self.assertFalse(any(m in ("pc_prepare", "pc_thumbnails", "compress_map", "fx_pool") for m, _ in builder.calls))
+        self.assertFalse(any(m in ("pc_prepare", "pc_thumbnails", "fx_pool") for m, _ in builder.calls))
+        # (every converted map compressed, as the ninja build's)
+        compressed = [Path(a[0]) for m, a in builder.calls if m == "compress_map"]
+        self.assertEqual(sorted(p.stem for p in compressed), sorted([*BASE, "a30"]))
+        self.assertEqual(sorted(compressed), sorted(Path(a[a.index("-o") + 1]) for a in conversions))
         self.assertFalse(builder.input_stage.exists())
         for module, args in builder.calls:
             if module == "tool" and args[0] == "mkdfs":

@@ -27,7 +27,7 @@ class PackageTests(unittest.TestCase):
                        self.repo / "port" / "n64", self.invader / "src" / "tag" / "hek" / "definition",
                        self.invader / "include" / "invader" / "hek", self.invader / "src" / "bitmap" / "p8"]:
             folder.mkdir(parents=True, exist_ok=True)
-        for name in (*package.TOOLS, *package.PC_ASSET_TOOLS):
+        for name in package.TOOLS:
             (self.tools / (name + ".exe")).write_bytes(b"never executed fixture")
         for folder in [self.elf, self.elf / "campaign", self.pc_elf]:
             for name in ["halo.elf.stripped", "halo.elf.sym"]:
@@ -88,8 +88,16 @@ class PackageTests(unittest.TestCase):
         self.assertIn("elf/campaign/halo.elf.stripped", self.payload)
         self.assertFalse(any(k.startswith("pc-tools/") or "pc-expansion" in k for k in self.payload))
         self.assertIn("art/paint-splatter-original.png", self.payload)
-        self.assertNotIn("bin/mkasset.exe", self.payload)
+        # (every cartridge's maps are compressed: compress_map.py)
+        self.assertIn("bin/mkasset.exe", self.payload)
         self.assertFalse(any(k.endswith(".map") for k in self.payload))
+
+    def test_package_missing_mkasset_fails_before_pyinstaller(self):
+        (self.tools / "mkasset.exe").unlink()
+        with self.assertRaises(SystemExit) as context:
+            self.run_package()
+        self.assertEqual(context.exception.code, 2)
+        self.assertEqual(self.payload, {})
 
     def test_optional_pc_payload_is_distinct_hashed_and_notice_bound(self):
         self.run_package(["--pc-expansion-elf", str(self.pc_elf), "--pc-tools", str(self.pc_tools),

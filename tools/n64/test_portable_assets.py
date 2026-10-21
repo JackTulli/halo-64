@@ -31,17 +31,33 @@ class PortableAssetTests(unittest.TestCase):
         self.assertEqual(ink.getpixel((0,0))[3],0)
         self.assertEqual(ink.getpixel((1,0))[3],240)
 
-    def test_ci4_material_budget_palette_and_silhouette(self):
+    def test_ia8_material_budget_tint_and_silhouette(self):
         image = Image.new('RGBA',(32,32),(0,0,0,0))
         for y in range(6,26):
             for x in range(4,28):
                 image.putpixel((x,y),(120,20,45,255))
-        payload, preview, transparent = pack_material(image)
-        self.assertEqual(len(payload),544)
-        self.assertEqual(payload[512:514],b'\0\0')
+        payload, preview, transparent = pack_material(image, darkens=True)
+        self.assertEqual(len(payload),1040)
+        # (the ink's hue, its largest channel 255, and the darkening flag)
+        self.assertEqual(payload[1024],255)
+        self.assertAlmostEqual(payload[1025],42,delta=1)
+        self.assertAlmostEqual(payload[1026],96,delta=1)
+        self.assertEqual(payload[1027],1)
         self.assertEqual(transparent,1024-480)
+        # a visible texel: brightness 120/255 at full coverage
+        self.assertEqual(payload[10*32+10],(7<<4)|15)
+        # a transparent one takes the visible ones' brightness (no dark fringe)
+        self.assertEqual(payload[0],7<<4)
         self.assertEqual(preview.getpixel((0,0))[3],0)
         self.assertEqual(preview.getpixel((10,10))[3],255)
+
+    def test_double_multiply_ignores_the_texture_alpha(self):
+        # (Halo's shader darkens by the colour alone: a plasma burn's dark
+        # centre has alpha 0)
+        source = Image.new('RGBA',(2,1)); source.putdata([(128,128,128,0),(20,20,20,0)])
+        ink = material_ink(source,2)
+        self.assertEqual(ink.getpixel((0,0))[3],0)
+        self.assertEqual(ink.getpixel((1,0)),(0,0,0,215))
 
     def test_decoder_rejects_truncated_or_invalid_packed_data(self):
         for data in (b'',b'DCA5',b'DCA5\x15\x80',b'DCA5\x15\x01\x20\0\0\xf0'):

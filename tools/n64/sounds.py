@@ -26,8 +26,11 @@ points at (the Policy's custom_tag, convert.py):
         track: u32 start, loop, end sounds (tag indices or NONE),
             f32 gain, fade in, fade out (s), u32 flags
 
-Left out: the environment (ambience, devices, music) and anything only a
-left-out sound needs. Each permutation the game can choose (Halo's
+Left out: doors' and machines' sounds (a machine's klaxon), music, and
+anything only a left-out sound needs. The ambience is kept: the BSP's
+background sounds (each cluster's loop), the sound scenery's loops (Battle
+Creek's stream) and the steady hums of force fields and Covenant
+computers. Each permutation the game can choose (Halo's
 "actual" ones: the others continue a long sound and are joined to it) is
 decoded from Xbox ADPCM and compressed to mono 22 kHz VADPCM by
 audioconv64, shared by content: build/n64/sound-cache/<hash>.wav64; the
@@ -53,9 +56,12 @@ CACHE_VERSION = b"n64 sound 3"
 
 # Halo's sound classes the N64 plays (sound_classes.c): weapons, impacts,
 # explosions, footsteps, vehicles, dialogue, the announcer and the HUD's
-# (shield, health) -- not the environment (devices 26-30, music 32,
-# ambience 33-35)
-KEPT_CLASSES = {0, 1, 4, 5, 6, 7, 8, 9, 10, 13, 14, 15, 18, 19, 22, 23, 39, 44, 45, 46, 47, 50}
+# (shield, health); the ambience (33-35: nature, machinery, computers) and
+# the devices' steady hums (27 force fields, 29 nature, 30 computers) --
+# not doors (26), machinery (28: Wizard's alert lights' klaxon) or music
+# (32). The ambience is ~5.5 MB of the multiplayer cartridges' sounds
+AMBIENT_CLASSES = {27, 29, 30, 33, 34, 35}
+KEPT_CLASSES = {0, 1, 4, 5, 6, 7, 8, 9, 10, 13, 14, 15, 18, 19, 22, 23, 39, 44, 45, 46, 47, 50} | AMBIENT_CLASSES
 UNIT_DIALOG = 19
 OBJECT_IMPACTS = 13
 # at most this many of a dialogue sound's lines (the Covenant's have up to

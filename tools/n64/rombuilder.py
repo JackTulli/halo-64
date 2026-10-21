@@ -65,8 +65,8 @@ CARTRIDGES = {
     "online": {"rom": "halo-online.z64", "elf": "online"},
 }
 # what a conversion costs, roughly (the progress bar's shares)
-WEIGHTS = {"map": 10, "campaign map": 60, "ce map": 20, "ui": 6, "music": 4, "sounds": 2, "pack": 2, "rom": 1,
-           "online kit": 3}
+WEIGHTS = {"map": 10, "campaign map": 60, "ce map": 20, "compress": 1, "ui": 6, "music": 4, "sounds": 2, "pack": 2,
+           "rom": 1, "online kit": 3}
 # Halo 64 Online's folder for a PC with a SummerCart64, beside the ROMs
 ONLINE_FOLDER = "Halo64Online"
 # the most Custom Edition maps a cartridge takes (n64_menu.c CUSTOM_MAP_LIMIT)
@@ -356,13 +356,14 @@ class RomBuilder:
             raise BuildError("conversion jobs must be a positive integer")
         if not self.cartridges or any(c not in CARTRIDGES for c in self.cartridges):
             raise BuildError("choose at least one supported cartridge")
+        # (every cartridge's maps are compressed: compress_map.py)
+        if not Path(tool("mkasset")).is_file():
+            raise BuildError("compressing the maps needs libdragon's mkasset tool; include it in N64_TOOLS")
         if "pc_expansion" in self.cartridges:
             if not self.pc_source:
                 raise BuildError("PC expansion also needs your Halo PC retail disc image or installed maps folder")
             if "pc_expansion" not in self.config:
                 raise BuildError("this builder has no PC expansion configuration")
-            if not Path(tool("mkasset")).is_file():
-                raise BuildError("PC expansion needs the trusted libdragon mkasset tool; include it in N64_TOOLS")
             from .pc_input import PCMapSource, PC_MAPS
             from .pc_prepare import validate_tools
             try:
@@ -439,7 +440,7 @@ class RomBuilder:
             maps = self.maps_for(cartridge) if cartridge != "custom" else self.custom_inputs
             if cartridge == "custom":
                 self.total += len(maps) * WEIGHTS["ce map"]
-            self.total += len(maps) * WEIGHTS["campaign map" if cartridge == "campaign" else "map"]
+            self.total += len(maps) * (WEIGHTS["campaign map" if cartridge == "campaign" else "map"] + WEIGHTS["compress"])
             self.total += WEIGHTS["ui"] + WEIGHTS["music"] + WEIGHTS["sounds"] + WEIGHTS["pack"] + WEIGHTS["rom"]
         if "online" in self.cartridges:
             self.total += WEIGHTS["online kit"]
@@ -629,10 +630,11 @@ class RomBuilder:
             # (the program's list of its maps: n64_menu.c)
             (fsdir / "maps" / "custom.list").write_text(
                 "".join(f"{m['name']}|{m['display']}\n" for m in self.custom), encoding="utf-8", newline="\n")
-        if cartridge == "pc_expansion":
-            for name in names:
-                self.run_worker(f"Compressing {name} ({label})", "compress_map",
-                                [str(fsdir / "maps" / f"{name}.map")])
+        # the maps compressed (LZ4, as the ninja build's: compress_map.py), a few
+        # at a time: uncompressed, the multiplayer cartridge was ~62 of the 64
+        # MiB a cartridge may be, with no room for the maps' ambient sounds
+        self.run_parallel([(f"Compressing {name} ({label})", "compress_map", [str(fsdir / "maps" / f"{name}.map")],
+                            WEIGHTS["compress"]) for name in names])
         self.run_worker(f"Converting the menu ({label})", "ui", [str(maps / "ui.map"), "--filesystem", str(fsdir)])
         if cartridge == "pc_expansion":
             self.run_worker("Adding the PC map thumbnails", "pc_thumbnails",

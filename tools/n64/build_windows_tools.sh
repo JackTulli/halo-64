@@ -1,19 +1,20 @@
 #!/bin/bash
 # libdragon's tools the ROM builder runs (tools/n64/rombuilder.py), built for
 # Windows with MinGW-w64 (apt install mingw-w64), statically: mksprite,
-# audioconv64, mkdfs, n64tool, ed64romconfig (plus mkasset with --pc-expansion). From a copy of libdragon's
-# tools, so that its own build (Linux objects in the same folders) is left
-# as it is.
+# audioconv64, mkdfs, n64tool, ed64romconfig and mkasset (every cartridge's
+# maps are compressed: compress_map.py). From a copy of libdragon's tools, so
+# that its own build (Linux objects in the same folders) is left as it is.
+# (--pc-expansion, which once added mkasset, is still taken)
 #
 #     tools/n64/build_windows_tools.sh <libdragon> <output folder> [--pc-expansion]
 set -e
 LIBDRAGON=${1:-$HOME/n64/libdragon}
 OUT=${2:-build/windows-tools}
-TARGETS=(mksprite audioconv64 mkdfs n64tool ed64romconfig)
-BINARIES=(mksprite/mksprite.exe audioconv64/audioconv64.exe mkdfs/mkdfs.exe n64tool.exe ed64romconfig.exe)
+TARGETS=(mksprite audioconv64 mkdfs n64tool ed64romconfig mkasset)
+BINARIES=(mksprite/mksprite.exe audioconv64/audioconv64.exe mkdfs/mkdfs.exe n64tool.exe ed64romconfig.exe
+          mkasset/mkasset.exe)
 case "${3:-}" in
-    "") ;;
-    --pc-expansion) TARGETS+=(mkasset); BINARIES+=(mkasset/mkasset.exe) ;;
+    "" | --pc-expansion) ;;
     *) echo "Usage: $0 <libdragon> <output folder> [--pc-expansion]" >&2; exit 2 ;;
 esac
 WORK=$(mktemp -d)
