@@ -56,7 +56,7 @@ from .stages import evaluate as evaluate_stages
 from .decimate import decimate
 from .level import (LevelBuilder, MATERIAL_ALPHA_TEST, MATERIAL_BLEND, MATERIAL_CHANGE_COLOR, MATERIAL_GLOW,
                     MATERIAL_TRANSPARENT, MATERIAL_TWO_SIDED, MATERIAL_UNTEXTURED, GREYSCALE_TEXELS, Texture,
-                    pack_normal, unpack_normal, texture_choices)
+                    fit_shade, pack_normal, unpack_normal, texture_choices)
 
 MODEL_SCALE = 1024.0
 MAXIMUM_CACHE = 70
@@ -822,9 +822,12 @@ class ModelConverter:
         choice = self.object_choice(bitmap, first_person=True)
         grey = choice is not None and choice[0].startswith("grey")
         if grey and multipurpose is not None:
-            # (the picker said so: its other options lose the colour change)
-            print(f"{self.map.name}: {tag.name} (first person): {choice[0]}, without the player's colour")
-            multipurpose = None
+            # (a first-person atlas with a change colour has the player's: it
+            # keeps its 16 colours, the palette's upper half the player's, as
+            # the user asked -- the grey hands lost the team colour)
+            print(f"{self.map.name}: {tag.name} (first person): {choice[0]} chosen, kept in 16 colours "
+                  f"for the player's colour")
+            grey = False
         wide = grey and choice[0].startswith("grey-128x64")
         # Preserve the PC Flamethrower's painted dragon face. Only this gun's
         # first-person body gets a 256px source atlas; each RDP window still
@@ -1024,8 +1027,10 @@ class ModelConverter:
 
         def rgba(v):
             if colour is not None:
+                # (past white the channels scaled down together: level.py
+                # fit_shade)
                 light = v[3] if isinstance(v[3], tuple) else (v[3],) * 3
-                r, g, b = (int(round(max(0.0, min(1.0, c * k)) * 255)) for c, k in zip(light, colour))
+                r, g, b = fit_shade([max(0.0, c * k) * 255 for c, k in zip(light, colour)], 255)
                 return (r << 24) | (g << 16) | (b << 8) | 255
             if isinstance(v[3], tuple):
                 r, g, b = (int(round(min(1.0, c) * 255)) for c in v[3])

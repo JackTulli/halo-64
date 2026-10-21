@@ -5,6 +5,26 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+21 October: Battle Creek's rocks back to their colour; the team colour
+back on the first-person hands.
+
+- Battle Creek's cliffs and boulders, tinted greys since the texture
+  picker, came out lime green. A doubled material's vertex colour stops at
+  191 (past it the RDP's doubling wraps to black), and it was clipped a
+  channel at a time: under Battle Creek's bright, slightly green light the
+  tan tint's red (1.2) reached the limit on a quarter of the cliffs'
+  vertices and three quarters of the boulders' while green kept rising, so
+  red over green fell from the texture's 1.23 to 1.15 on average and to
+  yellow-green in the sun. `fit_shade` (`tools/n64/level.py`) now scales
+  the three channels down together past the limit (1.27 and 1.25 now;
+  Blood Gulch's redder cliffs hardly move), and the models' tinted greys do
+  the same at white (`models.py` `pack_pair`).
+- The hands picked grey lost the player's colour, as the picker warned. A
+  first-person atlas whose shader has a change colour now keeps its 16
+  colours, the palette's upper half the player's, whatever was picked
+  (`models.py` `texture_windows`); the hands' other shader, without one,
+  stays grey.
+
 20 October: the level textures' formats picked by eye; decals that hold;
 DECALS, ANTI-ALIASING and DEDITHER settings.
 

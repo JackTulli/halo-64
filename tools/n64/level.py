@@ -84,6 +84,18 @@ MATERIAL_OVERLAY = 512
 # one channel or all wrapped. Halo's own min(1, 2 x texture x light) is kept
 # up to 0.75, 1.5 x texture past it (the brightest texels clip to white)
 DOUBLE_SHADE_LIMIT = 191
+
+
+def fit_shade(colour, top):
+    """a vertex colour (0..255 a channel, unrounded) within top: past it
+    the three channels scaled down together. Clipped one by one, a tinted
+    grey's colour turned where one channel reached top and the others did
+    not -- Beaver Creek's tan cliffs and boulders (a red tint of 1.2) in its
+    sun, red held and green still rising, came out lime green"""
+    over = max(colour) / top
+    if over > 1.0:
+        colour = [c / over for c in colour]
+    return [min(top, int(round(c))) for c in colour]
 # Halo's water (shader_transparent_water): untextured, its vertices one flat
 # colour (water_colour), blended at the renderer's WATER_ALPHA -- the
 # cheapest transparent surface: no texture load, no lightmap splits. (Its
@@ -1900,7 +1912,7 @@ class LevelBuilder:
                         # are -- Halo's detail maps double), times the light
                         colour = terrain.tinted(terrain.sampler.sample(v[2]))
                         light = [min(1.0, max(0.0, l * c)) for l, c in zip(light, colour)]
-                    r, g, b_, = (min(top, int(round(c * shade * t * 255))) for c, t in zip(light, tint))
+                    r, g, b_, = fit_shade([c * shade * t * 255 for c, t in zip(light, tint)], top)
                     return (r << 24) | (g << 16) | (b_ << 8) | 255
                 vertex_data += struct.pack(">3hH3hHII2h2h", *pos(a), pack_normal(a[1]), *pos(b), pack_normal(b[1]),
                                            rgba(a), rgba(b), *st(a), *st(b))
