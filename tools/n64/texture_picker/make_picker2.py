@@ -43,8 +43,9 @@ from tools.n64.xboxmap import XboxMap  # noqa: E402
 from tools.n64.repack import Repacker  # noqa: E402
 from tools.n64.bitmaps import bitmap_images, decode  # noqa: E402
 from tools.n64.level import (LevelBuilder, TERRAIN_REPEAT_UNITS, NATURAL_MATERIAL_TYPES, OVERLAY_MEAN,  # noqa: E402
-                             OVERLAY_FLOOR_LEVEL, cutout_palette, split_palette)
+                             OVERLAY_FLOOR_LEVEL)
 from tools.n64.models import ModelConverter  # noqa: E402
+from tools.n64 import dither as dithering  # noqa: E402
 
 REFERENCE_SIDE = 192
 WINDOW = 64
@@ -71,23 +72,25 @@ def option(id_, label, sub, img):
 
 # ---------- objects
 
-def ci4(img, mask, cutout, work):
+def ci4(img, mask, cutout, work, dither=False):
     """img as the converter's CI4 makes it: the palette split by a player's
-    colour mask, transparent texels kept for a cut-out"""
+    colour mask, transparent texels kept for a cut-out; with dither, the
+    entries chosen with more dithering (tools/n64/dither.py)"""
     if mask is not None:
-        paletted, transparency = split_palette(img, mask.resize(img.size, Image.BILINEAR), cutout=cutout) \
-            if cutout else (split_palette(img, mask.resize(img.size, Image.BILINEAR)), None)
+        paletted, transparency = dithering.split(img, mask.resize(img.size, Image.BILINEAR), cutout, dither)
         if transparency is not None:
             paletted.info["transparency"] = transparency
         return mksprite(paletted, "CI4", work)
     if cutout:
-        paletted, transparency = cutout_palette(img)
+        paletted, transparency = dithering.cutout(img, dither)
         paletted.info["transparency"] = transparency
         return mksprite(paletted, "CI4", work)
+    if dither:
+        return mksprite(dithering.colours(img, True), "CI4", work)
     return mksprite(img.convert("RGB"), "CI4", work)
 
 
-def grey_options(img, cutout, boxes, work, notes):
+def grey_options(img, cutout, boxes, work, notes, dither=False):
     """the greys (I4; IA4 cut out) in these boxes, plain and tinted, as
     make_picker.options_for makes them"""
     out = []
@@ -97,7 +100,7 @@ def grey_options(img, cutout, boxes, work, notes):
         grey = img.convert("L").resize(size, Image.LANCZOS)
         top = max(grey.getdata()) or 1
         levels = 7 if cutout else 15
-        grey = grey.point(lambda v: int(round(round(v / top * levels) * 255 / levels)))
+        grey = dithering.grey_steps(grey, top, levels, dither)
         if cutout:
             alpha = img.getchannel("A").resize(size, Image.LANCZOS).point(lambda v: 255 if v >= 128 else 0)
             stored = mksprite(Image.merge("LA", (grey, alpha)), "IA4", work)
@@ -115,8 +118,9 @@ def grey_options(img, cutout, boxes, work, notes):
     return out, tint
 
 
-def object_options(img, mask, cutout, first_person, work):
-    """an object texture's options, the converter's (now) first"""
+def object_options(img, mask, cutout, first_person, work, dither=False):
+    """an object texture's options, the converter's (now) first (dither: the
+    16 colours and the greys with more dithering; third person)"""
     lost = " · loses the player's colour" if mask is not None else ""
     if not first_person:
         size = fit_box(img, 64, 32)
@@ -124,9 +128,9 @@ def object_options(img, mask, cutout, first_person, work):
         w, h = img.size
         scale = min(1.0, 64.0 / max(w, h))
         small = resized(img, (max(4, mp.pow2_floor(int(w * scale))), max(4, mp.pow2_floor(int(h * scale)))))
-        now = ci4(small, mask, cutout, work)
+        now = ci4(small, mask, cutout, work, dither)
         greys, tint = grey_options(img, cutout, (("grey-64x64", (64, 64), "64×64"), ("grey-128x64", (128, 64), "128×64")),
-                                   work, lost)
+                                   work, lost, dither)
         return [option("ci4-64x64", "16 colours 64×64", "CI4 · 2 KB" + (" · 8 + 8 split for the player's colour"
                                                                          if mask is not None else ""), now),
                 option("colour-32x64", "Full colour 32×64", "RGBA16 · 4 KB" + lost, colour)] + greys, tint
@@ -240,8 +244,10 @@ def grain_values(detail, size):
     return [max(0.0, min(1.0, v / mean - 0.5)) for v in values]
 
 
-def grain_image(values, size, fmt, work):
+def grain_image(values, size, fmt, work, dither=False):
     levels = 15 if fmt == "I4" else 255
+    if dither and fmt == "I4":
+        values = dithering.dither_values(values, size[0], levels)
     img = Image.new("L", size)
     img.putdata([int(round(round(v * levels) * 255 / levels)) for v in values])
     stored = mksprite(img, fmt, work)
@@ -254,14 +260,15 @@ def shown_grain(texels, size, colour):
     return img
 
 
-def grain_options(detail, micro, micro_ratio, colour, work):
+def grain_options(detail, micro, micro_ratio, colour, work, dither=False):
+    """the grain's options (dither: the 16-grey ones with more dithering)"""
     out = []
     # now: I4 64x64, drawn at its 32x32 level (mksprite's BOX level 1)
     values = grain_values(detail, (64, 64))
-    level0 = grain_image(values, (64, 64), "I4", work)
+    level0 = grain_image(values, (64, 64), "I4", work, dither)
     level1 = [sum(level0[(2 * y + dy) * 64 + 2 * x + dx] for dy in (0, 1) for dx in (0, 1)) / 4
               for y in range(32) for x in range(32)]
-    level1 = grain_image(level1, (32, 32), "I4", work)
+    level1 = grain_image(level1, (32, 32), "I4", work, dither)
     out.append(option("now", "Now: 16 greys, its 32×32 level", "I4 64×64 + mipmaps · drawn at 32×32",
                       shown_grain(level1, (32, 32), colour)))
     out.append(option("grain-i4-64x64", "16 greys 64×64", "I4 · 2 KB (fits beside the 2 KB colour tile)",
@@ -280,22 +287,26 @@ def grain_options(detail, micro, micro_ratio, colour, work):
         mean = sum(mv) / len(mv) or 1.0
         tiled = [mv[(y % side) * side + x % side] / mean for y in range(64) for x in range(64)]
         values = [max(0.0, min(1.0, (0.5 + v) * t - 0.5)) for v, t in zip(grain_values(detail, (64, 64)), tiled)]
-        texels = grain_image(values, (64, 64), "I4", work)
+        texels = grain_image(values, (64, 64), "I4", work, dither)
         out.append(option("grain-i4-64x64-micro", "16 greys 64×64 + micro detail",
                           f"I4 · 2 KB · the micro grain {k}×{k} in it", shown_grain(texels, (64, 64), colour)))
     return out
 
 
-def overlay_texels(detail, size, levels):
+def overlay_texels(detail, size, levels, dither=False):
     """level.py overlay_texture's texels at a size: the factor it darkens by,
-    its brightest 1, the contrast cut to keep the mean at OVERLAY_MEAN"""
+    its brightest 1, the contrast cut to keep the mean at OVERLAY_MEAN (dither:
+    on its 16 greys with more dithering)"""
     grey = detail.convert("L").resize(size, Image.LANCZOS)
     values = list(grey.getdata())
     top = max(values) or 1
     mean = sum(values) / len(values) / top
     cut = min(1.0, (1.0 - OVERLAY_MEAN) / (1.0 - mean)) if mean < 1.0 else 1.0
     floor = OVERLAY_FLOOR_LEVEL / 15.0
-    return [max(floor, round(levels * (1.0 - cut * (1.0 - v / top))) / levels) for v in values]
+    raw = [1.0 - cut * (1.0 - v / top) for v in values]
+    stepped = dithering.dither_values(raw, size[0], levels) if dither and levels == 15 else \
+        [round(levels * r) / levels for r in raw]
+    return [max(floor, s) for s in stepped]
 
 
 def shown_overlay(texels, size, colour):
@@ -305,7 +316,8 @@ def shown_overlay(texels, size, colour):
     return img
 
 
-def overlay_options(detail, colour, work):
+def overlay_options(detail, colour, work, dither=False):
+    """the overlay's options (dither: the 16-grey ones with more dithering)"""
     out = []
     for id_, size, fmt, label, sub in (
             ("now", (64, 64), "I4", "Now: 16 greys 64×64", "I4 · 2 KB + mipmaps"),
@@ -314,7 +326,7 @@ def overlay_options(detail, colour, work):
             ("overlay-i8-64x64", (64, 64), "I8", "256 greys 64×64", "I8 · 4 KB · no room for mipmaps"),
             ("overlay-i4-128x64", (128, 64), "I4", "16 greys 128×64", "I4 · 4 KB · no room for mipmaps")):
         levels = 15 if fmt == "I4" else 255
-        values = overlay_texels(detail, size, levels)
+        values = overlay_texels(detail, size, levels, dither)
         img = Image.new("L", size)
         img.putdata([int(round(v * 255)) for v in values])
         stored = [p[0] / 255.0 for p in mksprite(img, fmt, work).getdata()]

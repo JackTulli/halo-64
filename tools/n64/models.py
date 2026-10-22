@@ -280,7 +280,7 @@ class ModelConverter:
         # name, "<name> (first person)" for a first-person atlas: level.py
         # texture_choices), and what a grey texture's vertices are
         # multiplied by (its stretch undone, times its tint: by texture)
-        self.object_choices = texture_choices("objects")
+        self.object_choices = texture_choices("objects", map_name)
         self.texture_colour = {}
 
     def f(self, name):
@@ -372,13 +372,14 @@ class ModelConverter:
                                           player_colour=bool(change_source and self.map.tag(multipurpose) is not None))
             if texture is not None:
                 return texture, flags | cut_flags, (base, None)
+            dither = self.colours_dithered(base)
             if change_source and self.map.tag(multipurpose) is not None:
-                texture = self.masked_texture(base, multipurpose, cut, channel)
+                texture = self.masked_texture(base, multipurpose, cut, channel, dither=dither)
                 if texture >= 0:
                     return texture, flags | MATERIAL_CHANGE_COLOR | cut_flags, (base, multipurpose, channel)
             if cut:
-                return self.textures.cutout_texture(base)[0], flags | cut_flags, (base, None)
-            return self.textures.texture(base), flags, (base, None)
+                return self.textures.cutout_texture(base, dither=dither)[0], flags | cut_flags, (base, None)
+            return self.textures.texture(base, dither=dither), flags, (base, None)
         if tag.group_name == "senv":
             so = self.f("ShaderEnvironment")
             base = struct.unpack("<I", self.map.read(tag.address + so["base map"] + 12, 4))[0]
@@ -391,11 +392,12 @@ class ModelConverter:
                     return texture, MATERIAL_ALPHA_TEST, None
                 # Keep the composed mask intact; base-only atlas windows
                 # would throw the bump alpha away again.
-                return self.textures.environment_texture(base, bump, scale), MATERIAL_ALPHA_TEST, None
+                return (self.textures.environment_texture(base, bump, scale, dither=self.colours_dithered(base)),
+                        MATERIAL_ALPHA_TEST, None)
             texture = self.chosen_texture(base, False, None)
             if texture is not None:
                 return texture, 0, (base, None)
-            return self.textures.texture(base), 0, (base, None)
+            return self.textures.texture(base, dither=self.colours_dithered(base)), 0, (base, None)
         # transparent shaders (glowing screens, sights, meters): meters and
         # numeric displays need Halo's own drawing and are left out (texture
         # None: the part is not converted);
@@ -459,6 +461,12 @@ class ModelConverter:
             return None
         return self.object_choices.get(tag.name.lower() + (" (first person)" if first_person else ""))
 
+    def colours_dithered(self, base):
+        """whether the texture picker chose an object bitmap's 16 colours
+        dithered more (level.py write_texture, dither.py)"""
+        choice = self.object_choice(base)
+        return choice is not None and choice.option == "ci4-64x64" and choice.dither
+
     def chosen_texture(self, base, cutout, alpha_source, player_colour=False):
         """an object texture in the format the texture picker chose for it
         (a third-person one), or None to make it as before: greyscale (I4;
@@ -485,9 +493,9 @@ class ModelConverter:
         """level.py's grey texture of a bitmap (choice: the texture
         picker's, its texels and tint), its vertices' multiplier noted, the
         far version's colour the grey's mean times the tint"""
-        option, tint = choice
+        option, tint = choice.option, choice.tint
         limit = GREYSCALE_TEXELS if option.startswith("grey-128x64") else GREYSCALE_TEXELS // 2
-        texture, shade = self.textures.grey_texture(base, cutout, alpha_source, limit)
+        texture, shade = self.textures.grey_texture(base, cutout, alpha_source, limit, dither=choice.dither)
         if texture < 0:
             return None
         tint = (tint or self.textures.grey_tint(base)) if option.endswith("-tint") else (1.0, 1.0, 1.0)
@@ -622,10 +630,11 @@ class ModelConverter:
             return None
         return img.getchannel(channel).resize(size, Image.BILINEAR)
 
-    def masked_texture(self, base, multipurpose, cutout=False, channel="B"):
+    def masked_texture(self, base, multipurpose, cutout=False, channel="B", dither=False):
         """the base map whole at 64x64, its palette split by the colour-change
-        mask (and its transparent texels cut out), or -1"""
-        key = (base, multipurpose, bool(cutout), channel)
+        mask (and its transparent texels cut out; dithered more, the
+        picker's choice), or -1"""
+        key = (base, multipurpose, bool(cutout), channel) + (("dither",) if dither else ())
         if key in self.masked:
             return self.masked[key]
         index = -1
@@ -638,7 +647,7 @@ class ModelConverter:
                 img = None
             mask = self.change_mask(multipurpose, img.size, channel) if img is not None else None
             if img is not None:
-                index = self.textures.write_texture(img, tag.name, mask=mask, cutout=cutout)
+                index = self.textures.write_texture(img, tag.name, mask=mask, cutout=cutout, dither=dither)
         self.masked[key] = index
         return index
 

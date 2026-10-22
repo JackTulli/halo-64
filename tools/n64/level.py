@@ -36,6 +36,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from . import dither as dithering
 from . import toolpaths
 from .bitmaps import bitmap_images, decode
 
@@ -189,19 +190,40 @@ SECTION_OPTIONS = {
 }
 # a tint's channels at most (the vertices' light is clamped anyway)
 TINT_MAXIMUM = 4.0
+# the options "more dithering" (dither.py) applies to: 16 colours and the
+# 16 (I4) and 8 (IA4) greys; not full colour or the 256-grey I8
+DITHERED_OPTIONS = {"ci4-64x64", "grey-64x64", "grey-64x64-tint", "grey-128x64", "grey-128x64-tint",
+                    "now", "grain-i4-64x64", "grain-i4-64x64-micro", "overlay-i4-32x32", "overlay-i4-128x64"}
 
 
-def texture_choices(section="textures"):
-    """{bitmap name (lower case): (option, tint or None)} from the choices
-    file's section; empty without one"""
+class Choice(tuple):
+    """the texture picker's choice for a texture: its option, its tint (a
+    tinted grey's, or None) and whether it is dithered more (dither.py)"""
+    __slots__ = ()
+
+    def __new__(cls, option, tint=None, dither=False):
+        return super().__new__(cls, (option, tint, bool(dither) and option in DITHERED_OPTIONS))
+
+    option = property(lambda self: self[0])
+    tint = property(lambda self: self[1])
+    dither = property(lambda self: self[2])
+
+
+def texture_choices(section="textures", map_name=None):
+    """{bitmap name (lower case): Choice} from the choices file's section,
+    the map's own (its "maps" entry: the per-map picker, make_picker3.py)
+    over the file's shared ones; empty without a file"""
     import json
     path = Path(os.environ.get("N64_TEXTURE_CHOICES") or TEXTURE_CHOICES)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    entries = dict(data.get(section) or {})
+    if map_name is not None:
+        entries.update(((data.get("maps") or {}).get(map_name) or {}).get(section) or {})
     choices = {}
-    for name, entry in (data.get(section) or {}).items():
+    for name, entry in entries.items():
         option = entry if isinstance(entry, str) else (entry or {}).get("option")
         if option not in SECTION_OPTIONS[section]:
             continue
@@ -209,7 +231,10 @@ def texture_choices(section="textures"):
         if tint is not None and not (len(tint) == 3 and all(isinstance(t, (int, float)) and 0 <= t <= TINT_MAXIMUM
                                                              for t in tint)):
             raise ValueError(f"{path}: {name}: a tint is three numbers from 0 to {TINT_MAXIMUM}")
-        choices[name.lower()] = (option, tuple(float(t) for t in tint) if tint else None)
+        dither = entry.get("dither", False) if isinstance(entry, dict) else False
+        if not isinstance(dither, bool):
+            raise ValueError(f"{path}: {name}: dither is true or false")
+        choices[name.lower()] = Choice(option, tuple(float(t) for t in tint) if tint else None, dither)
     return choices
 
 
@@ -283,6 +308,13 @@ LIGHTMAP_FILL = ((255, 255, 0), (255, 0, 0))
 LIGHTMAP_SPLIT_DEPTH = int(os.environ.get("N64_LIGHTMAP_SPLIT_DEPTH", "2"))
 LIGHTMAP_SPLIT_TEXELS = 4.0
 LIGHTMAP_SPLIT_DIFFERENCE = 0.1
+# a map's light times (r, g, b), where the user asked for it: Battle Creek's
+# lightmaps are a little green and blue beside Blood Gulch's (red over green
+# 0.94-0.99, blue over green 0.84-0.87; Blood Gulch's 1.0 and 0.79), and its
+# rocks and ground looked cold -- warmed past Blood Gulch's. Every lightmap
+# sample and lighting summary of the map's level takes it (LevelBuilder.light),
+# and so the terrain tiles, which are lit from the vertices
+LIGHT_TINTS = {"beavercreek": (1.08, 1.0, 0.86)}
 
 
 def sample_lightmap(page, u, v):
@@ -549,6 +581,8 @@ class LevelBuilder:
         self.split_depth = LIGHTMAP_SPLIT_DEPTH if split_depth is None else split_depth
         self.defs = defs
         self.map_name = map_name
+        # the map's light's tint (LIGHT_TINTS), or None
+        self.light_tint = LIGHT_TINTS.get(map_name)
         self.out_dir = Path(out_dir)
         self.textures = []
         # the shared textures this map uses (tex/<map>.list)
@@ -570,9 +604,9 @@ class LevelBuilder:
         self.material_tint = []
         # the texture picker's choices (texture_choices): the levels', the
         # ground grain's and the overlays'
-        self.texture_choices = texture_choices()
-        self.grain_choices = texture_choices("grain")
-        self.overlay_choices = texture_choices("overlays")
+        self.texture_choices = texture_choices("textures", map_name)
+        self.grain_choices = texture_choices("grain", map_name)
+        self.overlay_choices = texture_choices("overlays", map_name)
         # natural terrain (terrain_materials): detail maps for textures,
         # the base map's colour on the vertices
         self.terrain_detail = False
@@ -614,9 +648,10 @@ class LevelBuilder:
 
     # ---------- textures
 
-    def texture(self, bitmap_datum, fmt=None, box=None):
-        """a bitmap's texture (in this format and box: write_texture)"""
-        key = bitmap_datum if fmt is None and box is None else (bitmap_datum, fmt, box)
+    def texture(self, bitmap_datum, fmt=None, box=None, dither=False):
+        """a bitmap's texture (in this format and box, dithered more or not:
+        write_texture)"""
+        key = bitmap_datum if fmt is None and box is None and not dither else (bitmap_datum, fmt, box, dither)
         if key in self.texture_by_bitmap:
             return self.texture_by_bitmap[key]
         tag = self.map.tag(bitmap_datum)
@@ -629,7 +664,7 @@ class LevelBuilder:
                 except ValueError:
                     img = None
                 if img is not None:
-                    index = self.write_texture(img, tag.name, fmt=fmt, box=box)
+                    index = self.write_texture(img, tag.name, fmt=fmt, box=box, dither=dither)
         self.texture_by_bitmap[key] = index
         return index
 
@@ -671,19 +706,19 @@ class LevelBuilder:
                 sum(1 for a in alpha if a < CUTOUT_ALPHA) >= CUTOUT_MINIMUM_SHARE * len(alpha)
         return self.texture_by_bitmap[key]
 
-    def cutout_texture(self, bitmap_datum):
+    def cutout_texture(self, bitmap_datum, dither=False):
         """an alpha-tested texture (Halo's model shaders test the base map's
         alpha unless told not to): its transparent texels kept (write_texture
         cutout), or the plain texture if it has none (has_cutout). Returns
         (texture, whether it is cut out)"""
-        key = ("cutout", bitmap_datum)
+        key = ("cutout", bitmap_datum) + (("dither",) if dither else ())
         if key in self.texture_by_bitmap:
             return self.texture_by_bitmap[key]
-        result = (self.texture(bitmap_datum), False)
+        result = (self.texture(bitmap_datum, dither=dither), False)
         if self.has_cutout(bitmap_datum):
             tag = self.map.tag(bitmap_datum)
             img = decode(self.map, bitmap_images(self.map, tag, self.defs)[0], 64)
-            result = (self.write_texture(img, tag.name, cutout=True), True)
+            result = (self.write_texture(img, tag.name, cutout=True, dither=dither), True)
         self.texture_by_bitmap[key] = result
         return result
 
@@ -724,21 +759,21 @@ class LevelBuilder:
         img.putalpha(alpha)
         return img
 
-    def environment_texture(self, base, bump, bump_scale=1.0, fmt=None, box=None):
+    def environment_texture(self, base, bump, bump_scale=1.0, fmt=None, box=None, dither=False):
         """A coloured alpha-tested environment texture, keyed by its mask
         as well as its RGB map; the same base can have different masks.
         """
-        key = ("environment-cutout", base, bump, bump_scale or 1.0, fmt, box)
+        key = ("environment-cutout", base, bump, bump_scale or 1.0, fmt, box) + (("dither",) if dither else ())
         if key not in self.texture_by_bitmap:
             tag = self.map.tag(base)
             images = bitmap_images(self.map, tag, self.defs) if tag is not None else []
             img = decode(self.map, images[0], 64) if images else None
             self.texture_by_bitmap[key] = self.write_texture(
                 self.environment_alpha(img, bump, bump_scale), tag.name, fmt=fmt, cutout=True,
-                box=box) if img is not None else -1
+                box=box, dither=dither) if img is not None else -1
         return self.texture_by_bitmap[key]
 
-    def write_texture(self, img, tag_name, mask=None, fmt=None, cutout=False, box=None):
+    def write_texture(self, img, tag_name, mask=None, fmt=None, cutout=False, box=None, dither=False):
         """a texture from an image; with a mask (L, the image's size: a
         player's colour change), a CI4 texture's palette is split: entries
         0-7 for the texels outside the mask, 8-15 for those in it (the
@@ -746,7 +781,9 @@ class LevelBuilder:
         texture's transparent texels keep their own palette entry
         (cutout_palette: mksprite's quantizer drops the alpha). With a box
         (long, short), its size is the box's way round that loses least
-        (fit_box): the texture picker's full colour 32x64"""
+        (fit_box): the texture picker's full colour 32x64. Dithered (a CI4
+        texture: the picker's "more dithering"), each texel's entry is
+        chosen with the error spread (dither.py)"""
         # at most 64 texels a side and 4 KB of TMEM with mipmaps: CI4 64x64
         # is 2 KB, its mipmaps about 0.7 KB more
         fmt = fmt or TEXTURE_FORMAT
@@ -771,14 +808,17 @@ class LevelBuilder:
         work_dir = self.out_dir / "tex" / f".{self.map_name}"
         work_dir.mkdir(parents=True, exist_ok=True)
         png = work_dir / f"{self.texture_prefix}{index:02d}.png"
+        dither = dither and fmt == "CI4"
         if mask is not None and fmt == "CI4" and cutout:
-            paletted, transparency = split_palette(img, mask, cutout=True)
+            paletted, transparency = dithering.split(img, mask, True, dither)
             paletted.save(png, transparency=transparency)
         elif mask is not None and fmt == "CI4":
-            split_palette(img, mask).save(png)
+            dithering.split(img, mask, False, dither)[0].save(png)
         elif cutout and fmt == "CI4":
-            paletted, transparency = cutout_palette(img)
+            paletted, transparency = dithering.cutout(img, dither)
             paletted.save(png, transparency=transparency)
+        elif dither:
+            dithering.colours(img, True).save(png)
         else:
             img.save(png)
         painted_png = png.read_bytes() if tag_name.startswith("weapons\\flamethrower\\bitmaps\\flamethrower window") else None
@@ -807,17 +847,17 @@ class LevelBuilder:
         self.used_textures.add(name)
         return name
 
-    def grey_texture(self, bitmap_datum, alpha_test, alpha_source=None, limit=None):
+    def grey_texture(self, bitmap_datum, alpha_test, alpha_source=None, limit=None, dither=False):
         """an environment texture in greyscale (I4; IA4 with a cut-out):
         GREYSCALE_TEXELS (or limit) from an original image of up to 256 a side, as
         wide and high as tells the most of it (within twice the original's
         proportions: further, it streaks), its greys stretched to the full
-        range. Returns the texture and the factor for its vertices' light
-        (the stretch undone; the renderer doubles, MATERIAL_DOUBLE: in the
-        texture the doubling turned bright textures white, on the vertices
-        bright light dark)."""
+        range (dithered more, the picker's choice: dither.py). Returns the
+        texture and the factor for its vertices' light (the stretch undone;
+        the renderer doubles, MATERIAL_DOUBLE: in the texture the doubling
+        turned bright textures white, on the vertices bright light dark)."""
         limit = limit or GREYSCALE_TEXELS
-        key = (bitmap_datum, alpha_test, alpha_source, limit)
+        key = (bitmap_datum, alpha_test, alpha_source, limit) + (("dither",) if dither else ())
         if key in self.grey_by_bitmap:
             return self.grey_by_bitmap[key]
         tag = self.map.tag(bitmap_datum)
@@ -852,7 +892,7 @@ class LevelBuilder:
         _, grey, w, h = best
         top = max(grey.getdata()) or 1
         levels = 7 if alpha_test else 15
-        grey = grey.point(lambda v: int(round(round(v / top * levels) * 255 / levels)))
+        grey = dithering.grey_steps(grey, top, levels, dither)
         index = len(self.textures)
         work_dir = self.out_dir / "tex" / f".{self.map_name}"
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -901,22 +941,23 @@ class LevelBuilder:
                 # it needs its colour: TEXTURE_OPTIONS)
                 choice = self.texture_choice(base)
                 if choice is not None:
-                    option = choice[0]
+                    option = choice.option
                 else:
                     option = "grey-128x64" if self.greyscale and not self.base_needs_colour(base) else "ci4-64x64"
+                dither = choice is not None and choice.dither
                 if option.startswith("grey"):
                     texture, shade = self.grey_texture(base, bool(env_flags & 1),
                                                        (bump, bump_scale) if env_flags & 1 else None,
                                                        GREYSCALE_TEXELS if option.startswith("grey-128x64")
-                                                       else GREYSCALE_TEXELS // 2)
+                                                       else GREYSCALE_TEXELS // 2, dither=dither)
                     if texture >= 0:
                         flags |= MATERIAL_DOUBLE
                         if option.endswith("-tint"):
-                            tint = choice[1] or self.grey_tint(base)
+                            tint = choice.tint or self.grey_tint(base)
                 else:
                     fmt, box = ("RGBA16", (64, 32)) if option == "colour-32x64" else (None, None)
-                    texture = (self.environment_texture(base, bump, bump_scale, fmt=fmt, box=box) if env_flags & 1
-                               else self.texture(base, fmt=fmt, box=box))
+                    texture = (self.environment_texture(base, bump, bump_scale, fmt=fmt, box=box, dither=dither)
+                               if env_flags & 1 else self.texture(base, fmt=fmt, box=box, dither=dither))
                 overlay = self.overlay_material(tag, base) if texture >= 0 and not env_flags & 1 else None
                 if overlay is not None:
                     shade /= overlay[1]
@@ -1015,7 +1056,12 @@ class LevelBuilder:
         cut = min(1.0, (1.0 - OVERLAY_MEAN) / (1.0 - mean)) if mean < 1.0 else 1.0
         steps = 15 if fmt == "I4" else 255
         floor = OVERLAY_FLOOR_LEVEL * steps // 15
-        grey = grey.point(lambda v: int(round(max(floor, round(steps * (1.0 - cut * (1.0 - v / top)))) * 255 / steps)))
+        if choice is not None and choice.dither and fmt == "I4":
+            # (the picker's "more dithering": dither.py)
+            stepped = dithering.dither_values([1.0 - cut * (1.0 - v / top) for v in values], size[0], steps)
+            grey.putdata([int(round(max(floor, round(steps * s)) * 255 / steps)) for s in stepped])
+        else:
+            grey = grey.point(lambda v: int(round(max(floor, round(steps * (1.0 - cut * (1.0 - v / top)))) * 255 / steps)))
         levels = list(grey.getdata())
         index = len(self.textures)
         work_dir = self.out_dir / "tex" / f".{self.map_name}"
@@ -1217,10 +1263,12 @@ class LevelBuilder:
         the rest of TMEM, the grain drawn whole), with them elsewhere"""
         tag = self.map.tag(bitmap_datum)
         choice = self.grain_choices.get(tag.name.lower()) if tag is not None else None
-        option = choice[0] if choice else "now"
+        option = choice.option if choice else "now"
+        # (the picker's "more dithering", on the 16-grey ones: dither.py)
+        dither = choice is not None and choice.dither
         if option != "grain-i4-64x64-micro":
             micro = None
-        key = bitmap_datum if option == "now" else (bitmap_datum, option, micro)
+        key = bitmap_datum if option == "now" and not dither else (bitmap_datum, option, micro, dither)
         if key in self.detail_by_bitmap:
             return self.detail_by_bitmap[key]
         result = (-1, None)
@@ -1232,7 +1280,12 @@ class LevelBuilder:
         if img is not None and option == "now":
             grey = img.convert("L").resize((DETAIL_SIZE, DETAIL_SIZE), Image.LANCZOS)
             mean = sum(grey.getdata()) / (DETAIL_SIZE * DETAIL_SIZE) or 1.0
-            grey = grey.point(lambda v: int(round(round(max(0.0, min(1.0, v / mean - 0.5)) * 15) * 17)))
+            if dither:
+                grain = dithering.dither_values([max(0.0, min(1.0, v / mean - 0.5)) for v in grey.getdata()],
+                                                DETAIL_SIZE, 15)
+                grey.putdata([int(round(g * 15)) * 17 for g in grain])
+            else:
+                grey = grey.point(lambda v: int(round(round(max(0.0, min(1.0, v / mean - 0.5)) * 15) * 17)))
             index = len(self.textures)
             work_dir = self.out_dir / "tex" / f".{self.map_name}"
             work_dir.mkdir(parents=True, exist_ok=True)
@@ -1252,6 +1305,8 @@ class LevelBuilder:
             if micro is not None:
                 grain = self.with_micro(grain, size, *micro)
             levels = 255 if fmt == "I8" else 15
+            if dither and fmt == "I4":
+                grain = dithering.dither_values(grain, size[0], levels)
             grey = Image.new("L", size)
             grey.putdata([int(round(round(g * levels) * 255 / levels)) for g in grain])
             index = len(self.textures)
@@ -1352,12 +1407,13 @@ class LevelBuilder:
         Walker(self.map, self.defs).walk(tag, on_dependency=on_dependency)
         if not found:
             return -1
-        # (the texture picker's full colour for it; a transparent texture
-        # keeps its colour, so a grey choice is not taken)
+        # (the texture picker's full colour for it, or its 16 colours dithered
+        # more; a transparent texture keeps its colour, so a grey choice is not
+        # taken)
         choice = self.texture_choice(found[0])
-        if choice is not None and choice[0] == "colour-32x64":
+        if choice is not None and choice.option == "colour-32x64":
             return self.texture(found[0], fmt="RGBA16", box=(64, 32))
-        return self.texture(found[0])
+        return self.texture(found[0], dither=choice is not None and choice.option == "ci4-64x64" and choice.dither)
 
     # ---------- geometry
 
@@ -1421,7 +1477,7 @@ class LevelBuilder:
                     color = None
                     if lightmap_uvs:
                         lu, lv = lightmap_uvs[v]
-                        color = sample_lightmap(page, lu / 32767.0, lv / 32767.0)
+                        color = self.light(page, lu / 32767.0, lv / 32767.0)
                     if color is None:
                         # no lightmap: the material's lighting summary
                         color = list(ambient)
@@ -1429,6 +1485,8 @@ class LevelBuilder:
                             d = -(n[0] * ld[0] + n[1] * ld[1] + n[2] * ld[2])
                             if d > 0:
                                 color = [c + l * d for c, l in zip(color, lc)]
+                        if self.light_tint:
+                            color = [c * t for c, t in zip(color, self.light_tint)]
                     lightmap = (page, lightmap_uvs[v][0] / 32767.0, lightmap_uvs[v][1] / 32767.0) if lightmap_uvs else None
                     if material in self.water_colour:
                         # water: its flat colour, never split by light
@@ -1629,7 +1687,7 @@ class LevelBuilder:
         width, height, _ = page
         if math.hypot((pu - qu) * width, (pv - qv) * height) <= LIGHTMAP_SPLIT_TEXELS:
             return False
-        middle = sample_lightmap(page, (pu + qu) / 2, (pv + qv) / 2)
+        middle = self.light(page, (pu + qu) / 2, (pv + qv) / 2)
         if middle is None:
             return False
         return max(abs(m - (a + b) / 2) for m, a, b in zip(middle, p[3], q[3])) > LIGHTMAP_SPLIT_DIFFERENCE
@@ -1648,12 +1706,20 @@ class LevelBuilder:
             color = tuple((a + b) / 2 for a, b in zip(p[3], q[3]))
             if p[4] is not None and q[4] is not None and p[4][0] is q[4][0]:
                 lightmap = (p[4][0], (p[4][1] + q[4][1]) / 2, (p[4][2] + q[4][2]) / 2)
-                sampled = sample_lightmap(lightmap[0], lightmap[1], lightmap[2])
+                sampled = self.light(lightmap[0], lightmap[1], lightmap[2])
                 if sampled is not None:
                     color = tuple(min(1.0, max(0.0, c)) for c in sampled)
             vertex = (position, tuple(c / length for c in n), uv, color, lightmap)
             self.midpoints[key] = vertex
         return vertex
+
+    def light(self, page, u, v):
+        """the lightmap's colour around (u, v) (sample_lightmap), times the
+        map's light tint (LIGHT_TINTS); None where there is none"""
+        color = sample_lightmap(page, u, v)
+        if color is None or not self.light_tint:
+            return color
+        return [c * t for c, t in zip(color, self.light_tint)]
 
     def lightmap_pages(self, bsp_tag, bo):
         """the BSP's lightmap bitmap: each page as (width, height, pixels)"""
@@ -1815,7 +1881,7 @@ class LevelBuilder:
         tiles = None
         if self.colour_tiles:
             from .terrain_tiles import TerrainTiles
-            tiles = TerrainTiles()
+            tiles = TerrainTiles(light_tint=self.light_tint)
             for triangles in surface_info:
                 for t in triangles or ():
                     if self.materials[t[0]][1] & MATERIAL_TILED:

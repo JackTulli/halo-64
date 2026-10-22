@@ -5,7 +5,28 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
-21 October: Battle Creek's rocks back to their colour; the team colour
+22 October: Battle Creek warmer; the textures picked map by map, some
+dithered more.
+
+- Battle Creek's lightmaps are a little green and blue beside Blood Gulch's
+  (red over green 0.94-0.99, blue over green 0.84-0.87; Blood Gulch's 1.0
+  and 0.79), and its rocks and ground looked cold. `level.py` LIGHT_TINTS
+  warms a map's light, (1.08, 1.0, 0.86) for Battle Creek, on every lightmap
+  sample of its level and in the terrain tiles (`terrain_tiles.py`, lit
+  from the same samples).
+- A third texture picker (`tools/n64/texture_picker/make_picker3.py`) shows
+  every texture the converter can store more than one way -- the levels',
+  the objects' in third person, the ground's grain and overlays (205) --
+  with a choice for each map, and "more dithering" for the 16 colours and
+  the 16- and 8-shade greys: each texel's rounding error spread to its
+  neighbours (Floyd-Steinberg, `tools/n64/dither.py`, on the converter's own
+  palettes: the player's half, the cut-out entry), the bands between shades
+  a fine pattern the RDP's filter softens. The picks are
+  `texture_choices.json`'s "maps" section, each map's over the shared ones
+  (which Custom Edition and PC maps keep); 11-13 objects on each
+  multiplayer map went to tinted greys, and 264 textures across the maps
+  are dithered.
+ Battle Creek's rocks back to their colour; the team colour
 back on the first-person hands; the game's decals whole; the maps'
 ambient sounds.
 

@@ -45,7 +45,7 @@ from tools.n64.xboxmap import XboxMap  # noqa: E402
 from tools.n64.repack import Repacker  # noqa: E402
 from tools.n64.bitmaps import bitmap_images, decode  # noqa: E402
 from tools.n64 import level as level_module  # noqa: E402
-from tools.n64.level import LevelBuilder, TERRAIN_REPEAT_UNITS, cutout_palette  # noqa: E402
+from tools.n64.level import LevelBuilder, TERRAIN_REPEAT_UNITS  # noqa: E402
 from tools.n64.toolpaths import tool  # noqa: E402
 
 MKSPRITE = tool("mksprite")
@@ -168,8 +168,10 @@ def tint_of(img):
     return [min(4.0, sum(p[k] * g for p, g in pairs) / gg) for k in range(3)]
 
 
-def options_for(img, cutout, work):
-    """{option id: RGBA image as it would look}, and the tint"""
+def options_for(img, cutout, work, dither=False):
+    """{option id: RGBA image as it would look}, and the tint; with dither,
+    the 16 colours and the greys with more dithering (tools/n64/dither.py)"""
+    from tools.n64 import dither as dithering
     out = {}
     # full colour: RGBA16 32x64
     size = fit_box(img, 64, 32)
@@ -181,9 +183,11 @@ def options_for(img, cutout, work):
     size = (max(4, pow2_floor(int(w * scale))), max(4, pow2_floor(int(h * scale))))
     small = resized(img, size)
     if cutout:
-        paletted, transparency = cutout_palette(small)
+        paletted, transparency = dithering.cutout(small, dither)
         paletted.info["transparency"] = transparency
         out["ci4-64x64"] = mksprite(paletted, "CI4", work)
+    elif dither:
+        out["ci4-64x64"] = mksprite(dithering.colours(small, True), "CI4", work)
     else:
         out["ci4-64x64"] = mksprite(small.convert("RGB"), "CI4", work)
     # greyscale: I4 (IA4 cut out), stretched to the full range as
@@ -194,7 +198,7 @@ def options_for(img, cutout, work):
         grey = luminance(img).resize(size, Image.LANCZOS)
         top = max(grey.getdata()) or 1
         levels = 7 if cutout else 15
-        grey = grey.point(lambda v: int(round(round(v / top * levels) * 255 / levels)))
+        grey = dithering.grey_steps(grey, top, levels, dither)
         if cutout:
             alpha = img.getchannel("A").resize(size, Image.LANCZOS).point(lambda v: 255 if v >= 128 else 0)
             stored = mksprite(Image.merge("LA", (grey, alpha)), "IA4", work)

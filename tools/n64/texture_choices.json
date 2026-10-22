@@ -1,13 +1,13 @@
 {
-  "version": 1,
+  "version": 2,
   "about": "Halo 64's textures: the format picked for each in the texture pickers (textures: the levels'; objects, grain, overlays: the objects' and the terrain's)",
   "options": {
-    "colour-32x64": "Full colour 32×64 (RGBA16 · 4 KB)",
-    "ci4-64x64": "16 colours 64×64 (CI4 · 2 KB + palette)",
-    "grey-64x64": "Greyscale 64×64 (I4 · 2 KB)",
-    "grey-64x64-tint": "Greyscale 64×64, tinted (I4 · 2 KB + tint)",
-    "grey-128x64": "Greyscale 128×64 (I4 · 4 KB)",
-    "grey-128x64-tint": "Greyscale 128×64, tinted (I4 · 4 KB + tint)"
+    "colour-32x64": "Full colour 32\u00d764 (RGBA16 \u00b7 4 KB)",
+    "ci4-64x64": "16 colours 64\u00d764 (CI4 \u00b7 2 KB + palette)",
+    "grey-64x64": "Greyscale 64\u00d764 (I4 \u00b7 2 KB)",
+    "grey-64x64-tint": "Greyscale 64\u00d764, tinted (I4 \u00b7 2 KB + tint)",
+    "grey-128x64": "Greyscale 128\u00d764 (I4 \u00b7 4 KB)",
+    "grey-128x64-tint": "Greyscale 128\u00d764, tinted (I4 \u00b7 4 KB + tint)"
   },
   "textures": {
     "levels\\b30\\bitmaps\\metal flat generic": {
@@ -1104,6 +1104,5139 @@
     },
     "levels\\b30\\bitmaps\\detail rock sandstone": {
       "option": "overlay-i4-128x64"
+    }
+  },
+  "maps": {
+    "bloodgulch": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generic ext": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.011,
+            1.006,
+            0.94
+          ],
+          "dither": true
+        },
+        "levels\\test\\bloodgulch\\bitmaps\\blood cliff rock": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.478,
+            0.852,
+            0.509
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels ext unearthed": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            0.99,
+            0.86
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beavercreek boulder": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.192,
+            0.979,
+            0.603
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generic ext clean": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.026,
+            0.998,
+            0.937
+          ],
+          "dither": true
+        },
+        "levels\\test\\bloodgulch\\bitmaps\\cap_metal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.021,
+            0.994,
+            0.974
+          ]
+        },
+        "levels\\test\\bloodgulch\\bitmaps\\cap_ramp01": {
+          "option": "ci4-64x64"
+        },
+        "levels\\test\\bloodgulch\\bitmaps\\cap_ramp02": {
+          "option": "ci4-64x64"
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\devices\\light fixtures\\light fixture ceiling1\\bitmaps\\light fixtures": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\teleporter_base\\bitmaps\\teleporter_base": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\plants\\plant fern\\bitmaps\\plant fern": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.833,
+            1.172,
+            0.551
+          ]
+        },
+        "scenery\\plants\\plant_broadleaf_tall\\bitmaps\\plant_broadleaf_leaf": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.822,
+            1.214,
+            0.366
+          ]
+        },
+        "scenery\\plants\\plant_broadleaf_tall\\bitmaps\\plant_broadleaf_trunk": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.987,
+            1.082,
+            0.611
+          ]
+        },
+        "scenery\\trees\\tree_leafy\\bitmaps\\tree_leafy_leaves": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.946,
+            1.07,
+            0.777
+          ]
+        },
+        "levels\\b30\\bitmaps\\metal strips narrow": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.997,
+            1.001
+          ]
+        },
+        "scenery\\rocks\\a50_rock_large\\bitmaps\\a50_rock_large": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\rocks\\boulder\\bitmaps\\boulder": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.116,
+            0.978,
+            0.808
+          ]
+        },
+        "scenery\\rocks\\boulder_crouch\\bitmaps\\boulder_crouch": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.188,
+            0.962,
+            0.704
+          ]
+        },
+        "scenery\\rocks\\boulder_doublewide\\bitmaps\\boulder_doublewide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.184,
+            0.963,
+            0.71
+          ]
+        },
+        "scenery\\rocks\\boulder_large_grey\\bitmaps\\boulder_large_grey": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.999,
+            0.93
+          ]
+        },
+        "scenery\\trees\\tree_desert_dead\\bitmaps\\tree_desert_dead_trunk": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.415,
+            0.901,
+            0.424
+          ]
+        },
+        "scenery\\trees\\tree_desert_whitebark\\bitmaps\\whitebark_leaves": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.973,
+            1.059,
+            0.765
+          ]
+        },
+        "scenery\\trees\\tree_desert_whitebark\\bitmaps\\whitebark_trunk": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\trees\\tree_leafy_stump\\bitmaps\\tree_leafy_stump": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.101,
+            0.981,
+            0.834
+          ]
+        }
+      },
+      "grain": {
+        "levels\\a30\\bitmaps\\detail grass": {
+          "option": "grain-i4-64x64-micro"
+        },
+        "levels\\b30\\bitmaps\\detail sand": {
+          "option": "grain-i4-64x64-micro"
+        }
+      },
+      "overlays": {
+        "levels\\b30\\bitmaps\\detail cliff rock": {
+          "option": "overlay-i4-128x64",
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\detail rock sandstone": {
+          "option": "overlay-i4-128x64",
+          "dither": true
+        }
+      }
+    },
+    "beavercreek": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generic ext": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.011,
+            1.006,
+            0.94
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips narrow ext": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.021,
+            0.995,
+            0.971
+          ]
+        },
+        "levels\\b30\\bitmaps\\metal panels generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.05,
+            1.016,
+            0.782
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal plate floor ext": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.025,
+            1.002,
+            0.914
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.999,
+            0.991
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beavercreek cliffs": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.17,
+            0.985,
+            0.634
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels ext unearthed": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            0.99,
+            0.86
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beavercreek boulder": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.192,
+            0.979,
+            0.603
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beavercreek bridge": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal panels generic ext clean": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.026,
+            0.998,
+            0.937
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beaver ladder": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.926,
+            1.004,
+            1.175
+          ],
+          "dither": true
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\plants\\plant fern\\bitmaps\\plant fern": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.833,
+            1.172,
+            0.551
+          ]
+        },
+        "scenery\\plants\\plant_broadleaf_tall\\bitmaps\\plant_broadleaf_leaf": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.822,
+            1.214,
+            0.366
+          ]
+        },
+        "scenery\\plants\\plant_broadleaf_tall\\bitmaps\\plant_broadleaf_trunk": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.987,
+            1.082,
+            0.611
+          ]
+        },
+        "scenery\\trees\\tree_leafy\\bitmaps\\tree_leafy_leaves": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.946,
+            1.07,
+            0.777
+          ]
+        },
+        "scenery\\trees\\tree_pine\\bitmaps\\tree_pine_bough": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.147,
+            1.031,
+            0.46
+          ]
+        },
+        "scenery\\trees\\tree_pine\\bitmaps\\tree_pine_trunk": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.185,
+            1.002,
+            0.505
+          ]
+        },
+        "scenery\\trees\\tree_leafy\\bitmaps\\tree_leafy_trunk": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.159,
+            0.964,
+            0.773
+          ],
+          "dither": true
+        }
+      },
+      "grain": {
+        "levels\\a30\\bitmaps\\detail grass": {
+          "option": "grain-i4-64x64-micro"
+        },
+        "levels\\b30\\bitmaps\\detail sand": {
+          "option": "grain-i4-64x64-micro"
+        }
+      },
+      "overlays": {
+        "levels\\b30\\bitmaps\\detail cliff rock": {
+          "option": "overlay-i4-128x64",
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\detail rock sandstone": {
+          "option": "overlay-i4-128x64",
+          "dither": true
+        }
+      }
+    },
+    "sidewinder": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips narrow": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.997,
+            1.001
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generator": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.978,
+            1.009,
+            1.012
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generic ext": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.011,
+            1.006,
+            0.94
+          ],
+          "dither": true
+        },
+        "levels\\test\\sidewinder\\bitmaps\\sw_ice_cliff": {
+          "option": "grey-128x64"
+        },
+        "levels\\b30\\bitmaps\\metal panels generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.05,
+            1.016,
+            0.782
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal plate floor ext": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.025,
+            1.002,
+            0.914
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.999,
+            0.991
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels ext unearthed": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            0.99,
+            0.86
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beaver ladder": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.926,
+            1.004,
+            1.175
+          ],
+          "dither": true
+        },
+        "levels\\test\\sidewinder\\bitmaps\\sidewinder_ground": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.975,
+            1.008,
+            1.019
+          ]
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\devices\\light fixtures\\light fixture ceiling1\\bitmaps\\light fixtures": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\teleporter_base\\bitmaps\\teleporter_base": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\rocks\\b40_snowrocks\\bitmaps\\snowrock": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.944,
+            1.012,
+            1.087
+          ]
+        },
+        "scenery\\trees\\tree_pine_snow\\bitmaps\\snowpine_bark": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.041,
+            0.991,
+            0.935
+          ]
+        },
+        "scenery\\trees\\tree_pine_snow\\bitmaps\\snowpine_leaf": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.93,
+            1.035,
+            1.003
+          ]
+        }
+      },
+      "grain": {
+        "levels\\b40\\bitmaps\\b40_cliff_snow_detail": {
+          "option": "grain-i8-64x32"
+        },
+        "levels\\b30\\bitmaps\\detail rock sandstone": {
+          "option": "grain-i8-64x32"
+        }
+      },
+      "overlays": {
+        "levels\\b40\\bitmaps\\b40_cliff_snow_detail": {
+          "option": "overlay-i4-128x64"
+        }
+      }
+    },
+    "damnation": {
+      "textures": {
+        "levels\\a50\\bitmaps\\covenant metal generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.921,
+            1.007,
+            1.178
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant metal strips narrow": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.949,
+            0.992,
+            1.175
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant metal strips wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.001,
+            0.965,
+            1.178
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beaver ladder": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.926,
+            1.004,
+            1.175
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant metal panel": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.239,
+            0.861,
+            1.091
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant rounded caripace": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.016,
+            0.966,
+            1.129
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant circuits": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.971,
+            0.939,
+            1.389
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant alpha grate": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.922,
+            1.006,
+            1.177
+          ]
+        },
+        "levels\\a50\\bitmaps\\covenant cor floor": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.921,
+            1.007,
+            1.178
+          ],
+          "dither": true
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal panels generator": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.978,
+            1.009,
+            1.012
+          ],
+          "dither": true
+        },
+        "levels\\b40\\bitmaps\\b40_volumelight": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.804,
+            1.051,
+            1.25
+          ],
+          "dither": true
+        },
+        "levels\\a50\\devices\\light_ceiling\\bitmaps\\light fixture metal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.962,
+            0.999,
+            1.105
+          ],
+          "dither": true
+        },
+        "scenery\\c_storage\\bitmaps\\c_storage": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\c_uplink\\bitmaps\\c_uplink": {
+          "option": "ci4-64x64"
+        }
+      },
+      "grain": {},
+      "overlays": {}
+    },
+    "ratrace": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\steel": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.992,
+            1.009,
+            0.995
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips narrow": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.997,
+            1.001
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal plate floor": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.015,
+            0.996,
+            0.989
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide 1": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.99,
+            1.005,
+            0.987
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.05,
+            1.016,
+            0.782
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.999,
+            0.991
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beavercreek cliffs": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.17,
+            0.985,
+            0.634
+          ]
+        },
+        "levels\\a10\\bitmaps\\panel generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.042,
+            1.002,
+            0.887
+          ]
+        },
+        "levels\\b30\\bitmaps\\alpha grate": {
+          "option": "ci4-64x64"
+        },
+        "levels\\test\\ratrace\\bitmaps\\rat_cave_floor": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.261,
+            0.966,
+            0.507
+          ]
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ]
+        },
+        "levels\\b30\\bitmaps\\tech dense circuits": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.024,
+            0.998,
+            0.943
+          ]
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal panels generator": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.978,
+            1.009,
+            1.012
+          ],
+          "dither": true
+        },
+        "levels\\b40\\bitmaps\\b40_volumelight": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.804,
+            1.051,
+            1.25
+          ],
+          "dither": true
+        },
+        "scenery\\c_field_generator\\bitmaps\\c_field_generator": {
+          "option": "ci4-64x64"
+        }
+      },
+      "grain": {},
+      "overlays": {
+        "levels\\b30\\bitmaps\\detail cliff rock": {
+          "option": "overlay-i4-128x64",
+          "dither": true
+        }
+      }
+    },
+    "prisoner": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips narrow": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.997,
+            1.001
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generator": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.978,
+            1.009,
+            1.012
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal plate floor": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.015,
+            0.996,
+            0.989
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide 1": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.99,
+            1.005,
+            0.987
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.05,
+            1.016,
+            0.782
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.999,
+            0.991
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beaver ladder": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.926,
+            1.004,
+            1.175
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ]
+        },
+        "levels\\test\\prisoner\\bitmaps\\prisoner floor indicator": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            2.195,
+            0.463,
+            0.618
+          ]
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        }
+      },
+      "grain": {},
+      "overlays": {}
+    },
+    "hangemhigh": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips narrow": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.997,
+            1.001
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generator": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.978,
+            1.009,
+            1.012
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal plate floor": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.015,
+            0.996,
+            0.989
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide 1": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.99,
+            1.005,
+            0.987
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.05,
+            1.016,
+            0.782
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.999,
+            0.991
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ]
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative circle": {
+          "option": "grey-128x64",
+          "dither": true
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.609,
+            1.275,
+            0.604
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        }
+      },
+      "grain": {},
+      "overlays": {}
+    },
+    "chillout": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips narrow": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.997,
+            1.001
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generic ext": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.011,
+            1.006,
+            0.94
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant metal generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.921,
+            1.007,
+            1.178
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant metal strips narrow": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.949,
+            0.992,
+            1.175
+          ],
+          "dither": true
+        },
+        "levels\\test\\chillout\\bitmaps\\chillout metal flat": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.898,
+            1.155
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.999,
+            0.991
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant metal strips wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.001,
+            0.965,
+            1.178
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant metal panel": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.239,
+            0.861,
+            1.091
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant plate floor": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.983,
+            0.978,
+            1.154
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant circuits": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.971,
+            0.939,
+            1.389
+          ],
+          "dither": true
+        },
+        "levels\\a50\\bitmaps\\covenant alpha grate": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.922,
+            1.006,
+            1.177
+          ]
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\teleporter_base\\bitmaps\\teleporter_base": {
+          "option": "ci4-64x64"
+        }
+      },
+      "grain": {},
+      "overlays": {}
+    },
+    "carousel": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips narrow": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.997,
+            1.001
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide 1": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.99,
+            1.005,
+            0.987
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal plate floor ext": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.025,
+            1.002,
+            0.914
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\alpha grate b": {
+          "option": "grey-128x64"
+        },
+        "levels\\b40\\bitmaps\\b40_bridgeramp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.016,
+            0.998,
+            0.971
+          ]
+        },
+        "levels\\b40\\bitmaps\\b40_bridgeramp_mid": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.014,
+            0.998,
+            0.975
+          ]
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal panels generator": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.978,
+            1.009,
+            1.012
+          ],
+          "dither": true
+        },
+        "levels\\b40\\bitmaps\\b40_volumelight": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.804,
+            1.051,
+            1.25
+          ],
+          "dither": true
+        },
+        "levels\\b40\\scenery\\b40_metal_wide\\bitmaps\\b40_metaldamaged": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.001,
+            1.009
+          ]
+        }
+      },
+      "grain": {},
+      "overlays": {}
+    },
+    "boardingaction": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\steel": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.992,
+            1.009,
+            0.995
+          ],
+          "dither": true
+        },
+        "scenery\\vehicles\\poa\\bitmaps\\poa-tile": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.991,
+            1.024,
+            0.887
+          ]
+        },
+        "levels\\a10\\bitmaps\\panel strip": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.037,
+            1.001,
+            0.899
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\light": {
+          "option": "colour-32x64"
+        },
+        "levels\\a10\\bitmaps\\detail strips": {
+          "option": "ci4-64x64"
+        },
+        "levels\\test\\bloodgulch\\bitmaps\\mp lights small strips": {
+          "option": "ci4-64x64"
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beaver ladder": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.926,
+            1.004,
+            1.175
+          ],
+          "dither": true
+        },
+        "levels\\test\\boardingaction\\bitmaps\\poa3": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.991,
+            1.043,
+            0.783
+          ]
+        },
+        "levels\\test\\boardingaction\\bitmaps\\deckdecals": {
+          "option": "ci4-64x64"
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        },
+        "levels\\a10\\bitmaps\\steel": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.992,
+            1.009,
+            0.995
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\panel scuff": {
+          "option": "ci4-64x64"
+        },
+        "levels\\a10\\bitmaps\\tech rack plate": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.976,
+            1.016,
+            0.975
+          ]
+        },
+        "levels\\a10\\bitmaps\\detail strips": {
+          "option": "ci4-64x64"
+        },
+        "levels\\a10\\bitmaps\\obj oxy tank": {
+          "option": "ci4-64x64"
+        }
+      },
+      "grain": {},
+      "overlays": {}
+    },
+    "wizard": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\steel": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.992,
+            1.009,
+            0.995
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\panel strip": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.037,
+            1.001,
+            0.899
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\panel generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.042,
+            1.002,
+            0.887
+          ]
+        },
+        "levels\\a10\\bitmaps\\panel scuff": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.997,
+            1.004,
+            0.996
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beaver ladder": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.926,
+            1.004,
+            1.175
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\tech rack plate": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.976,
+            1.016,
+            0.975
+          ],
+          "dither": true
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        },
+        "levels\\a10\\bitmaps\\steel": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.992,
+            1.009,
+            0.995
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\steel-light": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.007,
+            1.001,
+            1.007
+          ],
+          "dither": true
+        }
+      },
+      "grain": {},
+      "overlays": {}
+    },
+    "putput": {
+      "textures": {
+        "levels\\a10\\bitmaps\\steel": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.992,
+            1.009,
+            0.995
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\panel strip": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.037,
+            1.001,
+            0.899
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\light": {
+          "option": "colour-32x64"
+        },
+        "levels\\a10\\bitmaps\\detail strips": {
+          "option": "ci4-64x64"
+        },
+        "levels\\a10\\bitmaps\\panel generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.042,
+            1.002,
+            0.887
+          ]
+        },
+        "levels\\a10\\bitmaps\\steel-light": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.007,
+            1.001,
+            1.007
+          ]
+        },
+        "levels\\a10\\bitmaps\\panel scuff": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.997,
+            1.004,
+            0.996
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beaver ladder": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.926,
+            1.004,
+            1.175
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\heated ceramic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.123,
+            1.007,
+            0.644
+          ]
+        },
+        "levels\\a10\\bitmaps\\light glow": {
+          "option": "colour-32x64"
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        }
+      },
+      "grain": {},
+      "overlays": {}
+    },
+    "longest": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips narrow": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.997,
+            1.001
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generator": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.978,
+            1.009,
+            1.012
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal plate floor": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.015,
+            0.996,
+            0.989
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide 1": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.99,
+            1.005,
+            0.987
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.05,
+            1.016,
+            0.782
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.999,
+            0.991
+          ],
+          "dither": true
+        },
+        "levels\\test\\beavercreek\\bitmaps\\beaver ladder": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.926,
+            1.004,
+            1.175
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ]
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips decorative wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.994,
+            1.003,
+            1.0
+          ],
+          "dither": true
+        },
+        "powerups\\active camoflage\\bitmaps\\powerups": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.033,
+            0.989,
+            0.975
+          ],
+          "dither": true
+        },
+        "powerups\\flamethrower ammo\\bitmaps\\flamethrower ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\rocket launcher ammo\\bitmaps\\rocket launcher ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\shotgun ammo\\bitmaps\\sg ammo": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\flag_base\\bitmaps\\flag_base": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.995,
+            1.003,
+            1.001
+          ],
+          "dither": true
+        },
+        "vehicles\\ghost\\bitmaps\\ghost": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\ghost\\bitmaps\\ghost_destroyed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_body": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.075,
+            1.005,
+            0.784
+          ],
+          "dither": true
+        },
+        "vehicles\\scorpion\\bitmaps\\scorpion_treads": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.044,
+            0.995,
+            0.909
+          ],
+          "dither": true
+        },
+        "weapons\\ball\\bitmaps\\gameball_l00": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.144,
+            0.97,
+            0.775
+          ],
+          "dither": true
+        },
+        "weapons\\flag\\bitmaps\\flag": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.3,
+            0.967,
+            0.383
+          ],
+          "dither": true
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\flamethrower\\bitmaps\\flamethrower decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\gravity rifle\\bitmaps\\gravity rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher decal": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "weapons\\rocket launcher\\bitmaps\\rocket launcher ends": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\rocket launcher\\projectile\\bitmaps\\rocket": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.342,
+            0.917,
+            0.531
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\sg loading port": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.948,
+            1.026,
+            1.005
+          ],
+          "dither": true
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\shotgun\\bitmaps\\shotgun_card": {
+          "option": "ci4-64x64"
+        },
+        "levels\\a10\\bitmaps\\steel": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.992,
+            1.009,
+            0.995
+          ],
+          "dither": true
+        },
+        "levels\\a10\\bitmaps\\panel scuff": {
+          "option": "ci4-64x64"
+        },
+        "levels\\a10\\bitmaps\\tech rack plate": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.976,
+            1.016,
+            0.975
+          ]
+        }
+      },
+      "grain": {},
+      "overlays": {}
+    },
+    "a30": {
+      "textures": {
+        "levels\\b30\\bitmaps\\metal flat generic": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.98,
+            1.008,
+            1.008
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips narrow": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.997,
+            1.001
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generator": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.978,
+            1.009,
+            1.012
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels generic ext": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.011,
+            1.006,
+            0.94
+          ],
+          "dither": true
+        },
+        "levels\\a30\\bitmaps\\cliff rock": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.003,
+            1.008,
+            0.948
+          ]
+        },
+        "levels\\b30\\bitmaps\\metal plate floor": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.015,
+            0.996,
+            0.989
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide 1": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.99,
+            1.005,
+            0.987
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips narrow ext": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.021,
+            0.995,
+            0.971
+          ]
+        },
+        "levels\\a30\\bitmaps\\tubes ext": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\bitmaps\\metal plate floor ext": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.025,
+            1.002,
+            0.914
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal strips wide": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.004,
+            0.999,
+            0.991
+          ],
+          "dither": true
+        },
+        "levels\\b30\\bitmaps\\metal panels ext unearthed": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            0.99,
+            0.86
+          ],
+          "dither": true
+        },
+        "levels\\a30\\bitmaps\\trees_filler": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.963,
+            1.075,
+            0.71
+          ]
+        },
+        "levels\\b30\\bitmaps\\alpha grate": {
+          "option": "ci4-64x64"
+        },
+        "levels\\a30\\bitmaps\\treesclump_filler": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.961,
+            1.079,
+            0.694
+          ]
+        }
+      },
+      "objects": {
+        "characters\\cyborg\\bitmaps\\cyborg": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\assault rifle ammo\\bitmaps\\ar ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\healthpack\\bitmaps\\healthpack": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\pistol ammo\\bitmaps\\p ammo": {
+          "option": "ci4-64x64"
+        },
+        "powerups\\sniper rifle ammo\\bitmaps\\sr ammo": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.974,
+            1.034,
+            0.895
+          ],
+          "dither": true
+        },
+        "vehicles\\warthog\\bitmaps\\warthog chaingun": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog diplays": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\warthog\\bitmaps\\warthog tires": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.071,
+            1.018,
+            0.72
+          ]
+        },
+        "vehicles\\wraith\\bitmaps\\blown_open_damage": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.027,
+            0.95,
+            1.185
+          ]
+        },
+        "weapons\\assault rifle\\bitmaps\\assault rifle_card": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.97,
+            1.005,
+            1.062
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\assault rifle_fp": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.979,
+            1.005,
+            1.032
+          ]
+        },
+        "weapons\\assault rifle\\fp\\bitmaps\\display_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\frag grenade\\bitmaps\\frag grenade decal": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\needler\\bitmaps\\needler_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\bitmaps\\pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\pistol\\fp\\bitmaps\\pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma grenade\\bitmaps\\plasma grenade": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma pistol\\bitmaps\\plasma pistol_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\bitmaps\\plasma rifle_card": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\plasma rifle\\fp\\bitmaps\\plasma rifle_fp": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sniper rifle": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\sniper rifle\\bitmaps\\sr decal": {
+          "option": "ci4-64x64"
+        },
+        "levels\\b30\\devices\\light fixtures\\light fixture ceiling1\\bitmaps\\light fixtures": {
+          "option": "ci4-64x64"
+        },
+        "scenery\\trees\\tree_pine\\bitmaps\\tree_pine_bough": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.147,
+            1.031,
+            0.46
+          ]
+        },
+        "scenery\\trees\\tree_pine\\bitmaps\\tree_pine_trunk": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.185,
+            1.002,
+            0.505
+          ]
+        },
+        "characters\\crewman\\bitmaps\\crewman_body": {
+          "option": "ci4-64x64"
+        },
+        "characters\\elite\\bitmaps\\elite arms": {
+          "option": "ci4-64x64"
+        },
+        "characters\\elite\\bitmaps\\elite head": {
+          "option": "ci4-64x64"
+        },
+        "characters\\elite\\bitmaps\\elite head1": {
+          "option": "ci4-64x64"
+        },
+        "characters\\elite\\bitmaps\\elite legs": {
+          "option": "ci4-64x64"
+        },
+        "characters\\elite\\bitmaps\\elite legs1": {
+          "option": "ci4-64x64"
+        },
+        "characters\\elite\\bitmaps\\elite teeth": {
+          "option": "ci4-64x64"
+        },
+        "characters\\elite\\bitmaps\\elite torso": {
+          "option": "ci4-64x64"
+        },
+        "characters\\grunt\\bitmaps\\grunt arms and legs": {
+          "option": "ci4-64x64"
+        },
+        "characters\\grunt\\bitmaps\\grunt head and back": {
+          "option": "ci4-64x64"
+        },
+        "characters\\grunt\\bitmaps\\grunt torso": {
+          "option": "ci4-64x64"
+        },
+        "characters\\jackal\\bitmaps\\jackal arms": {
+          "option": "ci4-64x64"
+        },
+        "characters\\jackal\\bitmaps\\jackal head": {
+          "option": "ci4-64x64"
+        },
+        "characters\\jackal\\bitmaps\\jackal legs": {
+          "option": "ci4-64x64"
+        },
+        "characters\\jackal\\bitmaps\\jackal torso": {
+          "option": "ci4-64x64"
+        },
+        "characters\\marine\\bitmaps\\face_charles": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.254,
+            0.919,
+            0.754
+          ]
+        },
+        "characters\\marine\\bitmaps\\face_chris": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.22,
+            0.93,
+            0.782
+          ]
+        },
+        "characters\\marine\\bitmaps\\face_fred": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.195,
+            0.94,
+            0.794
+          ]
+        },
+        "characters\\marine\\bitmaps\\face_marcus": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.258,
+            0.917,
+            0.752
+          ]
+        },
+        "characters\\marine\\bitmaps\\face_matt": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.276,
+            0.916,
+            0.709
+          ]
+        },
+        "characters\\marine\\bitmaps\\face_paul": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.249,
+            0.93,
+            0.704
+          ]
+        },
+        "characters\\marine\\bitmaps\\face_rob": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.241,
+            0.919,
+            0.784
+          ]
+        },
+        "characters\\marine\\bitmaps\\face_shiek": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.227,
+            0.929,
+            0.772
+          ]
+        },
+        "characters\\marine\\bitmaps\\marine_body": {
+          "option": "ci4-64x64"
+        },
+        "characters\\marine\\bitmaps\\marine_body johnson": {
+          "option": "ci4-64x64"
+        },
+        "characters\\marine\\bitmaps\\marine_hats": {
+          "option": "ci4-64x64"
+        },
+        "characters\\marine_armored\\bitmaps\\face_johnson_sarge": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.239,
+            0.925,
+            0.763
+          ]
+        },
+        "characters\\marine_armored\\bitmaps\\gutted torso": {
+          "option": "ci4-64x64"
+        },
+        "characters\\marine_armored\\bitmaps\\marine_arms": {
+          "option": "ci4-64x64"
+        },
+        "characters\\marine_armored\\bitmaps\\marine_arms_johnson": {
+          "option": "ci4-64x64"
+        },
+        "characters\\marine_armored\\bitmaps\\marine_helmet": {
+          "option": "ci4-64x64"
+        },
+        "characters\\marine_armored\\bitmaps\\marine_legs": {
+          "option": "ci4-64x64"
+        },
+        "characters\\marine_armored\\bitmaps\\marine_torso": {
+          "option": "ci4-64x64"
+        },
+        "characters\\pilot\\bitmaps\\pilot_body": {
+          "option": "ci4-64x64"
+        },
+        "characters\\pilot\\bitmaps\\teeth pilot": {
+          "option": "ci4-64x64"
+        },
+        "effects\\debris objects\\forerunner dark structure\\bitmaps\\forerunner dark structure": {
+          "option": "ci4-64x64"
+        },
+        "levels\\a30\\devices\\torpedo_bridge\\bitmaps\\metal flat generic bridge": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.99,
+            1.011,
+            0.993
+          ]
+        },
+        "levels\\a30\\devices\\torpedo_bridge\\bitmaps\\metal strips narrow bridge": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.981,
+            1.009,
+            0.994
+          ]
+        },
+        "scenery\\rocks\\boulder_granite_large\\bitmaps\\boulder_granite_large": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.984,
+            1.005,
+            1.019
+          ]
+        },
+        "scenery\\trees\\tree_pine_tall\\bitmaps\\pine_bark": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            1.149,
+            0.973,
+            0.748
+          ]
+        },
+        "scenery\\trees\\tree_pine_tall\\bitmaps\\pine_tree": {
+          "option": "grey-128x64-tint",
+          "tint": [
+            0.937,
+            1.076,
+            0.772
+          ]
+        },
+        "scenery\\vehicles\\lifepod_crashed\\bitmaps\\lifepod_crashed": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\banshee\\bitmaps\\banshee": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\banshee\\bitmaps\\banshee_burned": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\c_dropship\\bitmaps\\c_dropship": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\lifepod\\bitmaps\\lifepod": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\lifepod\\bitmaps\\lifepod_interior": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\lifepod_entry\\bitmaps\\lifepod_burn": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\pelican\\bitmaps\\pelican": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\pelican\\bitmaps\\pelican decals": {
+          "option": "ci4-64x64"
+        },
+        "vehicles\\pelican\\bitmaps\\pelican_bay": {
+          "option": "ci4-64x64"
+        },
+        "weapons\\fuel rod gun\\bitmaps\\fuelrod gun": {
+          "option": "ci4-64x64"
+        }
+      },
+      "grain": {
+        "levels\\a30\\bitmaps\\detail grass": {
+          "option": "grain-i4-64x64-micro"
+        },
+        "levels\\a30\\bitmaps\\detail cliff rock smooth": {
+          "option": "grain-i4-64x64-micro"
+        },
+        "levels\\a30\\bitmaps\\detail cliff rock": {
+          "option": "grain-i8-64x32"
+        }
+      },
+      "overlays": {
+        "levels\\a30\\bitmaps\\detail cliff rock": {
+          "option": "overlay-i4-128x64"
+        }
+      }
     }
   }
 }

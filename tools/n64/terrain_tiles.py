@@ -79,11 +79,12 @@ def rgba5551(r, g, b):
 class TerrainLight:
     """a terrain's triangles in its colour map's texture coordinates: the
     light at a point of the map (the lightmap there, as level.py lights a
-    vertex), from the triangle over it"""
+    vertex, times the map's light tint), from the triangle over it"""
 
-    def __init__(self):
+    def __init__(self, tint=None):
         self.cells = {}
         self.triangles = []
+        self.tint = tint
 
     def add(self, triangle):
         a, b, c = triangle
@@ -125,7 +126,8 @@ class TerrainLight:
             lv = sum(w * m[2] for w, m in zip(weights, maps))
             sampled = sample_lightmap(maps[0][0], lu, lv)
             if sampled is not None:
-                return [min(1.0, max(0.0, s)) for s in sampled]
+                tint = self.tint or (1.0, 1.0, 1.0)
+                return [min(1.0, max(0.0, s * t)) for s, t in zip(sampled, tint)]
         return [sum(w * p[3][k] for w, p in zip(weights, triangle)) for k in range(3)]
 
 
@@ -156,15 +158,17 @@ def _fit(coords, k, limit):
 class TerrainTiles:
     """a level's terrain tiles (one per tiled batch) and its file"""
 
-    def __init__(self):
+    def __init__(self, light_tint=None):
         self.entries = []
         self.lights = {}
         self.tiled_images = {}
         self.stats = {"tiles": 0, "big": 0, "texels": 0}
+        # the map's light's tint (level.py LIGHT_TINTS), or None
+        self.light_tint = light_tint
 
     def light_of(self, terrain):
         if id(terrain) not in self.lights:
-            self.lights[id(terrain)] = TerrainLight()
+            self.lights[id(terrain)] = TerrainLight(self.light_tint)
         return self.lights[id(terrain)]
 
     def make(self, batch, terrain, verts, su, sv, u0, v0, texels, shade):
