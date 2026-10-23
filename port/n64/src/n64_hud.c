@@ -325,6 +325,7 @@ void n64_render_hud_phase(void);
 recorded again the next time its view is drawn */
 void n64_hud_forget_recordings(void)
 {
+	n64_render_park_rdp_output();
 	for (int i = 0; i < MAXIMUM_VIEWS; i++)
 	{
 		if (hud.recordings[i])
@@ -387,9 +388,11 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 	is past it), then room made for the new one: the model cache fills the
 	heap down to its margin, and a recording that ran out of memory halted
 	the game ("Out of memory" in __rdpq_block_next_buffer). Without room the
-	view's HUD is drawn as it goes this time, unrecorded */
+	view's HUD is drawn as it goes this time, unrecorded (and then nothing
+	would move the RSP's RDP output off the old recording: parked) */
 	if (hud.recordings[view])
 	{
+		n64_render_park_rdp_output();
 		rdpq_call_deferred((void (*)(void *))rspq_block_free, hud.recordings[view]);
 		hud.recordings[view] = NULL;
 	}

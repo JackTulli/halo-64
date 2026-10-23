@@ -615,6 +615,9 @@ void n64_hud_forget_recordings(void);
 from the cache for it; 0 if it can't be made (n64_render.c; not while
 recording a block) */
 int n64_render_make_room(unsigned long size, int count);
+/* the RSP's RDP output moved off every block's buffer, before a block is
+freed with rdpq_call_deferred (n64_render.c; not while recording a block) */
+void n64_render_park_rdp_output(void);
 /* TERRAIN DETAIL (SETTINGS): 0 full, 1 no overlays, 2 nearest mipmaps, 3
 none (n64_render.c) */
 void n64_render_set_terrain_detail(int mode);

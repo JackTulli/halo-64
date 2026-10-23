@@ -192,6 +192,88 @@ void n64_heap_dump(const char *tag, const void *start)
 	debugf("heap %s: %d blocks in use\n", tag, count);
 }
 
+/* testing (port.json flag "debug_dirty_memory", or "debug_dirty_memory=<seed>"):
+the RAM nothing has been given yet -- the heap's room above its break --
+filled with garbage before anything is made, as a console's RAM is after
+power-on or a reset (the last run's data then). Emulators start with it
+zeroed, so code that reads memory it never wrote works there and not on a
+console: GitHub issues 6, 7 and 11, the consoles' RDP crashes, rarer with
+SummerCart64's "Clear RDRAM on boot". A word in four is an address in RAM, as
+a run's leftovers hold, the others random */
+static void dirty_memory(void)
+{
+	char text[16];
+	uint32_t state = n64_debug_text("debug_dirty_memory", text, sizeof(text)) && atol(text) ?
+		(uint32_t)atol(text) : 0x2545F491u;
+	uint32_t *start = (uint32_t *)(((unsigned long)__heap_end + 15) & ~15UL);
+	uint32_t *end = (uint32_t *)((unsigned long)__heap_top & ~15UL);
+	uint32_t ram = (uint32_t)get_memory_size();
+
+	if (end <= start)
+		return;
+	for (uint32_t *word = start; word < end; word++)
+	{
+		state ^= state << 13;
+		state ^= state >> 17;
+		state ^= state << 5;
+		*word = (state & 3) ? state : 0x80000000u | ((state >> 2) & (ram - 1) & ~15u);
+	}
+	data_cache_hit_writeback_invalidate(start, (unsigned long)(end - start) * 4);
+	debugf("halo-n64: %lu KB of free RAM filled with garbage (debug_dirty_memory)\n",
+		(unsigned long)(end - start) / 256);
+}
+
+/* testing (port.json flag "debug_poison_free"): the uncached blocks freed
+from the heap -- rspq's and rdpq's recordings, among them -- filled with an
+invalid RDP command (0x01) as they go, so that the RDP or the RSP still
+reading one shows at once (rdpq's validator, "debug_rdpq": "invalid RDP
+command 0x01"; the RSP: an unknown overlay) instead of when the heap hands
+it out again. The last QUARANTINE of them (up to QUARANTINE_LARGEST bytes)
+are kept that way a while before they go back to the heap, and one that was
+written meanwhile -- the RSP still sending RDP commands into a freed
+recording's room, say -- is logged with what was written */
+#define FREED_POISON 0xC1BADC0Du
+#define QUARANTINE 16
+#define QUARANTINE_LARGEST (16 * 1024)
+
+static int poison_freed;
+static struct
+{
+	uint32_t *words;
+	size_t count;
+} quarantine[QUARANTINE];
+static int quarantine_next, quarantine_written;
+
+static void quarantine_release(int slot)
+{
+	uint32_t *words = quarantine[slot].words;
+	size_t count = quarantine[slot].count, first = count, written = 0;
+
+	if (!words)
+		return;
+	for (size_t i = 0; i < count; i++)
+	{
+		if (words[i] != FREED_POISON)
+		{
+			if (first == count)
+				first = i;
+			written++;
+		}
+	}
+	if (written)
+	{
+		quarantine_written++;
+		debugf("halo-n64: freed uncached block %p (%u bytes) written after its free (%d so far): "
+			"%u words from word %u: %08lx %08lx %08lx %08lx %08lx %08lx\n",
+			(void *)words, (unsigned)(count * 4), quarantine_written, (unsigned)written, (unsigned)first,
+			(unsigned long)words[first], (unsigned long)(first + 1 < count ? words[first + 1] : 0),
+			(unsigned long)(first + 2 < count ? words[first + 2] : 0), (unsigned long)(first + 3 < count ? words[first + 3] : 0),
+			(unsigned long)(first + 4 < count ? words[first + 4] : 0), (unsigned long)(first + 5 < count ? words[first + 5] : 0));
+	}
+	free(CachedAddr(words));
+	quarantine[slot].words = NULL;
+}
+
 /* ---------- small uncached blocks
 
 libdragon's mixer gives each channel a VADPCM decoder state of its own
@@ -243,6 +325,12 @@ static void *heap_uncached_or_reserve(int align, size_t size)
 {
 	void *block = heap_uncached(align, size);
 
+	if (!block && poison_freed)
+	{
+		for (int i = 0; i < QUARANTINE; i++)
+			quarantine_release(i);
+		block = heap_uncached(align, size);
+	}
 	if (!block && uncached_reserve)
 	{
 		free(uncached_reserve);
@@ -366,6 +454,25 @@ void __wrap_free_uncached(void *buffer)
 	/* (a display buffer lent from the map's home) */
 	if (home_start && cached >= home_start && cached < home_end)
 		return;
+	if (poison_freed)
+	{
+		uint32_t *word = (uint32_t *)UncachedAddr(cached);
+		/* (whole 16-byte lines: heap_uncached's blocks are; the usable size's
+		last word is the next chunk's header word, in that chunk's cache line,
+		and its write-backs change it) */
+		size_t count = (malloc_usable_size(cached) & ~(size_t)15) / 4;
+
+		for (size_t i = 0; i < count; i++)
+			word[i] = FREED_POISON;
+		if (count * 4 <= QUARANTINE_LARGEST)
+		{
+			quarantine_release(quarantine_next);
+			quarantine[quarantine_next].words = word;
+			quarantine[quarantine_next].count = count;
+			quarantine_next = (quarantine_next + 1) % QUARANTINE;
+			return;
+		}
+	}
 	free(cached);
 }
 
@@ -461,6 +568,9 @@ int main(void)
 	USB scratch region; keep it offline until a bounded transport owns one. */
 	n64_exceptions_install();
 	dfs_init(DFS_DEFAULT_LOCATION);
+	if (n64_debug_flag("debug_dirty_memory"))
+		dirty_memory();
+	poison_freed = n64_debug_flag("debug_poison_free");
 	joypad_init();
 	debugf("halo-n64: %d KB of RAM\n", (int)(get_memory_size() / 1024));
 	/* what the game keeps from its first map on, made now, at the heap's

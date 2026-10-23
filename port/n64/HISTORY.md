@@ -5,6 +5,42 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+23 October: a guard against one cause of the consoles' RDP crashes, and
+tests for them.
+
+- The crash screens in issues 6, 7 and 11 (EverDrive and SummerCart64,
+  campaign and Firefight) are mostly "RDP CRASHED" with the RDP stopped
+  0x50 bytes into a fresh dynamic buffer and a block's buffer queued behind
+  it; the others are the RSP halted in rsp_rdpq, the CPU executing data and
+  a NULL object definition. Players say SummerCart64's "Clear RDRAM on
+  boot" helps and that a soft reset crashes again. Memory freed while the
+  RSP or RDP still uses it would explain all of them; it is not proven.
+- After a block runs, libdragon writes the RDP commands that follow into
+  the unused end of the block's RDP buffer (`__rdpq_block_end`).
+  `rspq_wait()` moves that writing back to libdragon's own buffers before
+  anything is freed; `rdpq_call_deferred`, which the model cache and the
+  HUD free their recordings with, does not. If nothing else moved it, the
+  RSP could go on writing into a freed recording. The HUD can leave it so:
+  `n64_hud_begin` lets the old recording go, and when no room can be made
+  for a new one the HUD is drawn as it goes, with no block after it.
+  `n64_render_park_rdp_output()` now runs a block of its own (one
+  SYNC_PIPE, made once and never freed) before those frees, so that the
+  writing goes into its room instead.
+- Tests (port.json flags): `debug_dirty_memory` (or
+  `debug_dirty_memory=<seed>`) fills the free RAM with garbage at boot, a
+  word in four an address in RAM, as a console's RAM is after power-on;
+  `debug_poison_free` fills freed uncached blocks with an invalid RDP
+  command and keeps the last 16 of them a while, logging any that was
+  written after its free; `debug_no_park` leaves the guard out. In ares,
+  with the rdpq validator, ten minutes each of two-player Firefight on
+  Battle Creek with forced explosions and of the campaign, with and
+  without the guard: no crash, no freed block read or written, the
+  validator's only complaint the alpha compare of fogged cut-out
+  materials in 2-cycle mode (accuracy only). ares does not reproduce the
+  consoles' crash, so the guard is a precaution until players say.
+- tiny3d updated to f2eccc3 (no mode change when the material does not
+  change).
+
 22 October: Battle Creek warmer; the textures picked map by map, some
 dithered more.
 

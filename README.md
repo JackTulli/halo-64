@@ -521,6 +521,12 @@ Cartridge flags are files on the ROM's file system, listed in `port.json`
   `debug_explosions`, `debug_fp_nodraw` (the first-person weapon posed, not
   drawn), `debug_rdpq` (libdragon's RDP validator: slow; it names the
   commands that would hang or misdraw on a console).
+- Memory: `debug_dirty_memory[=<seed>]` (the free RAM filled with garbage
+  at boot, as a console's is: emulators start with it zeroed),
+  `debug_poison_free` (freed uncached blocks filled with an invalid RDP
+  command and held a while; any written after its free is logged),
+  `debug_no_park` (the RDP output not moved off a recording before it is
+  freed).
 - Measuring: `debug_stats` (frame, tick, render, HUD and object timings in
   the log), `profile` (samples at the vertical blank from 20 to 80 s;
   `tools/n64_profile.py <log> build/n64/halo.elf`), `profile_zone`,

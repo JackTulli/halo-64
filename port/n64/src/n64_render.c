@@ -1234,6 +1234,33 @@ static void release_model(void *argument)
 	free(release);
 }
 
+/* After a block runs, libdragon writes the RDP commands that follow into the
+room left at the end of the block's RDP buffer, until it is full (rdpq.c,
+__rdpq_block_end) -- so a block whose commands the RDP has finished can
+still be where the RSP writes the next ones. rspq_wait() moves the writing
+back to libdragon's own buffers before anything is freed; rdpq_call_deferred
+(the model cache's and the HUD's frees) does not. Running this block, made
+once and never freed, just before such a free moves the writing into its
+room instead. Its end state leaves rdpq's tracking at "unknown" but for the
+pipe: every later sync is still made. (GitHub issues 6, 7 and 11: consoles'
+RDP crashes and garbage executed; a freed block still in use is one way to
+them) */
+static rspq_block_t *rdp_output_park;
+
+void n64_render_park_rdp_output(void)
+{
+	/* (port.json flag "debug_no_park": not parked, as before, for tests) */
+	if (n64_debug_flag("debug_no_park"))
+		return;
+	if (!rdp_output_park)
+	{
+		rspq_block_begin();
+		rdpq_sync_pipe();
+		rdp_output_park = rspq_block_end();
+	}
+	rspq_block_run(rdp_output_park);
+}
+
 static void drop_model(int index)
 {
 	struct loaded_model *loaded = &models.loaded[index];
@@ -1257,7 +1284,10 @@ static void drop_model(int index)
 		release_model_contents(release);
 	}
 	else
+	{
+		n64_render_park_rdp_output();
 		rdpq_call_deferred(release_model, release);
+	}
 	for (int b = 0; b < model->far_first + model->far_count; b++)
 		release_texture(models.batches[model->first_batch + b].texture);
 	models.loaded_bytes -= model->vertex_bytes + model->index_bytes;
