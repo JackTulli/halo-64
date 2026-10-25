@@ -138,7 +138,7 @@
     "flags": []
   },
   "ldflags": ["-Wl,--wrap,malloc_uncached", "-Wl,--wrap,malloc_uncached_aligned", "-Wl,--wrap,free_uncached",
-    "-Wl,--wrap,console_init"],
+    "-Wl,--wrap,console_init", "-Wl,--wrap,rspq_wait"],
   "lto": true,
   "small_data": 8
 }

@@ -15,8 +15,10 @@ cable joins the two.
 the internet's and the local network's games, joins them and plays them:
 the player's own unit moved, aimed and fired on the N64 at once and
 corrected by the Link; the other players, vehicles, weapons and
-projectiles; their effects, sounds and the announcer; hits taken; the HUD's
-crosshair target names, state message, goals and motion sensor blips; the
+projectiles; their effects, sounds and the announcer; hits taken; aim
+assist (the Link's autoaim on the shots, its magnetism on the N64's aim);
+the HUD's crosshair target names, state message, goals and motion sensor
+blips; the
 kill feed; the lobby; the scoreboard; the player's name. Not yet: vehicles
 driven by the N64's player (the view is the Link's; no vehicle HUD),
 looping sounds (engines), the pickup prompt, the final scoreboard, hosting
@@ -272,7 +274,9 @@ second), EFFECTS (effects begun: weapons fired, impacts, explosions, with
 their sounds), SOUNDS (sounds that are no effect's, and the announcer),
 DAMAGE (a hit the player takes, and from where), HUD (each frame: the
 autoaim level, the crosshair target's name, the state message, the goals,
-the motion sensor's blips).
+the motion sensor's blips, and the aim's magnetism with its target's motion
+across the view, which the N64's look plays as Halo's magnetism does: the
+targets are the Link's).
 
 ## Stages
 

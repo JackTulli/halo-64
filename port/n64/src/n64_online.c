@@ -546,6 +546,16 @@ static void hud_in(const uint8_t *payload, int length)
 		}
 	}
 	f->hud_valid = !r.bad;
+	/* the aim's magnetism and its target's motion across the view (a Link
+	before v0.6.2 ends the message before them: none) */
+	h->magnetism = 0.f;
+	h->target_velocity[0] = h->target_velocity[1] = 0.f;
+	if (f->hud_valid && r.end - r.at >= 5)
+	{
+		h->magnetism = (float)read_u8(&r) * (1.f / 255.f);
+		h->target_velocity[0] = read_unit(&r) * N64_ONLINE_ANGULAR_RANGE;
+		h->target_velocity[1] = read_unit(&r) * N64_ONLINE_ANGULAR_RANGE;
+	}
 }
 
 int n64_online_take_effect(struct n64_online_effect *effect)

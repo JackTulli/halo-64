@@ -499,6 +499,21 @@ void __wrap_console_init(void)
 	__real_console_init();
 }
 
+/* ---------- after rspq_wait
+
+rspq_wait's fence is a SYNC_FULL, and it returns once the RSP has passed it
+-- maybe before the CPU has taken the SYNC_FULL's interrupt, the moment the
+next block's buffer switch may let the RDP go on safely. The link wraps it
+(port.json's ldflags) to hold the RSP there (n64_render_wait_sync_full) */
+void __real_rspq_wait(void);
+void __wrap_rspq_wait(void) __attribute__((used));
+
+void __wrap_rspq_wait(void)
+{
+	__real_rspq_wait();
+	n64_render_wait_sync_full();
+}
+
 /* Halo's deepest calls (collision, physics under the game tick) need more
 than the 64 KB libdragon keeps for main's stack at the top of RAM (~97 KB
 in Wizard), and the heap grows up to it. The game runs on main's stack

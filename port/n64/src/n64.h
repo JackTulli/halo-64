@@ -618,6 +618,10 @@ int n64_render_make_room(unsigned long size, int count);
 /* the RSP's RDP output moved off every block's buffer, before a block is
 freed with rdpq_call_deferred (n64_render.c; not while recording a block) */
 void n64_render_park_rdp_output(void);
+/* the RSP held after a SYNC_FULL until the CPU has taken its interrupt, so
+that no buffer switch restarts the RDP too soon (n64_render.c; after
+rdpq_detach, rdpq_fence and every rspq_wait: n64_main.c wraps it) */
+void n64_render_wait_sync_full(void);
 /* TERRAIN DETAIL (SETTINGS): 0 full, 1 no overlays, 2 nearest mipmaps, 3
 none (n64_render.c) */
 void n64_render_set_terrain_detail(int mode);
@@ -770,9 +774,14 @@ int n64_online_take_damage(struct n64_online_damage *damage);
 frame: the autoaim level (the crosshair red at 1), the name the crosshair
 shows ("" none) and whether an enemy's, the state message (UTF-16; empty
 none), how goals are shown (the variant's goal_radar), the goals the player
-sees, the motion sensor's blips */
+sees, the motion sensor's blips, and the aim's magnetism (0-1) with its
+target's motion across the view (yaw and pitch, radians a tick; a Link
+before v0.6.2 sends none: 0) */
 #define N64_ONLINE_GOALS 16
 #define N64_ONLINE_BLIPS 16
+/* the target's motion on the cable: s16 over +-this many radians a tick
+(the Link's link_export.c has the same) */
+#define N64_ONLINE_ANGULAR_RANGE 0.5f
 
 struct n64_online_hud
 {
@@ -786,6 +795,8 @@ struct n64_online_hud
 	struct { float position[3]; short nav_point; } goals[N64_ONLINE_GOALS];
 	int blip_count;
 	struct { float position[3]; signed char type, size; } blips[N64_ONLINE_BLIPS];
+	float magnetism;
+	float target_velocity[2];
 };
 
 const struct n64_online_hud *n64_online_hud(int local_player_index);

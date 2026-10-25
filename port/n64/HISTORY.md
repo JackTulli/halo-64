@@ -5,6 +5,53 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+25 October: the consoles' RDP crash traced to the RDP being restarted too
+soon after a SYNC_FULL; the version on the title page and the builder.
+
+- v0.6.1 did not help (issues 6, 13, 14: EverDrive v2 and X7,
+  SummerCart64; campaign, Firefight, multiplayer and online). The new
+  photos are sharp enough to read every register. In each RDP crash the RDP
+  sits 0x50 bytes into a dynamic RDP buffer (`DP_CURRENT`) with its DMA
+  busy, a block's static buffer of 0x60 bytes pending (`DP_START`/`DP_END`)
+  and the RSP in `RSPQCmd_RdpSetBuffer`'s wait, called from the triangle
+  code's buffer switch (`a0` = `a1` = the other dynamic buffer). The dynamic
+  buffers' addresses (0x1C7380 and 0x1D73A0 on the multiplayer cartridge)
+  are the ones an ares run has, so a frame's RDP commands logged there
+  (`debug_rdpq_log=<frame>`, new) show what precedes: the renderer's depth
+  resets (the frame's start and each view's first person) end with
+  `rdpq_detach`'s SYNC_FULL, the commands after it are held back by the RSP,
+  and the next block (the level's first material, 0x60 bytes) restarts
+  them when its buffer is scheduled. The RDP stopped exactly there, before
+  fetching the first held command.
+- libdragon holds those commands to avoid a known hardware hang: new RDP
+  DMA while a SYNC_FULL is in progress. `RDPQCmd_SyncFull` waits for the
+  CPU to have taken the previous SYNC_FULL's interrupt before letting the
+  held commands go; `RSPQCmd_RdpSetBuffer` waits only for
+  `DP_STATUS_BUSY` to drop, which (the likeliest reading of the photos)
+  comes before the SYNC_FULL has quite finished. The renderer's mid-frame
+  SYNC_FULLs put the RSP in that wait right as they end. Now `n64_render_wait_sync_full()` queues rspq's
+  `TEST_WRITE_STATUS` (as `rspq_syncpoint_new` does) to hold the RSP until
+  the CPU has cleared `SIG_RDPSYNCFULL`: after each depth reset, after the
+  frame's `rdpq_detach_show`, and after every `rspq_wait` (the link wraps
+  it: its fence is a SYNC_FULL too). The same wait in libdragon's
+  microcode itself would be 16 bytes more of the shared code, and the H.264
+  decoder's microcode had 8 to spare. Emulators do not have the hang, so
+  consoles will tell; ares runs the same as before.
+- The release on the title page (bottom right) and in the ROM Builder's
+  title: `tools/n64/version.py`, compiled into `n64_menu.c` alone.
+- Online aim assist (issue 12). The Link's shots already had Halo's
+  autoaim (`player_aim_projectile` on its own targets), but the N64's look
+  had no magnetism: the other players are drawn from the Link's frames, not
+  objects of the N64's game. The Link now keeps its aim assist target's
+  motion across the view (`link_target_angular_velocity`, halo64-link
+  4859235) and ends its HUD message with the magnetism level and that
+  motion; `n64_online_game_magnetism` gives them to player_control.c's
+  magnetism, played with the cartridge's own (stronger) friction and
+  adhesion. Cartridges and Links of either version still work together
+  (the N64 reads them only when the message carries them). The GoldenEye
+  schemes' hip cursor, which needs the target's place, has none online
+  yet.
+
 23 October: a guard against one cause of the consoles' RDP crashes, and
 tests for them.
 

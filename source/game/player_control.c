@@ -1234,6 +1234,17 @@ static void get_local_player_input_blob(
 							&control->magnetism_level,
 							&target_angular_position,
 							&target_angular_velocity);
+#ifdef HALO_N64_ONLINE
+						{
+							/* (an online game: the targets are the Link's,
+							port/n64/game/n64_online_game.c) */
+							extern boolean n64_online_game_magnetism(short local_player_index, real *magnetism,
+								real_euler_angles2d *target_angular_velocity);
+
+							n64_online_game_magnetism(local_player_index, &control->magnetism_level,
+								&target_angular_velocity);
+						}
+#endif
 						if (player_magnetism_flag && control->magnetism_level > 0.f &&
 							(fabs(clamped_yaw) > _real_epsilon ||
 							fabs(clamped_pitch) > _real_epsilon ||

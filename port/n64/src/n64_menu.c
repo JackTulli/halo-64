@@ -1346,6 +1346,10 @@ static void draw_title(int item)
 		"SPLIT SCREEN   -   UP TO 4 PLAYERS"
 #endif
 	);
+#ifdef HALO64_VERSION
+	/* (the release this program is from: tools/n64/version.py) */
+	text_right(menu.small, SAFE_RIGHT, 450, TEXT_DIM, "V" HALO64_VERSION);
+#endif
 }
 
 /* the CONTROLS page: a panel for each controller (two by two), its own rows

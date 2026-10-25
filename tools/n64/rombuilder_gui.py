@@ -20,13 +20,14 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .rombuilder import BuildError, Cancelled, CUSTOM_MAP_LIMIT, MapSource, RomBuilder, payload_root
+from .version import VERSION
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
 except ImportError:  # (no drag and drop: the buttons alone)
     TkinterDnD = None
 
-TITLE = "Halo 64 ROM Builder"
+TITLE = f"Halo 64 ROM Builder v{VERSION}"
 CARTRIDGE_TEXT = {
     "multiplayer": ("Multiplayer", "halo-n64.z64", "Blood Gulch and twelve more maps, split screen for four, bots, Firefight"),
     "campaign": ("Campaign: Halo", "halo-campaign.z64", "the level \"Halo\" on a cartridge of its own"),

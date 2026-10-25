@@ -500,6 +500,27 @@ boolean n64_online_game_autoaim(
 	return TRUE;
 }
 
+/* player_control.c's (HALO_N64_ONLINE): what draws the aim -- the other
+players are the Link's, so are the targets: its player's magnetism level
+and the target's motion across the view (radians a tick), played into this
+unit's look with the cartridge's own aim assist (GitHub issue 12); FALSE
+not an online game */
+boolean n64_online_game_magnetism(
+	short local_player_index,
+	real *magnetism,
+	real_euler_angles2d *target_angular_velocity)
+{
+	struct n64_online_hud const *hud;
+
+	if (!n64_online_active())
+		return FALSE;
+	hud = n64_online_hud(local_player_index);
+	*magnetism = hud ? hud->magnetism : 0.f;
+	target_angular_velocity->yaw = hud ? hud->target_velocity[0] : 0.f;
+	target_angular_velocity->pitch = hud ? hud->target_velocity[1] : 0.f;
+	return TRUE;
+}
+
 static boolean online_local_player(
 	long player_index,
 	short *local_player_index)

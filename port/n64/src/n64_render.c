@@ -14,6 +14,7 @@ units" everything here is drawn in), already lit.
 #include <malloc.h>
 #include <math.h>
 #include <limits.h>
+#include <rspq_constants.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -444,6 +445,11 @@ static int debug_overview;
 /* debugging: wait for the RSP and RDP after each part of a view, so that
 the parts' times include the hardware's (and the frame is slower) */
 static int debug_gpu_time;
+/* debugging (port.json flag "debug_rdpq_log=<frame>", with "debug_rdpq"):
+the RDP commands of that frame and the next in the log, with where they
+are in memory and markers at the frame's start, its depth clears and its
+end */
+static unsigned long debug_rdpq_log_frame;
 
 static void gpu_time_sync(void)
 {
@@ -1161,6 +1167,12 @@ void n64_render_initialize(void)
 		if ((flag = fopen("rom:/debug_overview", "rb"))) { debug_overview = 1; fclose(flag); }
 		debug_gpu_time = n64_debug_flag("debug_gpu_time");
 		if ((flag = fopen("rom:/debug_untextured", "rb"))) { debug_untextured = 1; fclose(flag); }
+	}
+	{
+		char text[16];
+
+		if (n64_debug_flag("debug_rdpq") && n64_debug_text("debug_rdpq_log", text, sizeof(text)))
+			debug_rdpq_log_frame = strtoul(text, NULL, 10);
 	}
 	{
 		T3DMat4 identity;
@@ -2320,6 +2332,33 @@ static int palette_count;
 /* the frame's z-buffer (the one attached with its colour buffer) */
 static const surface_t *frame_zbuf;
 
+static int debug_rdpq_logging;
+
+static void debug_rdpq_mark(const char *what)
+{
+	if (debug_rdpq_logging)
+		rdpq_debug_log_msg(what);
+}
+
+/* After a SYNC_FULL (rdpq_detach, rdpq_fence) the RSP holds back the RDP
+commands that follow it, and the next block's buffer switch
+(RSPQCmd_RdpSetBuffer) lets them go as soon as DP_STATUS_BUSY drops. On
+consoles that came too soon: the crash screens of GitHub issues 6, 7, 11,
+13 and 14 show the RDP stopped right after a SYNC_FULL, before its first
+held command, with the next block's buffer pending -- the RDP hang
+libdragon's SYNC_FULL handling is there to avoid, and this renderer asks
+for a SYNC_FULL at each depth reset (the frame's start and each view's
+first person), with a block soon after. rspq's TEST_WRITE_STATUS
+(RSPQ_CMD_TEST_WRITE_STATUS, rspq_internal.h) makes the RSP wait until the
+CPU has taken the SYNC_FULL's interrupt, as libdragon's own SYNC_FULL
+command waits for the one before it. Emulators do not hang there */
+#define RSPQ_CMD_TEST_WRITE_STATUS 0x08
+
+void n64_render_wait_sync_full(void)
+{
+	rspq_write(0, RSPQ_CMD_TEST_WRITE_STATUS, 0, SP_STATUS_SIG_RDPSYNCFULL);
+}
+
 /* The depth reset where the RDP is drawing: a fill of the z-buffer, held
 to the scissor (the whole screen at the frame's start, a view for its
 first-person weapon). tiny3d's t3d_screen_clear_depth (rdpq_clear_z)
@@ -2327,7 +2366,8 @@ cleared the whole buffer with the RSP after an RDP fence -- the RSP waited
 for the RDP to finish all it had been given first, and again in each view's
 first person: four stalls and four full-screen clears a frame with four
 views. The fill comes after what was drawn before it in the RDP's own
-order, and needs no fence */
+order, and needs no fence (rdpq_detach's SYNC_FULL stays: libdragon's
+__rdpq_clear_z found the RDP needs it after drawing to the z-buffer) */
 static void clear_depth(void)
 {
 	uint32_t old_config;
@@ -2335,8 +2375,10 @@ static void clear_depth(void)
 	if (!frame_zbuf)
 	{
 		t3d_screen_clear_depth();
+		n64_render_wait_sync_full();
 		return;
 	}
+	debug_rdpq_mark("clear_depth");
 	old_config = rdpq_config_disable(RDPQ_CFG_AUTOSCISSOR);
 	rdpq_attach(frame_zbuf, NULL);
 	rdpq_mode_push();
@@ -2344,6 +2386,7 @@ static void clear_depth(void)
 	rdpq_fill_rectangle(0, 0, frame_zbuf->width, frame_zbuf->height);
 	rdpq_mode_pop();
 	rdpq_detach();
+	n64_render_wait_sync_full();
 	rdpq_config_set(old_config);
 }
 
@@ -2380,7 +2423,17 @@ void n64_render_frame_begin(void)
 			n64_heap_free() / 1024, largest / 1024, pieces);
 		n64_fatal(message);
 	}
+	if (debug_rdpq_log_frame)
+	{
+		/* (rdpq_debug_log counts: on once, off once) */
+		int logging = renderer.frame_index + 1 - debug_rdpq_log_frame < 2;
+
+		if (logging != debug_rdpq_logging)
+			rdpq_debug_log(logging);
+		debug_rdpq_logging = logging;
+	}
 	rdpq_attach(renderer.surface, frame_zbuf);
+	debug_rdpq_mark("frame begin");
 	t3d_frame_start();
 	/* past the draw distance: the fog's colour */
 	t3d_screen_clear_color(renderer.fog ? renderer.fog_color : renderer.clear_color);
@@ -3971,7 +4024,9 @@ void n64_render_frame_end(void)
 	n64_profile_poll();
 	draw_crosshairs();
 	draw_counter();
+	debug_rdpq_mark("frame end");
 	rdpq_detach_show();
+	n64_render_wait_sync_full();
 	render_cpu_us = TICKS_TO_US(TICKS_READ() - render_start_ticks);
 	renderer.draw_ticks += TICKS_READ() - render_start_ticks;
 	if (!(renderer.frame_index % 120))

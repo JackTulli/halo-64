@@ -22,6 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from tools.ninja_syntax import Writer, escape_path  # noqa: E402
+from tools.n64.version import VERSION  # noqa: E402
 
 def posix(value):
     return str(value).replace("\\", "/")
@@ -228,6 +229,10 @@ def main(argv=None):
         name = posix(source).replace(os.sep, "/")
         extra = " ".join(flags for pattern, flags in source_flags.items()
                          if pattern == name or fnmatch.fnmatchcase(name, pattern))
+        # (the version on the title page: in the menu's unit alone, so that
+        # raising it rebuilds that unit and not the game)
+        if name == "port/n64/src/n64_menu.c":
+            extra = f"{extra} -DHALO64_VERSION='\"{VERSION}\"'"
         if extra:
             cflags = f"{cflags} {extra}"
         obj = obj_dir / Path(source).with_suffix(".o")

@@ -520,7 +520,10 @@ Cartridge flags are files on the ROM's file system, listed in `port.json`
   the RSP/RDP: their times), `debug_cull_front`, `debug_level_parts=<1|2>`,
   `debug_explosions`, `debug_fp_nodraw` (the first-person weapon posed, not
   drawn), `debug_rdpq` (libdragon's RDP validator: slow; it names the
-  commands that would hang or misdraw on a console).
+  commands that would hang or misdraw on a console), with it
+  `debug_rdpq_log=<frame>` (that frame's and the next one's RDP commands in
+  the log, with their addresses and markers at the frame's start, its depth
+  resets and its end).
 - Memory: `debug_dirty_memory[=<seed>]` (the free RAM filled with garbage
   at boot, as a console's is: emulators start with it zeroed),
   `debug_poison_free` (freed uncached blocks filled with an invalid RDP
