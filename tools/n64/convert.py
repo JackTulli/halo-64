@@ -605,8 +605,12 @@ def main():
         print(f"{xmap.name} particles: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         # the shared files the map uses (tools/n64/prune.py removes the rest)
         from .level import write_list
+        # (the lighter level's own textures too: without them prune.py
+        # deleted the ones only it draws, and 3-4 player games failed to
+        # open them, "error opening file rom:/tex/<name>.sprite")
         write_list(args.filesystem / "tex" / f"{xmap.name}.list",
-                   sorted(builder.used_textures.union(*(m.textures.used_textures for m in model_sets))))
+                   sorted(builder.used_textures.union(low.used_textures,
+                                                      *(m.textures.used_textures for m in model_sets))))
     if args.stats:
         for g, s in sorted(repacker.stats.items(), key=lambda x: -x[1])[:25]:
             print(f"  {g} {s / 1024:8.1f} KB")
