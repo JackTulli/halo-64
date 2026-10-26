@@ -76,12 +76,23 @@ HALO_FONT = Path(os.environ.get("HALO_FONT", Path.home() / "n64" / "fonts" / "Ha
 PICTURES = {
     # (for the menu's 640x480 screen: the logo cropped to what it draws --
     # its left 640x252 of 1024x256, with the 64 under it, 640x272 -- across
-    # most of the screen, its soft edges and faint lines kept; the maps' at
-    # their own 256x128, the game types' at 192x96)
+    # most of the screen, its soft edges and faint lines kept; the maps'
+    # across the setup page's right column, 256 wide, the game types' as the
+    # emblem in its corner, 92 wide -- both the picture alone, MENU_PICTURE)
     "ui\\shell\\main_menu\\halo_logo": ("logo", 560, "RGBA32"),
     "ui\\shell\\bitmaps\\mp_map_grafix": ("map", 256, "RGBA16"),
-    "ui\\shell\\bitmaps\\game_type_grafix": ("gametype", 192, "RGBA16"),
+    "ui\\shell\\bitmaps\\game_type_grafix": ("gametype", 92, "RGBA16"),
 }
+# the maps' and game types' pictures are their bitmaps' top left 140x114
+# (the rest of the 256x128 is padding to a power of two: Halo's menus showed
+# that corner alone); also the PC maps' (pc_thumbnails.py)
+MENU_PICTURE = (0, 0, 140, 114)
+
+
+def menu_picture(img, width):
+    """a map's or game type's picture: cut from its bitmap, at width"""
+    img = img.crop(MENU_PICTURE)
+    return img.resize((width, max(1, round(img.height * width / img.width))), Image.LANCZOS)
 
 
 def rotation(yaw, pitch, roll):
@@ -208,8 +219,10 @@ def export_pictures(xmap, defs, out):
             if name == "logo":
                 img = logo_64(img.convert("RGBA"))
                 img = img.crop(img.getchannel("A").getbbox() or (0, 0, img.width, img.height))
-            height = max(1, round(img.height * width / img.width))
-            img = img.resize((width, height), Image.LANCZOS)
+                height = max(1, round(img.height * width / img.width))
+                img = img.resize((width, height), Image.LANCZOS)
+            else:
+                img = menu_picture(img, width)
             png = out / (f"{name}.png" if name == "logo" else f"{name}{i}.png")
             img.save(png)
             toolpaths.run([MKSPRITE, "--format", fmt, "--compress", "1", "-o", str(out), str(png)], check=True,

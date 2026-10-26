@@ -5,6 +5,41 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+26 October: a FIELD OF VIEW setting, the menus redrawn, the level pictures
+the size of their frames, and the sniper rifle's two white bars gone.
+
+- FIELD OF VIEW (Settings, after 3D RESOLUTION): 60 to 110 degrees across
+  a 4:3 view in steps of 5, 70 (Halo's) by default, kept in the settings
+  record's byte 40 (0 in older records: the default). `main.c`
+  `set_window_camera_values` scales a first-person view's tangent by
+  tan(fov/2) / tan(35 degrees); zoom levels follow it, cutscenes, vehicles
+  and dead views stay as they were. The two-player views keep the Xbox's
+  adjusted tangent, so at 70 nothing changes.
+- The menus: the page backdrop darker (the ring's bright side behind text
+  made it hard to read), groups in framed boxes (`box`), and every page's
+  buttons on a band at its foot with the keys bright and what they do
+  dimmer (`hints`: groups three spaces apart, "KEY  WHAT" two). Settings
+  is a framed list of eight rows that scrolls, with a bar showing where,
+  and its help in a box under it. Game setup: the map's picture fills the
+  right column (scaled to fit, its shape kept), the game type's picture as
+  an emblem in its corner, a line under them ("TEAMS - 3 FLAGS TO WIN");
+  campaign and Firefight describe the game where the score, bots and
+  options rows would be.
+- The level pictures looked small in their frame because Halo's
+  `mp_map_grafix` and `game_type_grafix` bitmaps are 256x128 with the
+  picture in their top left 140x114 (the rest pads to a power of two;
+  Halo's menus showed that corner). `ui.py` now cuts that corner
+  (`MENU_PICTURE`, `menu_picture`) and makes the maps' 256x208 and the game
+  types' 92x75; the PC maps' pictures (`pc_thumbnails.py`) the same.
+- The sniper rifle's two white bars: its HUD's `angle_ticks_black` static
+  elements are multitexture overlays -- a white fading strip (map 0)
+  multiplying tick marks (map 1) whose offset scrolls with the aim and
+  whose fade is 0 until zoomed. The N64's HUD draws one bitmap a quad and
+  drew the strip alone, so two bars stood on the screen zoomed or not.
+  `n64_hud_game.c` `draw_masked_map` now draws map 1 through the strip's
+  quad, scrolled, scaled and faded as Halo has it, in two pieces where it
+  passes its bitmap's end; unzoomed it draws nothing.
+
 26 October: 3-4 player games on Battle Creek, Blood Gulch and Sidewinder
 start again (issue 15; pull request 17 by jz-k).
 

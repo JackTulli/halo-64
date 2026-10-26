@@ -380,12 +380,13 @@ gamepad that has motors).
 | Setting | What it does |
 |---|---|
 | 3D RESOLUTION | chunky (160 wide, each pixel doubled; the HUD stays sharp), medium (the 3D drawn 256 wide and widened), standard (320 wide), high detail (640x240 at 240p, twice the pixels across as Perfect Dark's high resolution; 520 or 480 across on maps without the memory for 640) or ultra detail (480i on the maps with the memory for it, else as high detail). Lower is faster. |
+| FIELD OF VIEW | how wide you see in first person, 60 to 110 degrees across in steps of 5 (70, Halo's, by default; scopes zoom from it). Wider draws more of the level: slower |
+| WIDESCREEN | off, or anamorphic 16:9 for a television that stretches the picture |
 | ANIMATIONS | full or half rate: half poses the characters, vehicles and your gun every other tick (halved again with 3 or 4 players), and the bots think less often. Faster. |
 | PARTICLES | muzzle flashes, sparks, dust and blood on or off |
 | DECALS | bullet holes, blood and scorch marks on walls and floors on or off |
 | VIEW MODEL | your gun and arms in low, medium or high detail, or off in split (low, and not drawn with 3 or 4 players: the biggest saving there) |
 | TERRAIN DETAIL | full (the detail maps everywhere: the ground's at every distance, rock and earth's drawn over them), high (the ground's detail fades out a few steps away, before it can shimmer), medium (high without rock and earth's second pass) or low (no detail maps: the ground's colour alone). Lower is faster. |
-| WIDESCREEN | off, or anamorphic 16:9 for a television that stretches the picture |
 | ANTI-ALIASING | the N64's own anti-aliasing on walls, ground and objects (the RDP's coverage, smoothed by the video filter): smoother edges, slower. Off by default |
 | DEDITHER | the N64's video filter that rebuilds the colours from the 16-bit picture's dither. Off by default; it takes effect from the next game |
 | HUD INSET | moves the HUD in from the edges, for televisions that cut them off |

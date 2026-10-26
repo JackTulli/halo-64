@@ -44,6 +44,9 @@ game side (port/n64/game/n64_game.c) makes the game.
 /* Settings: ANIMATIONS HALF RATE, read by the game's object updates
 (source/objects/objects.c n64_object_unmoved) */
 int n64_half_animation_rate;
+/* Settings: FIELD OF VIEW, the first person's degrees across a 4:3 view
+(source/main/main.c set_window_camera_values) */
+int n64_field_of_view = 70;
 
 /* ---------- what can be played */
 
@@ -226,6 +229,9 @@ static struct
 	/* DECALS off (n64_paint_set_decals), ANTI-ALIASING and DEDITHER on
 	(n64_render_set_antialias, n64_render_set_dedither) */
 	int no_decals, antialias, dedither;
+	/* FIELD OF VIEW: degrees, FOV_MINIMUM to FOV_MAXIMUM a FOV_STEP at a
+	time (n64_field_of_view) */
+	int field_of_view;
 	/* the CONTROLS page: each controller's chosen row (CONTROL_*), and the
 	controller whose row the help line explains */
 	int control_row[4];
@@ -712,15 +718,88 @@ static unsigned long pulsing(void)
 	return ((unsigned long)pulse << 24) | (TEXT_BRIGHT & 0xFFFFFF);
 }
 
-/* a page's darkened backdrop, its title (and a note on the right) over a
+/* a page's darkened backdrop (the scene still seen through it, but no text
+on the ring's bright side), its title (and a note on the right) over a
 rule */
 static void page(const char *title, const char *note)
 {
-	panel(0, 0, SCREEN_W, SCREEN_H, 0x40000818);
+	panel(0, 0, SCREEN_W, SCREEN_H, 0x90000818);
 	menu_text(menu.large, SAFE_LEFT + 8, 60, TEXT_BRIGHT, title);
 	if (note)
-		text_right(menu.small, SAFE_RIGHT - 8, 60, TEXT_DIM, note);
+		text_right(menu.small, SAFE_RIGHT - 8, 60, TEXT_COLOR, note);
 	panel(SAFE_LEFT, 68, SAFE_RIGHT, 68 + LINE, 0xC08CC0FF);
+}
+
+/* a group of things on a page: a dark panel in a frame */
+static void box(int x0, int y0, int x1, int y1)
+{
+	panel(x0, y0, x1, y1, 0xC0081830);
+	frame_line(x0, y0, x1, y1, 0x906080A0);
+}
+
+/* the page's buttons along its foot, on a band under a rule: groups three
+or more spaces apart, each "KEY  WHAT IT DOES" (two spaces between), the
+key bright and what it does dimmer; a group without two spaces in it is a
+warning, in orange */
+#define TEXT_WARNING 0xFFFFA040u
+#define HINT_Y 454
+
+/* the band the page's foot line sits on */
+static void foot_band(void)
+{
+	panel(0, HINT_Y - 22, SCREEN_W, HINT_Y + 12, 0x90000818);
+	panel(SAFE_LEFT, HINT_Y - 22, SAFE_RIGHT, HINT_Y - 22 + LINE, 0x608CC0FF);
+}
+
+static void hints(const char *text)
+{
+	char groups[6][64];
+	const char *split[6];
+	int count = 0, width = 0, x;
+
+	while (*text && count < 6)
+	{
+		const char *end = strstr(text, "   ");
+		int length = end ? (int)(end - text) : (int)strlen(text);
+
+		if (length >= (int)sizeof(groups[0]))
+			length = (int)sizeof(groups[0]) - 1;
+		memcpy(groups[count], text, length);
+		groups[count][length] = 0;
+		text += length;
+		while (*text == ' ')
+			text++;
+		if (groups[count][0])
+			count++;
+	}
+	for (int i = 0; i < count; i++)
+	{
+		char *pair = strstr(groups[i], "  ");
+
+		split[i] = NULL;
+		if (pair)
+		{
+			*pair = 0;
+			split[i] = pair + 2;
+			while (*split[i] == ' ')
+				split[i]++;
+		}
+		width += n64_text_width(menu.small, groups[i]) + (split[i] ? 8 + n64_text_width(menu.small, split[i]) : 0) +
+			(i ? 30 : 0);
+	}
+	foot_band();
+	x = (SCREEN_W - width) / 2;
+	for (int i = 0; i < count; i++)
+	{
+		menu_text(menu.small, x, HINT_Y, split[i] ? TEXT_BRIGHT : TEXT_WARNING, groups[i]);
+		x += n64_text_width(menu.small, groups[i]);
+		if (split[i])
+		{
+			menu_text(menu.small, x + 8, HINT_Y, TEXT_COLOR, split[i]);
+			x += 8 + n64_text_width(menu.small, split[i]);
+		}
+		x += 30;
+	}
 }
 
 /* ---------- input: any controller, with the stick's repeats */
@@ -873,9 +952,13 @@ enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE
 /* the buzz a controller gives when its rumble is turned on (frames) */
 #define RUMBLE_PULSE_FRAMES 12
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
-enum { SETTING_CHUNKY, SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_TERRAIN,
-	SETTING_WIDESCREEN, SETTING_ANTIALIAS, SETTING_DEDITHER, SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK,
-	SETTING_COUNT };
+enum { SETTING_CHUNKY, SETTING_FIELD_OF_VIEW, SETTING_WIDESCREEN, SETTING_ANIMATIONS, SETTING_PARTICLES,
+	SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_TERRAIN, SETTING_ANTIALIAS, SETTING_DEDITHER, SETTING_HUD_INSET,
+	SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
+#define FOV_DEFAULT 70
+#define FOV_MINIMUM 60
+#define FOV_MAXIMUM 110
+#define FOV_STEP 5
 
 /* the 3D's resolutions from the lowest (menu.chunky's values) */
 #define RESOLUTION_HIGH 3
@@ -943,6 +1026,9 @@ static void settings_pack(unsigned char *bytes)
 	/* (byte 15, a bit each, 0 in the records kept before them: DECALS off,
 	ANTI-ALIASING on, DEDITHER on) */
 	bytes[15] = (unsigned char)((menu.no_decals != 0) | (menu.antialias != 0) << 1 | (menu.dedither != 0) << 2);
+	/* (FIELD OF VIEW in degrees after the controllers', 0 in the records
+	kept before it: the default) */
+	bytes[40] = (unsigned char)menu.field_of_view;
 	/* (a bit a controller with its Rumble Pak off: 0 in the records kept
 	before there was one, so theirs are on) */
 	for (int p = 0; p < 4; p++)
@@ -981,6 +1067,8 @@ static int settings_unpack(const unsigned char *bytes)
 	menu.no_decals = bytes[15] & 1;
 	menu.antialias = (bytes[15] >> 1) & 1;
 	menu.dedither = (bytes[15] >> 2) & 1;
+	menu.field_of_view = bytes[40] >= FOV_MINIMUM && bytes[40] <= FOV_MAXIMUM && !(bytes[40] % FOV_STEP) ?
+		bytes[40] : FOV_DEFAULT;
 	/* (the menu's display made next takes it too) */
 	n64_render_set_dedither(menu.dedither);
 	for (int p = 0; p < 4; p++)
@@ -1005,6 +1093,7 @@ static void settings_load(void)
 	if (saved_read)
 		return;
 	saved_read = 1;
+	menu.field_of_view = FOV_DEFAULT;
 	saved_present = eeprom_present() != EEPROM_NONE;
 	if (!saved_present)
 	{
@@ -1229,7 +1318,7 @@ static void draw_naming(void)
 		}
 	}
 	text_centered(menu.small, SCREEN_W / 2, 400, TEXT_DIM, "THE NAME OTHER PLAYERS SEE, FROM THE NEXT GAME YOU JOIN");
-	text_centered(menu.small, SCREEN_W / 2, 448, TEXT_DIM, "A  TYPE     B  DELETE     Z  SPACE     START  DONE");
+	hints("A  TYPE     B  DELETE     Z  SPACE     START  DONE");
 }
 
 /* the ONLINE screen: the cable's state (n64_link.c), the Link's game list,
@@ -1289,7 +1378,7 @@ static void draw_online(int chosen)
 			"WAITING FOR THE GAME TO BEGIN");
 		if (status[0])
 			text_centered(menu.small, SCREEN_W / 2, 412, TEXT_DIM, status);
-		text_centered(menu.small, SCREEN_W / 2, 448, TEXT_DIM, "B  LEAVE");
+		hints("B  LEAVE");
 		return;
 	}
 	else if (!count)
@@ -1314,8 +1403,7 @@ static void draw_online(int chosen)
 		if (status[0])
 			text_centered(menu.small, SCREEN_W / 2, 412, TEXT_DIM, status);
 	}
-	text_centered(menu.small, SCREEN_W / 2, 448, TEXT_DIM,
-		n64_link_state() == N64_LINK_CONNECTED ? "A  JOIN     Z  LOOK AGAIN     R  YOUR NAME     B  BACK" : "B  BACK");
+	hints(n64_link_state() == N64_LINK_CONNECTED ? "A  JOIN     Z  LOOK AGAIN     R  YOUR NAME     B  BACK" : "B  BACK");
 }
 #endif
 
@@ -1458,8 +1546,9 @@ static void draw_controls(void)
 		int width = n64_text_width(menu.small, text) + 8 + n64_text_width(menu.small, help);
 		int x = (SCREEN_W - width) / 2;
 
-		menu_text(menu.small, x, 448, TEXT_DIM, text);
-		menu_text(menu.small, x + n64_text_width(menu.small, text) + 8, 448, TEXT_COLOR, help);
+		foot_band();
+		menu_text(menu.small, x, HINT_Y, TEXT_BRIGHT, text);
+		menu_text(menu.small, x + n64_text_width(menu.small, text) + 8, HINT_Y, TEXT_COLOR, help);
 	}
 }
 
@@ -1468,6 +1557,7 @@ static void draw_settings(int item)
 	/* what the chosen row does, under the list */
 	static const char *const help[SETTING_COUNT][2] = {
 		[SETTING_CHUNKY] = {"MEDIUM 256 ACROSS, CHUNKY HALF, HIGH 640X240,", "ULTRA 480I (LESS WHERE THE MAP LEAVES NO ROOM)"},
+		[SETTING_FIELD_OF_VIEW] = {"HOW WIDE YOU SEE IN FIRST PERSON, IN DEGREES", "ACROSS (70 AS IN HALO; WIDER DRAWS MORE: SLOWER)"},
 		[SETTING_ANIMATIONS] = {"HALF: POSES, YOUR GUN'S TOO, AT HALF THE RATE", "(HALVED AGAIN WITH 3 OR 4 PLAYERS)"},
 		[SETTING_PARTICLES] = {"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
 		[SETTING_DECALS] = {"BULLET HOLES, BLOOD AND SCORCH MARKS ON", "WALLS AND FLOORS (OFF: A LITTLE FASTER)"},
@@ -1480,43 +1570,102 @@ static void draw_settings(int item)
 		[SETTING_COUNTER] = {"FRAMES A SECOND AND TIMINGS AT THE TOP", ""},
 		[SETTING_BACK] = {"BACK TO THE TITLE", ""},
 	};
-	char value[32];
-	/* (eleven rows, 23 apart, BACK under them) */
-	int y = 90;
+	/* (in a framed list, eight rows at a time, 30 apart, scrolled to keep the
+	chosen one in view with the next under it; a bar beside it shows where) */
+	enum { VISIBLE = 8, STEP = 30, TOP = 110, X0 = 104, X1 = 524 };
+	int first = item - (VISIBLE - 2), bottom = TOP + (VISIBLE - 1) * STEP;
 
+	if (first > SETTING_COUNT - VISIBLE)
+		first = SETTING_COUNT - VISIBLE;
+	if (first < 0)
+		first = 0;
 	page("SETTINGS", NULL);
-	setting_row(112, 528, y, item == SETTING_CHUNKY, menu.large, "3D RESOLUTION",
-		menu.chunky == RESOLUTION_ULTRA ? "ULTRA DETAIL" : menu.chunky == RESOLUTION_HIGH ? "HIGH DETAIL" :
-		menu.chunky == 2 ? "CHUNKY" :
-		menu.chunky == 1 ? "MEDIUM" : "STANDARD");
-	setting_row(112, 528, y += 23, item == SETTING_ANIMATIONS, menu.large, "ANIMATIONS",
-		menu.half_animation ? "HALF RATE" : "FULL RATE");
-	setting_row(112, 528, y += 23, item == SETTING_PARTICLES, menu.large, "PARTICLES", menu.no_particles ? "OFF" : "ON");
-	setting_row(112, 528, y += 23, item == SETTING_DECALS, menu.large, "DECALS", menu.no_decals ? "OFF" : "ON");
-	setting_row(112, 528, y += 23, item == SETTING_VIEW_MODEL, menu.large, "VIEW MODEL",
-		menu.view_model == 3 ? "OFF IN SPLIT" : menu.view_model == 2 ? "HIGH" : menu.view_model == 1 ? "MEDIUM" : "LOW");
-	setting_row(112, 528, y += 23, item == SETTING_TERRAIN, menu.large, "TERRAIN DETAIL",
-		terrain_details[menu.terrain_detail >= 0 && menu.terrain_detail <= 3 ? menu.terrain_detail : 0]);
-	if (menu.hud_inset)
-		snprintf(value, sizeof(value), "%d PIXELS", menu.hud_inset);
-	else
-		snprintf(value, sizeof(value), "OFF");
-	setting_row(112, 528, y += 23, item == SETTING_WIDESCREEN, menu.large, "WIDESCREEN",
-		menu.widescreen ? "ANAMORPHIC" : "OFF");
-	setting_row(112, 528, y += 23, item == SETTING_ANTIALIAS, menu.large, "ANTI-ALIASING", menu.antialias ? "ON" : "OFF");
-	setting_row(112, 528, y += 23, item == SETTING_DEDITHER, menu.large, "DEDITHER", menu.dedither ? "ON" : "OFF");
-	setting_row(112, 528, y += 23, item == SETTING_HUD_INSET, menu.large, "HUD INSET", value);
-	setting_row(112, 528, y += 23, item == SETTING_COUNTER, menu.large, "FPS COUNTER", menu.fps_counter ? "ON" : "OFF");
-	list_item(SCREEN_W / 2, y + 32, 180, item == SETTING_BACK, "BACK");
-	panel(112, 370, 528, 422, 0x80102040);
-	frame_line(112, 370, 528, 422, 0x806080A0);
+	box(X0 - 12, TOP - 30, X1 + 28, bottom + 18);
+	for (int s = first; s < first + VISIBLE && s < SETTING_COUNT; s++)
+	{
+		int y = TOP + (s - first) * STEP;
+		const char *label = "";
+		char value[32];
+
+		value[0] = 0;
+		switch (s)
+		{
+		case SETTING_CHUNKY:
+			label = "3D RESOLUTION";
+			snprintf(value, sizeof(value), "%s", menu.chunky == RESOLUTION_ULTRA ? "ULTRA DETAIL" :
+				menu.chunky == RESOLUTION_HIGH ? "HIGH DETAIL" : menu.chunky == 2 ? "CHUNKY" :
+				menu.chunky == 1 ? "MEDIUM" : "STANDARD");
+			break;
+		case SETTING_FIELD_OF_VIEW:
+			label = "FIELD OF VIEW";
+			snprintf(value, sizeof(value), "%d DEGREES", menu.field_of_view);
+			break;
+		case SETTING_WIDESCREEN:
+			label = "WIDESCREEN";
+			snprintf(value, sizeof(value), "%s", menu.widescreen ? "ANAMORPHIC" : "OFF");
+			break;
+		case SETTING_ANIMATIONS:
+			label = "ANIMATIONS";
+			snprintf(value, sizeof(value), "%s", menu.half_animation ? "HALF RATE" : "FULL RATE");
+			break;
+		case SETTING_PARTICLES:
+			label = "PARTICLES";
+			snprintf(value, sizeof(value), "%s", menu.no_particles ? "OFF" : "ON");
+			break;
+		case SETTING_DECALS:
+			label = "DECALS";
+			snprintf(value, sizeof(value), "%s", menu.no_decals ? "OFF" : "ON");
+			break;
+		case SETTING_VIEW_MODEL:
+			label = "VIEW MODEL";
+			snprintf(value, sizeof(value), "%s", menu.view_model == 3 ? "OFF IN SPLIT" : menu.view_model == 2 ? "HIGH" :
+				menu.view_model == 1 ? "MEDIUM" : "LOW");
+			break;
+		case SETTING_TERRAIN:
+			label = "TERRAIN DETAIL";
+			snprintf(value, sizeof(value), "%s",
+				terrain_details[menu.terrain_detail >= 0 && menu.terrain_detail <= 3 ? menu.terrain_detail : 0]);
+			break;
+		case SETTING_ANTIALIAS:
+			label = "ANTI-ALIASING";
+			snprintf(value, sizeof(value), "%s", menu.antialias ? "ON" : "OFF");
+			break;
+		case SETTING_DEDITHER:
+			label = "DEDITHER";
+			snprintf(value, sizeof(value), "%s", menu.dedither ? "ON" : "OFF");
+			break;
+		case SETTING_HUD_INSET:
+			label = "HUD INSET";
+			if (menu.hud_inset)
+				snprintf(value, sizeof(value), "%d PIXELS", menu.hud_inset);
+			else
+				snprintf(value, sizeof(value), "OFF");
+			break;
+		case SETTING_COUNTER:
+			label = "FPS COUNTER";
+			snprintf(value, sizeof(value), "%s", menu.fps_counter ? "ON" : "OFF");
+			break;
+		default:
+			list_item((X0 + X1) / 2, y, 180, item == s, "BACK");
+			continue;
+		}
+		setting_row(X0, X1, y, item == s, menu.large, label, value);
+	}
+	{
+		int top = TOP - 22, end = bottom + 10, span = end - top;
+
+		panel(X1 + 12, top, X1 + 16, end, 0x60608CC0);
+		panel(X1 + 12, top + span * first / SETTING_COUNT, X1 + 16, top + span * (first + VISIBLE) / SETTING_COUNT,
+			0xE08CC0FF);
+	}
+	box(X0 - 12, bottom + 32, X1 + 28, bottom + 86);
 	for (int line = 0; line < 2; line++)
 	{
 		if (help[item][line][0])
-			text_centered(menu.small, SCREEN_W / 2, (help[item][1][0] ? 392 : 401) + line * 18, TEXT_COLOR,
+			text_centered(menu.small, SCREEN_W / 2, bottom + (help[item][1][0] ? 54 : 63) + line * 18, TEXT_COLOR,
 				help[item][line]);
 	}
-	text_centered(menu.small, SCREEN_W / 2, 448, TEXT_DIM, "A, LEFT, RIGHT  CHANGE        B  BACK");
+	hints("A, LEFT, RIGHT  CHANGE        B  BACK");
 }
 
 static void draw_content(const struct n64_menu_choice *c, int item)
@@ -1525,6 +1674,7 @@ static void draw_content(const struct n64_menu_choice *c, int item)
 	int vehicle = vehicle_choices[vehicle_choice(c->vehicle_set)];
 
 	page("CONTENT OPTIONS", "MULTIPLAYER");
+	box(68, 92, 572, 360);
 	setting_row(80, 560, 126 + CONTENT_WEAPONS * 42, item == CONTENT_WEAPONS, menu.large,
 		"WEAPONS", weapon_sets[c->weapon_set >= 0 && c->weapon_set < WEAPON_SET_COUNT ? c->weapon_set : 0]);
 	setting_row(80, 560, 126 + CONTENT_VEHICLES * 42, item == CONTENT_VEHICLES, menu.large, "VEHICLES", vehicle_sets[vehicle]);
@@ -1533,8 +1683,7 @@ static void draw_content(const struct n64_menu_choice *c, int item)
 	setting_row(80, 560, 126 + CONTENT_BIG_HEAD * 42, item == CONTENT_BIG_HEAD, menu.large, "BIG HEAD", c->big_head ? "ON" : "OFF");
 	setting_row(80, 560, 126 + CONTENT_PAINTBALL * 42, item == CONTENT_PAINTBALL, menu.large, "PAINTBALL", c->paintball ? "ON" : "OFF");
 	list_item(SCREEN_W / 2, 134 + CONTENT_BACK * 42, 180, item == CONTENT_BACK, "BACK");
-	panel(80, 374, 560, 424, 0x80102040);
-	frame_line(80, 374, 560, 424, FRAME_COLOR);
+	box(68, 372, 572, 424);
 	help = item == CONTENT_WEAPONS ?
 #ifdef HALO_N64_PC_EXPANSION
         (c->weapon_set == N64_WEAPONS_PC_ADDITIVE ? "PC PICKUPS; MAP STARTING WEAPONS" :
@@ -1549,7 +1698,7 @@ static void draw_content(const struct n64_menu_choice *c, int item)
 		item == CONTENT_PAINTBALL ? "COLORED IMPACTS AT EACH WEAPON'S DECAL SIZE" : "BACK TO GAME SETUP";
 	text_centered(menu.small, SCREEN_W / 2, 394, TEXT_COLOR, help);
 	text_centered(menu.small, SCREEN_W / 2, 414, TEXT_DIM, "OPTIONAL MODIFIERS; ORIGINAL WEAPON DAMAGE");
-	text_centered(menu.small, SCREEN_W / 2, 448, TEXT_DIM, "A, LEFT, RIGHT  CHANGE        B  BACK");
+	hints("A, LEFT, RIGHT  CHANGE        B  BACK");
 }
 
 /* the bots, one at a time from the least to the most there is room for
@@ -1682,9 +1831,8 @@ static void draw_teams(const struct n64_menu_choice *c)
 			text_centered(menu.small, center, 189, TEXT_DIM, "NO PLAYERS");
 	}
 	draw_player_cards(c, 1, 1);
-	text_centered(menu.small, SCREEN_W / 2, 452, TEXT_DIM,
-		setup_burning(c) ? "YOUR CONSOLE WILL BURN   LEFT RED / RIGHT BLUE   START PLAY" :
-		setup_experimental(c) ? "EXPERIMENTAL   LEFT RED / RIGHT BLUE   A/B BACK   START PLAY" :
+	hints(setup_burning(c) ? "YOUR CONSOLE WILL BURN   LEFT  RED   RIGHT  BLUE   START  PLAY" :
+		setup_experimental(c) ? "EXPERIMENTAL   LEFT  RED   RIGHT  BLUE   A/B  BACK   START  PLAY" :
 		"LEFT  RED     RIGHT  BLUE     A/B  BACK     START  PLAY");
 }
 
@@ -1746,36 +1894,66 @@ static void draw_setup(const struct n64_menu_choice *c, int row, int score_index
 			text_right(menu.large, x1 - 14, y + 32, pulsing(), ">");
 		}
 	}
-	/* the map's picture (Halo's, 256x128) and the game type's */
-	panel(352, 84, SAFE_RIGHT, 212, 0xC0000000);
-	if (maps[c->map].picture >= 0)
-		blit(picture(&menu.map_picture, "map", maps[c->map].picture), 352, 84, 1.f);
-	else
-		text_centered(menu.large, 480, 154, TEXT_COLOR, maps[c->map].name);
-	frame_line(350, 82, SAFE_RIGHT + 2, 214, FRAME_COLOR);
-	if (c->campaign)
+	/* (Firefight and the campaign have no score, bots or options: what the
+	game is, where those rows are) */
+	if (DIFFICULTY_GAME(c))
 	{
-		text_centered(menu.large, 480, 256, TEXT_COLOR, "FIND THE SURVIVORS");
-		text_centered(menu.small, 480, 282, TEXT_DIM, "CHECKPOINTS AS YOU GO");
+		box(SAFE_LEFT, 80 + ROW_SCORE * 41, 336, 80 + ROW_OPTIONS * 41 + 38);
+		text_centered(menu.large, 184, 80 + ROW_SCORE * 41 + 38, TEXT_BRIGHT,
+			c->campaign ? "THE SECOND MISSION" : "COVENANT IN WAVES");
+		text_centered(menu.small, 184, 80 + ROW_SCORE * 41 + 66, TEXT_COLOR,
+			c->campaign ? "FIND THE SURVIVORS" : "ALL PLAYERS SHARE THEIR LIVES");
+		text_centered(menu.small, 184, 80 + ROW_SCORE * 41 + 88, TEXT_COLOR,
+			c->campaign ? "CHECKPOINTS AS YOU GO" : "HOLD OUT AS LONG AS YOU CAN");
 	}
-	else if (c->firefight)
+	/* the map's picture (Halo's 140x114, 256x208 on the cartridge:
+	tools/n64/ui.py) across the right column, the game type's (92x75) as an
+	emblem in its corner, a line on the game under them */
 	{
-		text_centered(menu.large, 480, 256, TEXT_COLOR, "COVENANT IN WAVES");
-		text_centered(menu.small, 480, 282, TEXT_DIM, "SHARED LIVES");
-	}
-	else
-	{
-		panel(384, 226, 576, 322, 0xC0000000);
-		blit(picture(&menu.type_picture, "gametype", game_types[c->game_type].picture), 384, 226, 1.f);
-		frame_line(382, 224, 578, 324, FRAME_COLOR);
+		int x0 = 352, y0 = 80, x1 = SAFE_RIGHT, y1 = 288;
+		sprite_t *map = maps[c->map].picture >= 0 ? picture(&menu.map_picture, "map", maps[c->map].picture) : NULL;
+		char line[64];
+
+		panel(x0, y0, x1, y1, 0xFF000000);
+		if (map)
+		{
+			/* (the whole frame filled, keeping the picture's shape) */
+			float scale_x = (float)(x1 - x0) / map->width, scale_y = (float)(y1 - y0) / map->height;
+			float scale = scale_x < scale_y ? scale_x : scale_y;
+
+			blit(map, x0 + (int)((x1 - x0) - map->width * scale) / 2, y0 + (int)((y1 - y0) - map->height * scale) / 2,
+				scale);
+		}
+		else
+			text_centered(menu.large, (x0 + x1) / 2, (y0 + y1) / 2 + 8, TEXT_COLOR, maps[c->map].name);
+		if (!DIFFICULTY_GAME(c))
+		{
+			sprite_t *type = picture(&menu.type_picture, "gametype", game_types[c->game_type].picture);
+
+			if (type)
+			{
+				int bx = x1 - type->width - 10, by = y1 - type->height - 10;
+
+				panel(bx - 4, by - 4, bx + type->width + 4, by + type->height + 4, 0xFF000000);
+				blit(type, bx, by, 1.f);
+				frame_line(bx - 4, by - 4, bx + type->width + 4, by + type->height + 4, FRAME_COLOR);
+			}
+		}
+		frame_line(x0 - 2, y0 - 2, x1 + 2, y1 + 2, FRAME_COLOR);
+		box(x0 - 2, 296, x1 + 2, 324);
+		if (DIFFICULTY_GAME(c))
+			snprintf(line, sizeof(line), "%s", maps[c->map].name);
+		else
+			snprintf(line, sizeof(line), "%s   -   %d %s TO WIN", teams ? "TEAMS" : "FREE FOR ALL",
+				game_types[c->game_type].scores[score_index], game_types[c->game_type].unit);
+		text_centered(menu.small, (x0 + x1) / 2, 316, TEXT_COLOR, line);
 	}
 	draw_player_cards(c, teams, 0);
-	text_centered(menu.small, SCREEN_W / 2, 452, TEXT_DIM,
-		setup_burning(c) && row == ROW_BOTS ? "YOUR CONSOLE WILL BURN   LEFT/RIGHT BOTS   START PLAY" :
-		setup_burning(c) ? "WARNING: YOUR CONSOLE WILL BURN   START PLAY" :
-		setup_experimental(c) && row == ROW_BOTS ? "EXPERIMENTAL: LEFT/RIGHT BOTS; A SKILL; START PLAY" :
-		setup_experimental(c) ? teams ? "EXPERIMENTAL   A JOIN  B LEAVE  Z/R TEAMS  START PLAY" :
-			"EXPERIMENTAL   A JOIN  B LEAVE  START PLAY" :
+	hints(setup_burning(c) && row == ROW_BOTS ? "YOUR CONSOLE WILL BURN   LEFT/RIGHT  BOTS   START  PLAY" :
+		setup_burning(c) ? "YOUR CONSOLE WILL BURN   START  PLAY" :
+		setup_experimental(c) && row == ROW_BOTS ? "EXPERIMENTAL   LEFT/RIGHT  BOTS   A  SKILL   START  PLAY" :
+		setup_experimental(c) ? teams ? "EXPERIMENTAL   A  JOIN   B  LEAVE   Z/R  TEAMS   START  PLAY" :
+			"EXPERIMENTAL   A  JOIN   B  LEAVE   START  PLAY" :
 		!DIFFICULTY_GAME(c) && row == ROW_BOTS ? "LEFT/RIGHT  BOTS        A  SKILL        START  PLAY" :
 		teams ? "A  JOIN        B  LEAVE        Z/R  TEAMS        START  PLAY" :
 		"A  JOIN        B  LEAVE        START  PLAY");
@@ -2206,6 +2384,10 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					menu.hud_inset = (menu.hud_inset + HUD_INSET_STEP) % (HUD_INSET_MAXIMUM + HUD_INSET_STEP);
 				if (setting == SETTING_COUNTER && (pad->left || pad->right || pad->pressed.a))
 					menu.fps_counter = !menu.fps_counter;
+				if (setting == SETTING_FIELD_OF_VIEW && pad->left)
+					menu.field_of_view = menu.field_of_view <= FOV_MINIMUM ? FOV_MAXIMUM : menu.field_of_view - FOV_STEP;
+				else if (setting == SETTING_FIELD_OF_VIEW && (pad->right || pad->pressed.a))
+					menu.field_of_view = menu.field_of_view >= FOV_MAXIMUM ? FOV_MINIMUM : menu.field_of_view + FOV_STEP;
 				if (setting == SETTING_TERRAIN && pad->left)
 					menu.terrain_detail = terrain_step(menu.terrain_detail, -1);
 				else if (setting == SETTING_TERRAIN && (pad->right || pad->pressed.a))
@@ -2390,6 +2572,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_render_set_high_detail(menu.chunky == RESOLUTION_ULTRA ? N64_DETAIL_ULTRA :
 				menu.chunky == RESOLUTION_HIGH ? N64_DETAIL_HIGH : 0);
 			n64_half_animation_rate = menu.half_animation;
+			n64_field_of_view = menu.field_of_view;
 			settings_save();
 			n64_render_set_anamorphic(menu.widescreen);
 			/* everyone starts standing */

@@ -66,12 +66,15 @@ def export(bitmap, output, *, definitions=None, sdk=None):
         image = decode(memory, BitmapImage(raw), 256).convert("RGBA")
         if image.size != (256, 128):
             raise ValueError("Unexpected menu picture dimensions")
+        # (the picture alone, at the Xbox maps' size: ui.py menu_picture)
+        from .ui import menu_picture
+        image = menu_picture(image, 256)
         png = out / f"map{index}.png"
         image.save(png)
         run([str(Path(sdk) / "bin" / ("mksprite.exe" if sys.platform == "win32" else "mksprite")) if sdk else tool("mksprite"), "--format", "RGBA16",
                         "--compress", "1", "-o", out.as_posix(), png.as_posix()], check=True, capture_output=True)
         png.unlink()
-    print("PC map thumbnails appended at existing 256x128 menu size")
+    print("PC map thumbnails appended at the menu size (256x208)")
 
 
 def main():
