@@ -1212,11 +1212,27 @@ void set_window_camera_values(
 		instead of 70); an emulator shows the whole picture. The 4:3 views
 		(one player, three or four) get the full 70; the two wide views of
 		two players stay as they were (already ~100 across) */
-		if (main_get_window_count() != 2)
 		{
+			/* Settings: FIELD OF VIEW (n64_field_of_view, n64_menu.c), the
+			first person's degrees across a 4:3 view, 70 Halo's: every first-
+			person view widened or narrowed by its tangent's ratio to 70's
+			(zoom levels with it; cutscenes, vehicles' and dead views as they
+			were) */
+			extern int n64_field_of_view;
+			real scale = 1.f;
+
+			if (n64_field_of_view && n64_field_of_view != 70 &&
+				window->local_player_index != NONE &&
+				director_get_perspective(window->local_player_index) == _director_perspective_first_person)
+			{
+				scale = tangent(DEGREES_TO_RADIANS((real)n64_field_of_view) * 0.5f) /
+					tangent(DEGREES_TO_RADIANS(70.f) * 0.5f);
+			}
 			window->rasterizer_camera.vertical_field_of_view =
 				2.0f * arctangent(
-					0.75f * tangent(observer->field_of_view * 0.5f),
+					0.75f * scale * (main_get_window_count() != 2 ?
+						tangent(observer->field_of_view * 0.5f) :
+						render_camera_get_adjusted_field_of_view_tangent(observer->field_of_view)),
 					1.0f);
 		}
 #endif

@@ -20,6 +20,7 @@ pixels_offset; the others have none, and the game skips them
 
 #include "../src/n64.h"
 
+#include <math.h>
 #include <string.h>
 
 /* motion_sensor.c's (the sensor's centre and its scale) */
@@ -85,6 +86,105 @@ void rasterizer_hud_end(
 	return;
 }
 
+/* hud_draw.c's _shader_framebuffer_blend_function_multiply (its own enum),
+a multitexture overlay's first map times its second */
+#define MAP_BLEND_MULTIPLY 1
+
+/* a piece of a strip of a map: the screen's rectangle, the map's (in its
+sprite's texels) */
+static void masked_map_piece(
+	short sprite,
+	real x0, real y0, real x1, real y1,
+	real s0, real t0, real s1, real t1,
+	unsigned long color)
+{
+	struct n64_hud_quad quad;
+
+	memset(&quad, 0, sizeof(quad));
+	quad.sprite = sprite;
+	quad.x[0] = quad.x[3] = x0;
+	quad.x[1] = quad.x[2] = x1;
+	quad.y[0] = quad.y[1] = y0;
+	quad.y[2] = quad.y[3] = y1;
+	quad.s[0] = quad.s[3] = s0;
+	quad.s[1] = quad.s[2] = s1;
+	quad.t[0] = quad.t[1] = t0;
+	quad.t[2] = quad.t[3] = t1;
+	quad.color = color;
+	n64_hud_quad(&quad);
+}
+
+/* A multitexture overlay whose first map masks its second -- the sniper's
+angle ticks: a fading strip over ticks that scroll with the aim, faded in
+by their effectors only when zoomed. The N64's HUD draws one map a quad:
+drawing the first alone left two white bars on the screen, zoomed or not.
+The second is drawn instead, scrolled and faded as Halo has it (its
+texture coordinates are the first's times its scale plus its offset), in
+two pieces where the strip passes its map's end (it wraps); the mask's
+fading ends are left out */
+static void draw_masked_map(
+	struct rasterizer_dynamic_screen_geometry_parameters *parameters,
+	struct dynamic_screen_vertex *vertices)
+{
+	struct bitmap_data *bitmap = parameters->map[1];
+	real fade = parameters->map_fade[1] ? *parameters->map_fade[1] : 1.f;
+	real origin_x, origin_y, x0, y0, x1, y1, u0, v0, u1, v1, k, texel_u, texel_v;
+	real base_u = parameters->map_texture_scale[0].i ? parameters->map_texture_scale[0].i : 1.f;
+	real base_v = parameters->map_texture_scale[0].j ? parameters->map_texture_scale[0].j : 1.f;
+	real offset_u = parameters->map_offset[1] ? parameters->map_offset[1]->x : 0.f;
+	real offset_v = parameters->map_offset[1] ? parameters->map_offset[1]->y : 0.f;
+	/* (the element's colour, or its effectors' tint; the ticks' blue is
+	their bitmap's own, kept in colour on the cartridge: tools/n64/hud.py) */
+	unsigned long rgb = vertices[0].color & 0xFFFFFFu, alpha, color;
+
+	if (!bitmap || bitmap->pixels_offset <= 0 || fade <= 0.f)
+		return;
+	origin_x = render.camera.viewport_bounds.x0 + (parameters->offset ? parameters->offset->i : 0.f);
+	origin_y = render.camera.viewport_bounds.y0 + (parameters->offset ? parameters->offset->j : 0.f);
+	x0 = hud_x(origin_x + vertices[0].position.x);
+	y0 = hud_y(origin_y + vertices[0].position.y);
+	x1 = hud_x(origin_x + vertices[2].position.x);
+	y1 = hud_y(origin_y + vertices[2].position.y);
+	u0 = vertices[0].texture_coordinates.x * base_u * parameters->map_scale[1].i + offset_u;
+	v0 = vertices[0].texture_coordinates.y * base_v * parameters->map_scale[1].j + offset_v;
+	u1 = vertices[2].texture_coordinates.x * base_u * parameters->map_scale[1].i + offset_u;
+	v1 = vertices[2].texture_coordinates.y * base_v * parameters->map_scale[1].j + offset_v;
+	if (v1 < v0 || v1 - v0 > 1.f || u1 - u0 > 1.f || y1 <= y0)
+		return;
+	/* (within the map's first turn) */
+	k = floorf(v0);
+	v0 -= k;
+	v1 -= k;
+	k = floorf(u0 < u1 ? u0 : u1);
+	u0 -= k;
+	u1 -= k;
+	/* (in its sprite's texels: half size, as the HUD's bitmaps are) */
+	texel_u = (TEST_FLAG(bitmap->flags, 4) ? 1.f : bitmap->width) * 0.5f *
+		(parameters->map_texture_scale[1].i ? parameters->map_texture_scale[1].i : 1.f);
+	texel_v = (TEST_FLAG(bitmap->flags, 4) ? 1.f : bitmap->height) * 0.5f *
+		(parameters->map_texture_scale[1].j ? parameters->map_texture_scale[1].j : 1.f);
+	if (parameters->map_tint[1])
+	{
+		rgb = (unsigned long)PIN(parameters->map_tint[1]->red * 255.f, 0.f, 255.f) << 16 |
+			(unsigned long)PIN(parameters->map_tint[1]->green * 255.f, 0.f, 255.f) << 8 |
+			(unsigned long)PIN(parameters->map_tint[1]->blue * 255.f, 0.f, 255.f);
+	}
+	alpha = (unsigned long)PIN((real)(vertices[0].color >> 24) * PIN(fade, 0.f, 1.f), 0.f, 255.f);
+	color = alpha << 24 | rgb;
+	if (v1 <= 1.f)
+		masked_map_piece((short)(bitmap->pixels_offset - 1), x0, y0, x1, y1,
+			u0 * texel_u, v0 * texel_v, u1 * texel_u, v1 * texel_v, color);
+	else
+	{
+		real split = y0 + (y1 - y0) * (1.f - v0) / (v1 - v0);
+
+		masked_map_piece((short)(bitmap->pixels_offset - 1), x0, y0, x1, split,
+			u0 * texel_u, v0 * texel_v, u1 * texel_u, texel_v, color);
+		masked_map_piece((short)(bitmap->pixels_offset - 1), x0, split, x1, y1,
+			u0 * texel_u, 0.f, u1 * texel_u, (v1 - 1.f) * texel_v, color);
+	}
+}
+
 void rasterizer_psuedo_dynamic_screen_quad_draw(
 	struct rasterizer_dynamic_screen_geometry_parameters *parameters,
 	struct dynamic_screen_vertex *vertices)
@@ -95,6 +195,11 @@ void rasterizer_psuedo_dynamic_screen_quad_draw(
 	real texel_u, texel_v;
 	short i;
 
+	if (parameters->map[1] && parameters->map0_to_1_blend_function == MAP_BLEND_MULTIPLY)
+	{
+		draw_masked_map(parameters, vertices);
+		return;
+	}
 	if (!bitmap || bitmap->pixels_offset <= 0)
 		return;
 	quad.sprite = (short)(bitmap->pixels_offset - 1);
