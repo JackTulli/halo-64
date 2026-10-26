@@ -89,7 +89,7 @@
     "rom": "halo-campaign.z64",
     "rom_elf_compression": 1,
     "title": "HALO 64 CAMPAIGN",
-    "flags": []
+    "flags": ["debug_rdpq"]
   },
   "online": {
     "comment": "the online cartridge (port/n64/docs/online): its own build of the game (HALO_N64_ONLINE: ONLINE, through Halo 64 Link on the computer), the multiplayer cartridge's maps. tools/n64_build.py builds it with target online (not by default)",
