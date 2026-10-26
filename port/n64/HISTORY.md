@@ -5,6 +5,21 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+26 October: 3-4 player games on Battle Creek, Blood Gulch and Sidewinder
+start again (issue 15; pull request 17 by jz-k).
+
+- With 3-4 players (or under 1 MB of heap) the game loads a map's lighter
+  level, `<map>-low.lvl`, and stopped at its first missing texture:
+  "error opening file rom:/tex/<name>.sprite". `convert.py` wrote
+  `tex/<map>.list` from the full level's and the model sets' textures, and
+  `prune.py` deletes every texture no list names. On the maps with terrain
+  tiles the two levels' detail maps differ -- the full level's are made
+  without mipmaps beside the tiles (`level.py`, `mipmapped = not
+  self.colour_tiles`), the lighter level's with them -- so their names
+  differ, and the lighter level's two were deleted: 6 textures on the
+  multiplayer and online cartridges, none on the campaign's. The list now
+  takes the lighter level's textures too.
+
 25 October: the consoles' RDP crash traced to the RDP being restarted too
 soon after a SYNC_FULL; the version on the title page and the builder.
 
