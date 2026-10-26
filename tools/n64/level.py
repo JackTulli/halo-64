@@ -478,7 +478,7 @@ def share_file(path, directory, suffix):
     if target.exists() and target.read_bytes() == data:
         Path(path).unlink()
     else:
-        os.replace(path, target)
+        toolpaths.replace_shared(path, target)
     return name
 
 

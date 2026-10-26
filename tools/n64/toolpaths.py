@@ -8,6 +8,7 @@ slashes: mksprite names its output after its input's part past the last
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -32,3 +33,24 @@ def run(command, **options):
         options.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
         options.setdefault("stdin", subprocess.DEVNULL)
     return subprocess.run(command, **options)
+
+
+def replace_shared(made, shared):
+    """moves a made file to its place in a folder the maps' conversions
+    share, named by its contents (sounds.py's cache, level.py share_file).
+    Two conversions at once may make the same file; each replaces it
+    whole. Windows refuses to replace a file that is open (the other
+    conversion's, or a virus scanner's: the ROM builder stopped with
+    "Access is denied"): one already there is the same file and is kept,
+    and one not there yet is tried again"""
+    for attempt in range(20):
+        try:
+            os.replace(made, shared)
+            return
+        except PermissionError:
+            if Path(shared).exists():
+                Path(made).unlink(missing_ok=True)
+                return
+            if attempt == 19:
+                raise
+            time.sleep(0.25)

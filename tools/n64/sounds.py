@@ -39,7 +39,6 @@ packs with every other map's into the cartridge's one bank file.
 """
 
 import hashlib
-import os
 import struct
 import subprocess
 import tempfile
@@ -326,7 +325,7 @@ class SoundConverter:
         """converts the files the cache lacks; writes the map's list"""
         self.cache.mkdir(parents=True, exist_ok=True)
         if self.pending:
-            with tempfile.TemporaryDirectory(dir=self.cache) as work:
+            with tempfile.TemporaryDirectory(dir=self.cache, ignore_cleanup_errors=True) as work:
                 work = Path(work)
                 for looped in (False, True):
                     names = [k for k, v in self.pending.items() if v[3] == looped]
@@ -350,9 +349,8 @@ class SoundConverter:
                     toolpaths.run([str(AUDIOCONV), *flags, "-o", str(out), str(source)], check=True,
                                    capture_output=True)
                     for key in names:
-                        # (another map's conversion may make the same file:
-                        # each replaces it whole)
-                        os.replace(out / f"{key}.wav64", self.cache / f"{key}.wav64")
+                        # (another map's conversion may make the same file)
+                        toolpaths.replace_shared(out / f"{key}.wav64", self.cache / f"{key}.wav64")
         Path(list_path).parent.mkdir(parents=True, exist_ok=True)
         Path(list_path).write_text("".join(f"{n}\n" for n in self.files), newline="\n")
         return len(self.files), len(self.pending)

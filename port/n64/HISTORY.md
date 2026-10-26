@@ -39,6 +39,15 @@ the size of their frames, and the sniper rifle's two white bars gone.
   `n64_hud_game.c` `draw_masked_map` now draws map 1 through the strip's
   quad, scrolled, scaled and faded as Halo has it, in two pieces where it
   passes its bitmap's end; unzoomed it draws nothing.
+- The ROM Builder on Windows could stop a few minutes in with
+  "PermissionError: [WinError 5] Access is denied" moving a converted
+  sound into its cache. Maps are converted several at a time and share the
+  sound cache and the texture, model and animation folders, whose files
+  are named by their contents; two conversions making the same file each
+  replaced it whole, which Windows refuses while the other (or a virus
+  scanner) has it open. `toolpaths.replace_shared` keeps the file already
+  there (the same contents) and tries again when there is none yet; used
+  by `sounds.py` and `level.py` `share_file`.
 
 26 October: 3-4 player games on Battle Creek, Blood Gulch and Sidewinder
 start again (issue 15; pull request 17 by jz-k).
