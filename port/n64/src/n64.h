@@ -309,6 +309,13 @@ by texture): before 2D drawn over them */
 void n64_render_flush(void);
 /* n64_render_flush, then the 2D over the views (the HUD's phase of the counter) */
 void n64_render_hud_phase(void);
+/* a view's HUD drawn: the next view's 3D may follow (HUD RESOLUTION HIGH
+DETAIL) */
+void n64_render_hud_end(void);
+/* a view's rectangle, laid out in the 3D's pixels, in the pixels its HUD
+is drawn in: the same, but twice as wide where the HUD is at 640x240 over
+the 3D's 320x240 (n64_render_set_hud_detail) */
+void n64_render_hud_rect(int *x0, int *y0, int *x1, int *y1);
 /* chunky mode (the menu's settings): from the next frame on, the views'
 3D is drawn half as wide and its pixels doubled across (the HUD and text
 stay at full width) */
@@ -333,6 +340,13 @@ view across, the HUD squeezed about each view's middle) */
 #define N64_DETAIL_HIGH 1
 #define N64_DETAIL_ULTRA 2
 void n64_render_set_high_detail(int level);
+/* Settings: HUD RESOLUTION HIGH DETAIL -- the HUD and text at 640x240 at
+240p, as high detail draws them, over the 3D's 320x240 picture (medium and
+chunky widen theirs to it first; each of its pixels shown twice across),
+tried once the map is in; else as without it (no word on the screen, only a
+line in the debug log). Nothing with high or ultra detail: their HUD is at
+their own resolution already. 0 (STANDARD): the HUD 320 across, as before */
+void n64_render_set_hud_detail(int on);
 void n64_render_set_anamorphic(int on);
 /* Settings: ANTI-ALIASING (the RDP's coverage on opaque surfaces, the VI's
 filter smoothing their edges) and DEDITHER (the VI rebuilding colour from

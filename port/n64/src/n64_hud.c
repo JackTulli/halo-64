@@ -360,6 +360,8 @@ int n64_hud_inset(void)
 int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 {
 	n64_render_hud_phase();
+	/* (the view laid out in the 3D's pixels, its HUD in the display's) */
+	n64_render_hud_rect(&x0, &y0, &x1, &y1);
 	hud.x0 = x0;
 	hud.y0 = y0;
 	hud.x1 = x1;
@@ -463,6 +465,7 @@ void n64_hud_end(void)
 		emulated = n64_emulated_count;
 		hud.ticks = hud.quad_ticks = hud.meter_ticks = hud.quads = 0;
 	}
+	n64_render_hud_end();
 }
 
 static unsigned channel(unsigned long color, int shift)

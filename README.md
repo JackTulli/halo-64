@@ -380,6 +380,7 @@ gamepad that has motors).
 | Setting | What it does |
 |---|---|
 | 3D RESOLUTION | chunky (160 wide, each pixel doubled; the HUD stays sharp), medium (the 3D drawn 256 wide and widened), standard (320 wide), high detail (640x240 at 240p, twice the pixels across as Perfect Dark's high resolution; 520 or 480 across on maps without the memory for 640) or ultra detail (480i on the maps with the memory for it, else as high detail). Lower is faster. |
+| HUD RESOLUTION | high detail (the default): the HUD and text at 640x240 at 240p, as high detail draws them, over the 3D's 320x240 picture (each of its pixels shown twice across; medium and chunky draw theirs narrower and widen it first), on the maps that leave the memory for it, else as standard. Standard: the HUD at 320x240, as before (with medium and chunky too). With high or ultra detail as the 3D RESOLUTION the HUD is at that resolution already, and the row shows SAME AS 3D. Not on the Campaign cartridge: its level leaves no room for it after the menu |
 | FIELD OF VIEW | how wide you see in first person, 60 to 110 degrees across in steps of 5 (70, Halo's, by default; scopes zoom from it). Wider draws more of the level: slower |
 | WIDESCREEN | off, or anamorphic 16:9 for a television that stretches the picture |
 | ANIMATIONS | full or half rate: half poses the characters, vehicles and your gun every other tick (halved again with 3 or 4 players), and the bots think less often. Faster. |
@@ -512,7 +513,8 @@ Cartridge flags are files on the ROM's file system, listed in `port.json`
   `debug_cycle=<seconds>` (after so many seconds a game goes back to the
   menu, which starts the next map by itself: every map in turn, through the
   menu), `debug_high_detail`, `debug_ultra_detail` (3D RESOLUTION high or
-  ultra detail without the menu),
+  ultra detail without the menu), `debug_hud_detail` (HUD RESOLUTION high
+  detail in the games `debug_map` and `debug_cycle` start),
   `debug_view_model=<0-3>`.
 - Drawing: `debug_chase` (view 1 follows its player), `debug_overview`,
   `debug_untextured`, `debug_no_level`, `debug_no_objects`,
