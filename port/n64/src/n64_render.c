@@ -2800,6 +2800,10 @@ static int stream_chunk(int k)
 	/* Count a failed read too: corrupt/unavailable media cannot make a
 	   frame repeatedly retry unbounded chunks. Don't publish partial data. */
 	level.stream_reads_this_frame++;
+	/* (the slot may hold its last chunk in the CPU's data cache: the read
+	is a DMA to RDRAM, and the conversion below must see the new data, as
+	the geometry stream does before its dma_read) */
+	data_cache_hit_writeback_invalidate(block, size);
 	if (fseek(level.stream, level.header->vertices_offset + chunk->vertex_offset, SEEK_SET) ||
 		fread(block, 1, chunk->vertex_size, level.stream) != chunk->vertex_size ||
 		fseek(level.stream, level.header->indices_offset + chunk->index_offset, SEEK_SET) ||
