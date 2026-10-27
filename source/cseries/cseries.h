@@ -284,6 +284,14 @@ void stack_walk_disregard_symbol_names(boolean disregard);
 #define strlen csstrlen
 #define strcpy csstrcpy
 #define memcpy csmemcpy
+#ifdef HALO_N64
+/* (on the N64 cseries.c's wrappers only call libc's -- their asserts are
+compiled out -- and LTO made each a clone that jumps on to it: a call to
+memset or memcpy was a call to a jump. The builtins call libc's directly,
+or for a few bytes of a known size store them in place) */
+#define csmemset(buffer, c, size) __builtin_memset((buffer), (c), (size))
+#define csmemcpy(destination, source, size) __builtin_memcpy((destination), (source), (size))
+#endif
 
 #define match_malloc(file, line, size) debug_malloc(size, FALSE, MATCH_FILE(file), MATCH_LINE(line))
 #define match_free(file, line, ptr) debug_free(ptr, MATCH_FILE(file), MATCH_LINE(line))

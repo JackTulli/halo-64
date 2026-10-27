@@ -35,7 +35,7 @@ waits were the campaign's "AI lag"; Firefight's fit) */
 struct chunk
 {
 	long start; /* cartridge address of the chunk's first byte, or -1 */
-	long length; /* bytes read: a chunk stops where its animation ends */
+	long end; /* past the bytes read (a chunk stops where its animation ends), or -1 */
 	unsigned long last_used;
 	uint8_t *data;
 };
@@ -108,6 +108,7 @@ void n64_animation_open(const char *map_name)
 		if (!anim.chunks[i].data)
 			anim.chunks[i].data = memalign(16, CHUNK_SIZE);
 		anim.chunks[i].start = -1;
+		anim.chunks[i].end = -1;
 	}
 	debugf("n64: animation frames %s: %ld KB streamed, %d KB cache\n", path, anim.file_size / 1024,
 		CHUNK_COUNT * CHUNK_SIZE / 1024);
@@ -123,9 +124,9 @@ void *n64_animation_frame(long data_offset, long data_size, short frame_index, s
 	long graph_size = graph < anim.graph_count ? anim.sizes[graph] : 0;
 	/* addresses on the cartridge, so that a chunk is a chunk of any graph */
 	long offset = base + graph_offset + (long)frame_index * frame_size;
+	long offset_end = offset + frame_size;
 	long start;
 	struct chunk *chunk = NULL;
-	struct chunk *oldest = &anim.chunks[0];
 
 	anim.requests++;
 	anim.clock++;
@@ -134,32 +135,40 @@ void *n64_animation_frame(long data_offset, long data_size, short frame_index, s
 	{
 		struct chunk *c = &anim.chunks[anim.last_hit];
 
-		if (c->start >= 0 && offset >= c->start && offset + frame_size <= c->start + c->length)
+		if (c->start >= 0 && offset >= c->start && offset_end <= c->end)
 		{
 			c->last_used = anim.clock;
 			return c->data + (offset - c->start);
 		}
 	}
-	/* a chunk that holds the whole frame */
+	/* a chunk that holds the whole frame: the first, in the order of the
+	chunks, as before -- only what was read counts: the next animation's
+	frames follow in the file, and a chunk read for this one stopped at its
+	end. (The least recently used chunk is looked for only on a miss, in a
+	loop of its own: the same chunk, without its compares in every hit's
+	search -- a few hundred searches a tick, of 16 chunks, 64 in the
+	campaign.) */
 	for (int i = 0; i < CHUNK_COUNT; i++)
 	{
 		struct chunk *c = &anim.chunks[i];
 
-		/* only what was read counts: the next animation's frames follow in
-		the file, and a chunk read for this one stopped at its end */
-		if (c->start >= 0 && offset >= c->start && offset + frame_size <= c->start + c->length)
+		if (offset >= c->start && offset_end <= c->end && c->start >= 0)
 		{
 			chunk = c;
 			anim.last_hit = i;
 			break;
 		}
-		if (c->last_used < oldest->last_used)
-			oldest = c;
 	}
 	if (!chunk)
 	{
+		struct chunk *oldest = &anim.chunks[0];
 		long length;
 
+		for (int i = 1; i < CHUNK_COUNT; i++)
+		{
+			if (anim.chunks[i].last_used < oldest->last_used)
+				oldest = &anim.chunks[i];
+		}
 		anim.misses++;
 		chunk = oldest;
 		/* from the frame on, as much of the animation as fits */
@@ -172,7 +181,7 @@ void *n64_animation_frame(long data_offset, long data_size, short frame_index, s
 		data_cache_hit_writeback_invalidate(chunk->data, CHUNK_SIZE);
 		dma_read(chunk->data, start, (length + 1) & ~1L);
 		chunk->start = start;
-		chunk->length = length;
+		chunk->end = start + length;
 		anim.last_hit = (int)(chunk - anim.chunks);
 	}
 	chunk->last_used = anim.clock;

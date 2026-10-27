@@ -821,6 +821,11 @@ real_vector3d *matrix4x3_inverse_transform_vector(real_matrix4x3 const *matrix, 
 real_vector3d *matrix4x3_inverse_transform_normal(real_matrix4x3 const *matrix, real_vector3d const *normal, real_vector3d *result);
 real_plane3d *matrix4x3_inverse_transform_plane(real_matrix4x3 const *matrix, real_plane3d const *plane, real_plane3d *result);
 void matrix4x3_multiply(real_matrix4x3 const *a, real_matrix4x3 const *b, real_matrix4x3 *result);
+#ifdef HALO_N64
+/* matrix4x3_multiply(a, the matrix matrix4x3_from_orientation makes of
+orientation, result), without that matrix (matrix_math.c) */
+void matrix4x3_multiply_orientation(real_matrix4x3 const *a, real_orientation const *orientation, real_matrix4x3 *result);
+#endif
 real_matrix3x3 *matrix3x3_transpose(
 	real_matrix3x3 const *matrix,
 	real_matrix3x3 *result);

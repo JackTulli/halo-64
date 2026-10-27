@@ -1530,6 +1530,14 @@ void profile_frame_end(
 	}
 #endif
 
+#ifdef HALO_N64
+	/* (the history is read by the frame dumps alone on the N64 -- the
+	profile's displays, the graph and the stalls, are left out with the
+	scripts that could turn them on -- so a frame goes into it only while a
+	dump may read it: otherwise a copy of 984 bytes a frame, most of it into
+	cache lines the copy had to read first) */
+	if (profile_dump_frames || profile_dump_lost_frames)
+#endif
 	profile_globals.frames[profile_globals.current_frame_history_index] = profile_globals.current_frame;
 
 	profile_globals.current_frame_history_count = MAX(profile_globals.current_frame_history_count, profile_globals.current_frame_history_index+1);

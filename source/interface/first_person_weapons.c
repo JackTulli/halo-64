@@ -471,7 +471,7 @@ long first_person_weapon_get_local_index(
 
 #ifdef HALO_N64
 void n64_first_person_model_draw(long model_index, struct real_matrix4x3 const *node_matrices,
-	real_rgb_color const *tint);
+	short const *node_remap, real_rgb_color const *tint);
 #endif
 
 void first_person_weapon_draw(
@@ -526,19 +526,24 @@ void first_person_weapon_draw(
 					if (first_person_weapon->weapon_node_remapping_table_valid &&
 						weapon_definition->weapon.interface_definition.first_person_model.index!=NONE)
 					{
+#ifdef HALO_N64
+						/* the N64 renderer (port/n64/game/n64_render_game.c), which
+						reads the animation graph's node matrices through the
+						remapping table: the model's own copy of them (a memcpy of
+						52 bytes a node, the weapon's and the hands', every frame)
+						was read once by the renderer and thrown away */
+						n64_first_person_model_draw(
+							weapon_definition->weapon.interface_definition.first_person_model.index,
+							first_person_weapon->node_matrices,
+							first_person_weapon->weapon_node_remapping_table,
+							NULL);
+#else
 						model_remap_node_matrices_to_match_animation_graph(
 							weapon_definition->weapon.interface_definition.first_person_model.index,
 							model_node_matrices,
 							weapon_definition->weapon.interface_definition.first_person_animations.index,
 							first_person_weapon->node_matrices,
 							first_person_weapon->weapon_node_remapping_table);
-#ifdef HALO_N64
-						/* the N64 renderer (port/n64/game/n64_render_game.c) */
-						n64_first_person_model_draw(
-							weapon_definition->weapon.interface_definition.first_person_model.index,
-							model_node_matrices,
-							NULL);
-#else
 						render_model(
 							weapon_definition->weapon.interface_definition.first_person_model.index,
 							0.0f,
@@ -559,18 +564,19 @@ void first_person_weapon_draw(
 					if (first_person_weapon->hands_node_remapping_table_valid &&
 						first_person_interface->hands.index!=NONE)
 					{
+#ifdef HALO_N64
+						n64_first_person_model_draw(
+							first_person_interface->hands.index,
+							first_person_weapon->node_matrices,
+							first_person_weapon->hands_node_remapping_table,
+							&unit->object.base_change_colors[0]);
+#else
 						model_remap_node_matrices_to_match_animation_graph(
 							first_person_interface->hands.index,
 							model_node_matrices,
 							weapon_definition->weapon.interface_definition.first_person_animations.index,
 							first_person_weapon->node_matrices,
 							first_person_weapon->hands_node_remapping_table);
-#ifdef HALO_N64
-						n64_first_person_model_draw(
-							first_person_interface->hands.index,
-							model_node_matrices,
-							&unit->object.base_change_colors[0]);
-#else
 						render_model(
 							first_person_interface->hands.index,
 							0.0f,

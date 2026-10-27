@@ -506,43 +506,77 @@ extern struct data_array *object_header_data;
 #ifdef HALO_N64
 /* datum_get and datum_try_and_get on the object headers, inline (the same
 tests, asserts aside): object lookups were most of datum_get's calls, 6-7%
-of the processor in a game as a function of its own */
+of the processor in a game as a function of its own.
+
+The tests are datum_get's, in fewer instructions. The array's elements are
+object headers (objects_initialize makes it with
+sizeof(struct object_header_datum), and nothing else sets a data array's
+size), so a header is found with a shift and adds, not a multiply by
+data->size (mult and mflo, five cycles). A data array's count and maximum
+count are never negative, so the index's low half taken as unsigned is
+below them exactly when, taken as a short, it is neither negative nor at or
+past them: a negative short is 0x8000 or more. (NONE's low half is 0xFFFF,
+past any count: try_and_get needs no test of its own for it.) And an index
+without an identifier names whatever header is in use at its place, one
+with an identifier only the header with that identifier (which is then in
+use: identifiers in use are never 0) -- one compare in the common case
+instead of three. */
+typedef char n64_object_header_size_assert[sizeof(struct object_header_datum) == 12 ? 1 : -1];
+
+static __inline__ __attribute__((always_inline)) struct object_header_datum *n64_object_header_in(
+	long object_index,
+	short limit)
+{
+	unsigned long absolute_index = (unsigned short)object_index;
+	long identifier = object_index >> 16;
+	struct object_header_datum *header;
+
+	if (absolute_index >= (unsigned long)(unsigned short)limit)
+		return NULL;
+	header = (struct object_header_datum *)object_header_data->data + absolute_index;
+	if (!identifier)
+		return header->identifier ? header : NULL;
+	return header->identifier == identifier ? header : NULL;
+}
+
+/* datum_try_and_get's tests (in use below the maximum count) and
+datum_get's (below the count), always inline: the two functions below, and
+the few in objects.c that are object lookups themselves */
+#define n64_object_header_try_lookup(object_index) \
+	n64_object_header_in((object_index), object_header_data->maximum_count)
+#define n64_object_header_lookup(object_index) \
+	n64_object_header_in((object_index), object_header_data->count)
+
 static __inline struct object_header_datum *n64_object_header_try_and_get(
 	long object_index)
 {
-	struct data_array *data = object_header_data;
-	short absolute_index = (short)object_index;
-	short identifier = (short)(object_index >> 16);
-	struct object_header_datum *header;
-
-	if (object_index == NONE || absolute_index < 0 || absolute_index >= data->maximum_count)
-		return NULL;
-	header = (struct object_header_datum *)((byte *)data->data + data->size * absolute_index);
-	if (!header->identifier || (identifier && header->identifier != identifier))
-		return NULL;
-	return header;
+	return n64_object_header_try_lookup(object_index);
 }
 
 static __inline struct object_header_datum *n64_object_header_get(
 	long object_index)
 {
-	struct data_array *data = object_header_data;
-	short absolute_index = (short)object_index;
-	short identifier = (short)(object_index >> 16);
-	struct object_header_datum *header;
-
-	if (absolute_index < 0 || absolute_index >= data->count)
-		return NULL;
-	header = (struct object_header_datum *)((byte *)data->data + data->size * absolute_index);
-	if (!header->identifier || (identifier && identifier != header->identifier))
-		return NULL;
-	return header;
+	return n64_object_header_lookup(object_index);
 }
 
 #undef object_header_get
 #undef object_header_try_and_get
 #define object_header_get(index)			n64_object_header_get(index)
 #define object_header_try_and_get(index)	n64_object_header_try_and_get(index)
+
+/* object_mark_function on the datum, for a caller that has it already (a
+walk of a cluster's objects in collisions.c looks each header up first, for
+its type: the mark was a second lookup of the same object) */
+static __inline__ __attribute__((always_inline)) boolean n64_object_mark(
+	struct object_datum *object)
+{
+	if (object->object.magic_number != global_object_marker)
+	{
+		object->object.magic_number = global_object_marker;
+		return TRUE;
+	}
+	return FALSE;
+}
 #endif
 
 extern boolean debug_objects_position_velocity;

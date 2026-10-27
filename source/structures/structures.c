@@ -399,6 +399,45 @@ boolean sphere_intersects_cluster_portal(
 	return FALSE;
 }
 
+#ifdef HALO_N64
+/* sphere_intersects_cluster_portal's first test (its plane, then its bounding
+sphere), in place and in its order. Most of a cluster's portals are farther
+from an object than its radius, and the call -- a frame of a kilobyte with
+ten registers saved, and five more calls for the two distances -- went to
+answer just that, for every object that moved, every tick. A portal that
+passes is tested in full as before (the test changes nothing). */
+static __inline boolean n64_sphere_may_reach_portal(
+	struct structure_bsp *structure,
+	struct structure_cluster_portal const *portal,
+	real_point3d const *position,
+	real radius)
+{
+	real_plane3d const *plane = TAG_BLOCK_GET_ELEMENT(
+		&TAG_BLOCK_GET_ELEMENT(
+			&structure->collision_bsp,
+			0,
+			struct collision_bsp)->bsp3d.planes,
+		portal->plane_index,
+		real_plane3d);
+	real plane_distance =
+		position->x*plane->n.i + position->y*plane->n.j + position->z*plane->n.k - plane->d;
+	real delta_x;
+	real delta_y;
+	real delta_z;
+
+	if (!(fabs(plane_distance) < radius))
+	{
+		return FALSE;
+	}
+	delta_x = portal->centroid.x - position->x;
+	delta_y = portal->centroid.y - position->y;
+	delta_z = portal->centroid.z - position->z;
+
+	return delta_x*delta_x + delta_y*delta_y + delta_z*delta_z <
+		(portal->bounding_radius + radius) * (portal->bounding_radius + radius);
+}
+#endif
+
 static short structure_clusters_in_sphere_recursive(
 	short cluster_index,
 	real_point3d const *position,
@@ -440,6 +479,9 @@ static short structure_clusters_in_sphere_recursive(
 				: portal->cluster_indices[0];
 
 		if (structure_cluster_unmarked(adjacent_cluster_index) &&
+#ifdef HALO_N64
+			n64_sphere_may_reach_portal(structure, portal, position, radius) &&
+#endif
 			sphere_intersects_cluster_portal(
 				structure,
 				portal_index,

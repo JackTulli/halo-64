@@ -2660,8 +2660,12 @@ void main_rasterizer_throttle(
 		description = lapsed_frames == 0 ? "SYNCED  " : "LAPSED  ";
 	}
 
-#ifdef HALO_XBOX
-	/* read only by the frame rate and profile displays */
+#if defined(HALO_XBOX) || defined(HALO_N64)
+	/* read only by the frame rate and profile displays. (On the N64 the
+	string is never emptied either -- main_update_time does that only when
+	the rasterizer throttles, which it never does there -- so after twenty
+	frames it was full: each frame measured its 511 characters, formatted
+	this line into no room and copied it all to the profile's frame) */
 	if (rasterizer_globals.framerate_throttle_debug || profile_display)
 #endif
 	_snprintf(

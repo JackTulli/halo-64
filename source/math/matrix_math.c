@@ -1070,6 +1070,95 @@ void matrix4x3_multiply(
 	return;
 }
 
+#ifdef HALO_N64
+/* matrix4x3_multiply(a, b, result) of the matrix b matrix4x3_from_orientation
+makes of an orientation, with b's numbers kept in registers: the same
+products and sums in the same order as matrix4x3_rotation_from_quaternion
+and the HALO_N64 multiply above, without b's thirteen stores and loads,
+the two calls, or the multiply's register saves (every node of every pose:
+object_compute_node_matrices, the first-person weapon's). a is read whole
+before result is written. */
+void matrix4x3_multiply_orientation(
+	real_matrix4x3 const *a,
+	real_orientation const *orientation,
+	real_matrix4x3 *result)
+{
+	real_quaternion const *quaternion = &orientation->rotation;
+	real const *a_elements = a->n[0];
+	real *result_elements = result->n[0];
+	real scale =
+		quaternion->v.i * quaternion->v.i +
+		quaternion->v.j * quaternion->v.j +
+		quaternion->v.k * quaternion->v.k +
+		quaternion->w * quaternion->w;
+	real x, y, z, wx, wy, wz, xx, xy, xz, yy, yz, zz;
+	real b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b_scale;
+	real a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a_scale;
+	real p9, p10, p11;
+
+	if (scale != 0.f)
+		scale = 2.f / scale;
+	else
+		scale = 0.f;
+
+	x = scale * quaternion->v.i;
+	y = scale * quaternion->v.j;
+	z = scale * quaternion->v.k;
+	wx = quaternion->w * x;
+	wy = quaternion->w * y;
+	wz = quaternion->w * z;
+	xx = quaternion->v.i * x;
+	xy = quaternion->v.i * y;
+	xz = quaternion->v.i * z;
+	yy = quaternion->v.j * y;
+	yz = quaternion->v.j * z;
+	zz = quaternion->v.k * z;
+
+	/* (matrix4x3_rotation_from_quaternion's forward, left and up, and the
+	orientation's translation and scale, as matrix4x3_from_orientation puts
+	them in) */
+	b0 = 1.f - (yy + zz);
+	b1 = xy - wz;
+	b2 = xz + wy;
+	b3 = xy + wz;
+	b4 = 1.f - (xx + zz);
+	b5 = yz - wx;
+	b6 = xz - wy;
+	b7 = yz + wx;
+	b8 = 1.f - (xx + yy);
+	b9 = orientation->translation.x;
+	b10 = orientation->translation.y;
+	b11 = orientation->translation.z;
+	b_scale = orientation->scale;
+
+	a0 = a_elements[0], a1 = a_elements[1], a2 = a_elements[2];
+	a3 = a_elements[3], a4 = a_elements[4], a5 = a_elements[5];
+	a6 = a_elements[6], a7 = a_elements[7], a8 = a_elements[8];
+	a9 = a_elements[9], a10 = a_elements[10], a11 = a_elements[11];
+	a_scale = a->scale;
+
+	p9 = (b9 * a0 + b10 * a3 + b11 * a6) * a_scale + a9;
+	p10 = (b9 * a1 + b10 * a4 + b11 * a7) * a_scale + a10;
+	p11 = (b9 * a2 + b10 * a5 + b11 * a8) * a_scale + a11;
+
+	result_elements[0] = b0 * a0 + b1 * a3 + b2 * a6;
+	result_elements[1] = b0 * a1 + b1 * a4 + b2 * a7;
+	result_elements[2] = b0 * a2 + b1 * a5 + b2 * a8;
+	result_elements[3] = b3 * a0 + b4 * a3 + b5 * a6;
+	result_elements[4] = b3 * a1 + b4 * a4 + b5 * a7;
+	result_elements[5] = b3 * a2 + b4 * a5 + b5 * a8;
+	result_elements[6] = b6 * a0 + b7 * a3 + b8 * a6;
+	result_elements[7] = b6 * a1 + b7 * a4 + b8 * a7;
+	result_elements[8] = b6 * a2 + b7 * a5 + b8 * a8;
+	result_elements[9] = p9;
+	result_elements[10] = p10;
+	result_elements[11] = p11;
+	result->scale = a_scale * b_scale;
+
+	return;
+}
+#endif
+
 real
 matrix3x3_determinant(
 	real_matrix3x3 const *matrix)

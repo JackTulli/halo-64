@@ -118,6 +118,23 @@ enum contents
 #define BSP3D_TEST_PILL_EPSILON (1.f/4096.f)
 #define BSP2D_TEST_PILL_EPSILON (1.f/8192.f)
 
+#ifdef HALO_N64
+/* The walks down the BSPs work out a plane's distance at every node they
+pass, and real_math.h's plane3d_distance_to_point, plane2d_distance_to_point
+and dot_product3d are calls on the N64 (two for a 3D plane's distance): these
+are the same operations in the same order, in place. */
+#define COLLISION_BSP_PLANE3D_DISTANCE(plane, point) \
+	((point)->x*(plane)->n.i + (point)->y*(plane)->n.j + (point)->z*(plane)->n.k - (plane)->d)
+#define COLLISION_BSP_PLANE2D_DISTANCE(plane, point) \
+	(((plane)->n.i*(point)->x + (plane)->n.j*(point)->y) - (plane)->d)
+#define COLLISION_BSP_DOT_PRODUCT3D(a, b) \
+	((a)->i*(b)->i + (a)->j*(b)->j + (a)->k*(b)->k)
+#else
+#define COLLISION_BSP_PLANE3D_DISTANCE(plane, point) plane3d_distance_to_point(plane, point)
+#define COLLISION_BSP_PLANE2D_DISTANCE(plane, point) plane2d_distance_to_point(plane, point)
+#define COLLISION_BSP_DOT_PRODUCT3D(a, b) dot_product3d(a, b)
+#endif
+
 /* ---------- structures */
 
 struct collision_bsp_test_pill_new_context
@@ -1542,7 +1559,7 @@ static void bsp2d_test_sphere_recursive(
 			&data->bsp->bsp2d.nodes,
 			child_index,
 			struct bsp2d_node);
-		real distance = plane2d_distance_to_point(&node->plane, &data->center2d);
+		real distance = COLLISION_BSP_PLANE2D_DISTANCE(&node->plane, &data->center2d);
 		boolean reaches_first_child = distance <= data->radius;
 		boolean reaches_second_child = distance >= -data->radius;
 
@@ -1739,7 +1756,7 @@ static void bsp3d_test_sphere_recursive(
 			&data->bsp->bsp3d.planes,
 			node->plane_designator,
 			real_plane3d);
-		real distance = plane3d_distance_to_point(plane, data->center);
+		real distance = COLLISION_BSP_PLANE3D_DISTANCE(plane, data->center);
 		boolean reaches_second_child = distance < data->radius;
 		boolean child_index = distance > -data->radius;
 
@@ -1804,7 +1821,7 @@ static void bsp3d_test_sphere_recursive(
 						&data->bsp->bsp3d.planes,
 						BSP_FLAGGED_INDEX(reference->plane_designator) & LONG_MAX,
 						real_plane3d);
-					real plane_distance = -plane3d_distance_to_point(plane, data->center);
+					real plane_distance = -COLLISION_BSP_PLANE3D_DISTANCE(plane, data->center);
 					real_point3d projected_center;
 					real absolute_i;
 					real absolute_j;
@@ -1859,8 +1876,8 @@ static boolean collision_bsp_test_vector_recursive(
 			&data->bsp->bsp3d.planes,
 			node->plane_designator,
 			real_plane3d);
-		real distance = plane3d_distance_to_point(plane, data->point);
-		real dot = dot_product3d(data->vector, &plane->n);
+		real distance = COLLISION_BSP_PLANE3D_DISTANCE(plane, data->point);
+		real dot = COLLISION_BSP_DOT_PRODUCT3D(data->vector, &plane->n);
 		real distance0 = dot*t0 + distance;
 		real distance1 = dot*t1 + distance;
 		boolean reaches_back = distance0 < 0.f || distance1 < 0.f;

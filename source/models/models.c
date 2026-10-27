@@ -496,7 +496,17 @@ void model_get_node_orientations(
 	{
 		struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, node_index, struct model_node);
 
+#ifdef HALO_N64
+		/* (the rotation a number at a time: -Os made the quaternion's copy a
+		memcpy call, every node of every pose without an animation -- held
+		weapons, projectiles) */
+		node_orientations[node_index].rotation.v.i = node->default_rotation.v.i;
+		node_orientations[node_index].rotation.v.j = node->default_rotation.v.j;
+		node_orientations[node_index].rotation.v.k = node->default_rotation.v.k;
+		node_orientations[node_index].rotation.w = node->default_rotation.w;
+#else
 		node_orientations[node_index].rotation = node->default_rotation;
+#endif
 		node_orientations[node_index].translation = node->default_translation;
 		node_orientations[node_index].scale = 1.f;
 	}

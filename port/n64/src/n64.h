@@ -278,6 +278,10 @@ void n64_render_view(const struct n64_view *view);
 /* after n64_render_view: objects in that view */
 /* returns whether it is in the view (not culled) */
 int n64_render_object(const struct n64_object *object);
+/* n64_render_object for an object whose node matrices are in another order:
+node n's matrix is node_matrices[node_remap[n]] (a first-person model's,
+which are its animation graph's) */
+int n64_render_object_remapped(const struct n64_object *object, const short *node_remap);
 /* the menu: a scene's models without a level (levels/<name>.mdl; NULL:
 none), the colour a frame is cleared to (0xRRGGBB) */
 void n64_render_load_scene(const char *name);

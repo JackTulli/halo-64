@@ -140,6 +140,10 @@ static int load_material(unsigned int key)
 	n64_decal_cache_misses++;
 	file = fopen("rom:/decals/materials.bank", "rb");
 	if (!file) return -1;
+	/* (without stdio's buffer, as n64_render.c's open_direct: each step of
+	the search below read the 1 KB around its 8 bytes, the texture came in
+	1 KB pieces copied on, and the buffer was made and freed each time) */
+	setvbuf(file, NULL, _IONBF, 0);
 	if (fseek(file, 0, SEEK_END) || (size = ftell(file)) < 12 || fseek(file, 0, SEEK_SET) ||
 		fread(header, 1, 12, file) != 12 || memcmp(header, "NDEC", 4) || read_be32(header + 4) != DECAL_BANK_VERSION) { fclose(file); return -1; }
 	count = read_be32(header + 8);
@@ -220,13 +224,21 @@ void n64_paint_update(float dt)
 static int clip_plane(float in[][5], int count, const float plane[4], float out[][5])
 {
 	int n = 0;
+	float distance[PAINT_CLIP_VERTICES];
 	if (count < 3 || count > PAINT_CLIP_VERTICES) return 0;
+	/* (each vertex's distance worked out once -- an edge's end is the next
+	edge's start -- and any not finite none of the mark, wherever it is; the
+	next vertex without a division, the remainder's) */
 	for (int i = 0; i < count; i++)
 	{
-		float *a = in[i], *b = in[(i + 1) % count];
-		float da = a[0] * plane[0] + a[1] * plane[1] + a[2] * plane[2] + plane[3];
-		float db = b[0] * plane[0] + b[1] * plane[1] + b[2] * plane[2] + plane[3];
-		if (!isfinite(da) || !isfinite(db)) return 0;
+		distance[i] = in[i][0] * plane[0] + in[i][1] * plane[1] + in[i][2] * plane[2] + plane[3];
+		if (!isfinite(distance[i])) return 0;
+	}
+	for (int i = 0; i < count; i++)
+	{
+		int next = i + 1 == count ? 0 : i + 1;
+		float *a = in[i], *b = in[next];
+		float da = distance[i], db = distance[next];
 		if (da >= 0.f) { if (n == PAINT_CLIP_VERTICES) return 0; memcpy(out[n++], a, 5 * sizeof(float)); }
 		if ((da < 0.f) != (db < 0.f))
 		{
@@ -250,12 +262,16 @@ static int clip_view(float in[][5], int count, const struct n64_particle_view *v
 		{0.f, -py, view->center_y - view->y0, 0.f},
 		{0.f, py, view->y1 - view->center_y, 0.f}
 	};
+	float (*from)[5] = in, (*to)[5] = out;
 	if (count < 3 || count > N64_PAINT_VERTICES) return 0;
-	memcpy(out, in, count * 5 * sizeof(float));
+	/* (the planes take turns between out and temporary, the copies between
+	them left out: the fifth plane's vertices end in out -- and fewer than
+	three on the way are none to the caller) */
 	for (int p = 0; p < 5 && count >= 3; p++)
 	{
-		count = clip_plane(out, count, planes[p], temporary);
-		memcpy(out, temporary, count * 5 * sizeof(float));
+		count = clip_plane(from, count, planes[p], to);
+		from = to;
+		to = to == out ? temporary : out;
 	}
 	return count;
 }
@@ -266,16 +282,26 @@ void n64_paint_draw(const struct n64_particle_view *view)
 	float m32 = -2.f * view->z_far * view->z_near / (view->z_far - view->z_near);
 	/* (the depth buffer's step at distance d is about d^2 times this) */
 	float pull_rate = PAINT_PULL_STEPS / (n64_max_f(view->z_near, 0.001f) * 32768.f);
+	/* (the combiner and the texture in force, set again only when a mark
+	wants others: each combiner set waited for the RDP's pipeline and worked
+	the render mode out again, each upload loaded TMEM again -- consecutive
+	marks are mostly one kind of decal) */
+	int combiner = -1;
+	const void *loaded = NULL;
 	/* Diagnostic only: distinguish depth rejection from missing/offscreen
 	   marks. Production packages forbid all debug flags. */
 	if (paint_no_depth < 0) paint_no_depth = n64_debug_flag("debug_paint_no_depth");
 	rdpq_sync_pipe();
+	/* (one batch of mode changes: the RSP works the render mode out once,
+	every view) */
+	rdpq_mode_begin();
 	rdpq_set_mode_standard();
 	rdpq_mode_zbuf(!paint_no_depth, false);
 	rdpq_mode_zmode(ZMODE_STANDARD);
 	rdpq_mode_persp(true);
 	rdpq_mode_filter(FILTER_BILINEAR);
 	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+	rdpq_mode_end();
 	for (int i = 0; i < PAINT_MARKS; i++)
 	{
 		const struct paint_mark *mark = &marks[(next_mark + i) % PAINT_MARKS];
@@ -283,7 +309,7 @@ void n64_paint_draw(const struct n64_particle_view *view)
 		float projected[PAINT_CLIP_VERTICES][6];
 		float alpha = mark->fade > 0.f && mark->age > mark->lifetime - mark->fade ? (mark->lifetime - mark->age) / mark->fade : 1.f;
 		float min_z = view->z_far;
-		int count;
+		int count, behind;
 		surface_t surface;
 		if (!mark->count) continue;
 		if (mark->pattern != 255 && (!n64_paint_enabled() || !masks_loaded)) continue;
@@ -291,11 +317,24 @@ void n64_paint_draw(const struct n64_particle_view *view)
 			!decal_valid[mark->native_slot])) continue;
 		for (int v = 0; v < mark->count; v++)
 		{
-			float d[3], distance, pull;
+			float d[3];
 			for (int k = 0; k < 3; k++) d[k] = mark->v[v].position[k] - view->eye[k];
 			for (int k = 0; k < 3; k++) camera[v][k] = d[0] * (k == 0 ? view->right[0] : k == 1 ? view->up[0] : view->forward[0]) +
 				d[1] * (k == 0 ? view->right[1] : k == 1 ? view->up[1] : view->forward[1]) +
 				d[2] * (k == 0 ? view->right[2] : k == 1 ? view->up[2] : view->forward[2]);
+		}
+		/* A mark wholly behind the eye (no vertex in front of it) is left
+		out before its pull and clipping: the pull scales a vertex by 0.5-1
+		(or makes it NaN), so none comes in front of the near plane (its
+		distance z_near x 1.01, more than nothing), whose clipping left none
+		of the mark -- drawn nothing, as before */
+		behind = view->z_near > 0.f;
+		for (int v = 0; v < mark->count && behind; v++)
+			behind = camera[v][2] <= 0.f;
+		if (behind) continue;
+		for (int v = 0; v < mark->count; v++)
+		{
+			float distance, pull;
 			/* toward the eye along the vertex's ray (PAINT_PULL_MINIMUM) */
 			distance = sqrtf(camera[v][0] * camera[v][0] + camera[v][1] * camera[v][1] + camera[v][2] * camera[v][2]);
 			if (!paint_no_depth && distance > 0.f)
@@ -338,17 +377,25 @@ void n64_paint_draw(const struct n64_particle_view *view)
 				rgb[k] = tint[3] ? tint[k] : tint[k] * mark->rgba[k] / 255;
 			if (tint[3])
 				a = a * (mark->rgba[0] + mark->rgba[1] + mark->rgba[2]) / 765;
-			rdpq_mode_combiner(RDPQ_COMBINER1((TEX0, 0, PRIM, 0), (TEX0, 0, PRIM, 0)));
+			if (combiner != 1)
+				rdpq_mode_combiner(RDPQ_COMBINER1((TEX0, 0, PRIM, 0), (TEX0, 0, PRIM, 0)));
+			combiner = 1;
 			rdpq_set_prim_color(RGBA32(rgb[0], rgb[1], rgb[2], a));
 			surface = surface_make_linear(texture, FMT_IA8, PAINT_CELL, PAINT_CELL);
 		}
 		else
 		{
-			rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
+			if (combiner != 0)
+				rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
+			combiner = 0;
 			rdpq_set_prim_color(RGBA32(colors[mark->color][0], colors[mark->color][1], colors[mark->color][2], (int)(alpha * 230.f)));
 			surface = surface_make_linear(masks + mark->pattern * PAINT_CELL * PAINT_CELL / 2, FMT_I4, PAINT_CELL, PAINT_CELL);
 		}
-		rdpq_tex_upload(TILE0, &surface, NULL);
+		/* (a decal's texture and a mask are each their own memory, one format
+		each: the same buffer is the same upload) */
+		if (surface.buffer != loaded)
+			rdpq_tex_upload(TILE0, &surface, NULL);
+		loaded = surface.buffer;
 		for (int v = 1; v < count - 1; v++) rdpq_triangle(&TRIFMT_ZBUF_TEX, projected[0], projected[v], projected[v + 1]);
 	}
 }

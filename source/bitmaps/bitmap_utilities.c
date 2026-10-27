@@ -2690,6 +2690,58 @@ boolean valid_real_rgb_color(
 		color->blue>=0.f && color->blue<=1.f;
 }
 
+#ifdef HALO_N64
+/* The hue, saturation and value of a pair of bounds, kept for the last
+four pairs: the bounds are a tag's colours (an object's change colours,
+every object of a kind, every tick; a HUD meter's, every frame), and
+turning each into hue, saturation and value took two divisions. They are
+a function of the bounds' six numbers alone, so the ones kept are the
+ones working them out again would make. */
+static void n64_hsv_bounds(
+	union real_rgb_color const *rgb_lower_bound,
+	union real_rgb_color const *rgb_upper_bound,
+	union real_hsv_color *hsv_lower_bound,
+	union real_hsv_color *hsv_upper_bound)
+{
+	static struct
+	{
+		unsigned long rgb[6];
+		real hsv[6];
+	} kept[4];
+	static int filled, next;
+	unsigned long const *lower = (unsigned long const *)rgb_lower_bound->n;
+	unsigned long const *upper = (unsigned long const *)rgb_upper_bound->n;
+	int k, i;
+
+	for (k = 0; k < filled; k++)
+	{
+		if (kept[k].rgb[0] == lower[0] && kept[k].rgb[1] == lower[1] && kept[k].rgb[2] == lower[2] &&
+			kept[k].rgb[3] == upper[0] && kept[k].rgb[4] == upper[1] && kept[k].rgb[5] == upper[2])
+		{
+			for (i = 0; i < 3; i++)
+			{
+				hsv_lower_bound->n[i] = kept[k].hsv[i];
+				hsv_upper_bound->n[i] = kept[k].hsv[3 + i];
+			}
+			return;
+		}
+	}
+	real_rgb_color_to_real_hsv_color(rgb_lower_bound, hsv_lower_bound);
+	real_rgb_color_to_real_hsv_color(rgb_upper_bound, hsv_upper_bound);
+	k = next;
+	next = (next + 1) & 3;
+	if (filled < 4)
+		filled++;
+	for (i = 0; i < 3; i++)
+	{
+		kept[k].rgb[i] = lower[i];
+		kept[k].rgb[3 + i] = upper[i];
+		kept[k].hsv[i] = hsv_lower_bound->n[i];
+		kept[k].hsv[3 + i] = hsv_upper_bound->n[i];
+	}
+}
+#endif
+
 union real_rgb_color *rgb_colors_interpolate(
 	union real_rgb_color *rgb_result,
 	unsigned long flags,
@@ -2708,8 +2760,12 @@ union real_rgb_color *rgb_colors_interpolate(
 		union real_hsv_color hsv_lower_bound;
 		union real_hsv_color hsv_upper_bound;
 
+#ifdef HALO_N64
+		n64_hsv_bounds(rgb_lower_bound, rgb_upper_bound, &hsv_lower_bound, &hsv_upper_bound);
+#else
 		real_rgb_color_to_real_hsv_color(rgb_lower_bound, &hsv_lower_bound);
 		real_rgb_color_to_real_hsv_color(rgb_upper_bound, &hsv_upper_bound);
+#endif
 
 		if ((fabs(hsv_lower_bound.hue - hsv_upper_bound.hue) > 0.5) !=
 			TEST_FLAG(flags, _rgb_color_interpolation_hsv_reverse_bit))

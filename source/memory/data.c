@@ -79,6 +79,34 @@ static void code_00108cc0(struct data_array *data, struct datum_header *header);
 
 /* ---------- public code */
 
+#ifdef HALO_N64
+/* datum_get's and datum_try_and_get's tests in fewer instructions (their
+asserts are out on the N64). A data array's count and maximum count are
+never negative, so the index's low half taken as unsigned is below them
+exactly when, taken as a short, it is neither negative nor at or past them
+(a negative short is 0x8000 or more): one compare for the two, and none for
+NONE, whose low half is 0xFFFF. And an index without an identifier names
+whatever datum is in use at its place, one with an identifier only the
+datum with that identifier (in use, then: identifiers are never 0) -- one
+compare in the common case, not three. */
+static __inline__ __attribute__((always_inline)) void *n64_datum_at(
+	struct data_array *data,
+	long index,
+	short limit)
+{
+	unsigned long absolute_index = (unsigned short)index;
+	long identifier = index>>16;
+	struct datum_header *header;
+
+	if (absolute_index>=(unsigned long)(unsigned short)limit)
+		return NULL;
+	header = (struct datum_header *)((byte *)data->data+data->size*(long)absolute_index);
+	if (!identifier)
+		return header->identifier ? header : NULL;
+	return header->identifier==identifier ? header : NULL;
+}
+#endif
+
 long data_allocation_size(
 	short maximum_count,
 	short size)
@@ -112,6 +140,9 @@ void *datum_try_and_get(
 	struct data_array *data,
 	long index)
 {
+#ifdef HALO_N64
+	return n64_datum_at(data, index, data->maximum_count);
+#else
 	struct datum_header *header = NULL;
 	short identifier;
 	short absolute_index;
@@ -138,12 +169,16 @@ void *datum_try_and_get(
 	}
 
 	return header;
+#endif
 }
 
 void *datum_get(
 	struct data_array *data,
 	long index)
 {
+#ifdef HALO_N64
+	return n64_datum_at(data, index, data->count);
+#else
 	struct datum_header *header;
 	short identifier;
 	short absolute_index;
@@ -177,6 +212,7 @@ void *datum_get(
 			index));
 
 	return NULL;
+#endif
 }
 
 void data_verify(

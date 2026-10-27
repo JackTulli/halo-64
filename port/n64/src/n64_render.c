@@ -205,6 +205,9 @@ static struct
 	struct level_group *groups;
 	uint16_t *group_batches;
 	uint16_t *cluster_first_group, *cluster_group_count;
+	/* by cluster, the box its batches' own boxes make together (N64 units,
+	frustum_planes_inside) */
+	int16_t (*cluster_boxes)[6];
 	/* a streamed level (version 5): the file, its chunks, each chunk's data
 	in memory (NULL: not read) and the frame it was last drawn in, each
 	batch's chunk, the bytes in memory and read */
@@ -479,7 +482,6 @@ static int debug_fog_test;
 static struct
 {
 	T3DViewport viewports[MAXIMUM_VIEWS];
-	T3DMat4FP *identity;
 	int view_count;
 	surface_t *surface;
 	unsigned long frame_index;
@@ -1148,8 +1150,6 @@ void n64_render_initialize(void)
 		if (n64_debug_text("debug_fog_test", text, sizeof(text)))
 			debug_fog_test = atoi(text);
 	}
-	renderer.identity = malloc_uncached(sizeof(T3DMat4FP));
-	if (!renderer.identity) n64_fatal("no memory for renderer identity matrix");
 	for (int i = 0; i < FRAMES_IN_FLIGHT; i++)
 	{
 		renderer.matrices[i] = malloc_uncached(sizeof(T3DMat4FP) * MATRICES_PER_FRAME);
@@ -1173,12 +1173,6 @@ void n64_render_initialize(void)
 
 		if (n64_debug_flag("debug_rdpq") && n64_debug_text("debug_rdpq_log", text, sizeof(text)))
 			debug_rdpq_log_frame = strtoul(text, NULL, 10);
-	}
-	{
-		T3DMat4 identity;
-
-		t3d_mat4_identity(&identity);
-		t3d_mat4_to_fixed(renderer.identity, &identity);
 	}
 }
 
@@ -1539,6 +1533,25 @@ static rspq_block_t *record_setup(sprite_t *sprite, int flags)
 	return rspq_block_end();
 }
 
+/* A cartridge file read in big pieces at known places (a model, the level's
+streamed chunks, its big tiles), without stdio's buffer. newlib gives a file
+a 1 KB buffer at its first read; then a read of n bytes was n/1024 DMAs of
+1 KB into the buffer, each copied on into the caller's memory, and a seek
+out of the buffer a DMA of the 1 KB block around the new place. Unbuffered
+(as libdragon's MPEG-1 player reads), a read is one DMA straight into the
+caller's memory (DragonFS's dfs_read: through its 512-byte bounce buffer
+only where the memory and the file's place differ in their 2-byte phase) and
+a seek only sets the place: the same bytes, without the copying, the 1 KB
+DMAs' set-ups, the bytes read for nothing and the buffer on the heap */
+static FILE *open_direct(const char *path)
+{
+	FILE *file = fopen(path, "rb");
+
+	if (file)
+		setvbuf(file, NULL, _IONBF, 0);
+	return file;
+}
+
 /* a model's data in memory (read from the cartridge, its textures read and
 its batches recorded the first time), or 0 */
 static unsigned long model_texture_allocation(int texture)
@@ -1650,7 +1663,7 @@ static int load_model(int index)
 	char path[48];
 
 	snprintf(path, sizeof(path), "rom:/mdl/%.16s.bin", model->data_name);
-	file = loaded->data && loaded->setups && loaded->blocks ? fopen(path, "rb") : NULL;
+	file = loaded->data && loaded->setups && loaded->blocks ? open_direct(path) : NULL;
 	if (!file || fread(loaded->data, 1, size, file) != size)
 	{
 		if (file)
@@ -1681,6 +1694,18 @@ static int load_model(int index)
 		record_model_modes();
 		loaded->setups[b] = record_setup(debug_untextured ? NULL : sprite, batch->flags);
 		rspq_block_begin();
+		/* Each segment's vertices are loaded under its node's matrix times
+		the camera's. flush_draws moves tiny3d's matrix stack up one past the
+		camera's for all its blocks, and a block sets each node there, the
+		camera's multiplied in (t3d_matrix_set, as tiny3d's own model drawing
+		does): the same matrices as a push and a pop around each segment,
+		without the pop -- a matrix read back, normalised and multiplied by
+		the projection on the RSP, ~170 of them a view for the first-person
+		arms alone. A node already in force (the segment before it in the
+		block was its) is not set again: the RSP's matrices are what they
+		were (none at the block's start: whatever the block before left) */
+		int node = -1;
+
 		for (int k = 0; k < (run & RUN_LENGTH) && b + k < model->far_first + model->far_count; k++)
 		{
 			struct model_batch *part = batch + k;
@@ -1690,9 +1715,12 @@ static int load_model(int index)
 			{
 				struct model_segment *segment = &models.segments[part->first_segment + g];
 
-				t3d_matrix_push(t3d_segment_address(SEGMENT_NODE_MATRICES, (void *)(segment->node * sizeof(T3DMat4FP))));
+				if (segment->node != node)
+				{
+					t3d_matrix_set(t3d_segment_address(SEGMENT_NODE_MATRICES, (void *)(segment->node * sizeof(T3DMat4FP))), true);
+					node = segment->node;
+				}
 				t3d_vert_load((T3DVertPacked *)loaded->data + segment->vertex_pair_offset, segment->slot, segment->count);
-				t3d_matrix_pop(1);
 			}
 			for (int t = 0; t < part->triangle_count; t++, index += 3)
 				t3d_tri_draw(index[0], index[1], index[2]);
@@ -1900,6 +1928,7 @@ void n64_render_unload_level(void)
 		free(level.group_batches);
 		free(level.cluster_first_group);
 		free(level.cluster_group_count);
+		free(level.cluster_boxes);
 		for (int i = 0; i < level.header->texture_count; i++)
 		{
 			if (level.sprites && level.sprites[i])
@@ -1953,7 +1982,7 @@ static void load_tiles(const char *level_path)
 	if (length < 4 || length + 3 > sizeof(path)) return;
 	memcpy(path, level_path, length - 4);
 	strcpy(path + length - 4, ".tiles");
-	file = fopen(path, "rb");
+	file = open_direct(path);
 	if (!file) return;
 	if (fseek(file, 0, SEEK_END) || (file_size = ftell(file)) < (long)sizeof(header) ||
 		fseek(file, 0, SEEK_SET) || fread(&header, 1, sizeof(header), file) != sizeof(header) ||
@@ -2088,11 +2117,42 @@ static void split_level_group(uint16_t *list, int count, int *group_count, int m
 	}
 }
 
+/* each cluster's batches' box (none, or a cluster whose batches are not all
+in the file -- its minimum past its maximum: every plane tested). (Made once
+a level, kept small) */
+static __attribute__((cold, noinline)) void build_cluster_boxes(void)
+{
+	int batch_count = level.header->batch_count, cluster_count = level.header->cluster_count;
+
+	level.cluster_boxes = malloc((cluster_count ? cluster_count : 1) * sizeof(level.cluster_boxes[0]));
+	for (int c = 0; level.cluster_boxes && c < cluster_count; c++)
+	{
+		struct level_cluster *cluster = &level.clusters[c];
+		int16_t *box = level.cluster_boxes[c];
+
+		box[0] = box[1] = box[2] = INT16_MAX;
+		box[3] = box[4] = box[5] = INT16_MIN;
+		for (int b = cluster->first_batch; cluster->first_batch + cluster->batch_count <= batch_count &&
+			b < cluster->first_batch + cluster->batch_count; b++)
+		{
+			/* (read as draw_level reads them, halfwords) */
+			const int16_t *minimum = level.batches[b].minimum, *maximum = level.batches[b].maximum;
+
+			for (int k = 0; k < 3; k++)
+			{
+				box[k] = minimum[k] < box[k] ? minimum[k] : box[k];
+				box[3 + k] = maximum[k] > box[3 + k] ? maximum[k] : box[3 + k];
+			}
+		}
+	}
+}
+
 static void build_level_groups(void)
 {
 	int batch_count = level.header->batch_count, cluster_count = level.header->cluster_count;
 	int maximum_groups = batch_count / 4 + cluster_count + 1, group_count = 0;
 
+	build_cluster_boxes();
 	level.groups = malloc(maximum_groups * sizeof(struct level_group));
 	level.group_batches = malloc((batch_count ? batch_count : 1) * sizeof(uint16_t));
 	level.cluster_first_group = calloc(cluster_count ? cluster_count : 1, sizeof(uint16_t));
@@ -2135,12 +2195,12 @@ int n64_render_load_level(const char *map_name, int low)
 	if (low)
 	{
 		snprintf(path, sizeof(path), "rom:/levels/%s-low.lvl", map_name);
-		file = fopen(path, "rb");
+		file = open_direct(path);
 	}
 	if (!file)
 	{
 		snprintf(path, sizeof(path), "rom:/levels/%s.lvl", map_name);
-		file = fopen(path, "rb");
+		file = open_direct(path);
 	}
 	if (!file)
 	{
@@ -3026,9 +3086,15 @@ static void draw_batch(int b)
 	{
 		uint16_t count = ((uint16_t *)chunk)[0], more = ((uint16_t *)chunk)[1];
 
-		t3d_tri_draw_strip((int16_t *)(chunk + 8), count);
+		/* the last strip with the triangles' sync: tiny3d's strip command
+		runs on into its sync command (T3DCmd_TriDraw_Strip), one RSP
+		command fewer a batch */
 		if (!more)
-			break;
+		{
+			t3d_tri_draw_strip_and_sync((int16_t *)(chunk + 8), count);
+			return;
+		}
+		t3d_tri_draw_strip((int16_t *)(chunk + 8), count);
 		chunk += 8 + ((count * 2 + 7) & ~7);
 	}
 	t3d_tri_sync();
@@ -3083,6 +3149,73 @@ static inline int batch_beyond_fog(const int16_t *minimum, const int16_t *maximu
 	dy = (float)d[1];
 	dz = (float)d[2];
 	return dx * dx + dy * dy + dz * dz > fog_end_squared_units;
+}
+
+/* The frustum's planes (a bit each) a box of batches lies wholly inside by
+t3d_frustum_vs_aabb_s16's own sums: all eight of its corners pass that
+test's comparison, in the same float operations (the library is built
+without reassociation, so they are these). A batch inside the box passes
+the same comparison at each such plane: every product, sum and difference
+is rounded monotonically, so none of its corners comes out worse than the
+box's worst. Those planes are left out of its test (batch_in_frustum): the
+same batches in view, where a cluster or group crossing one plane had each
+of its batches tested against all six */
+static unsigned frustum_planes_inside(const T3DFrustum *frustum, const float *minimum, const float *maximum)
+{
+	unsigned inside = 0;
+
+	for (int i = 0; i < 6; i++)
+	{
+		const float *plane = frustum->planes[i].v;
+		int passed = 0;
+
+		for (int corner = 0; corner < 8; corner++)
+		{
+			float p0 = plane[0] * (corner & 1 ? maximum : minimum)[0];
+			float p1 = plane[1] * (corner & 2 ? maximum : minimum)[1];
+			float p2AndW = -plane[3] - plane[2] * (corner & 4 ? maximum : minimum)[2];
+
+			passed += p0 + p1 > p2AndW;
+		}
+		if (passed == 8)
+			inside |= 1u << i;
+	}
+	return inside;
+}
+
+/* t3d_frustum_vs_aabb_s16 (tiny3d's t3dmath.c, the same sums) at the planes
+not in inside (frustum_planes_inside: those it would pass). (Called, as
+tiny3d's was: inlined twice it took a kilobyte) */
+static __attribute__((noinline)) int batch_in_frustum(const T3DFrustum *frustum, const int16_t min[3], const int16_t max[3], unsigned inside)
+{
+	float min0 = min[0], max0 = max[0], min1 = min[1], max1 = max[1], min2 = min[2], max2 = max[2];
+
+	for (int i = 0; i < 6; i++)
+	{
+		const float *plane = frustum->planes[i].v;
+
+		if (inside & (1u << i))
+			continue;
+		float p0Min = plane[0] * min0;
+		float p0Max = plane[0] * max0;
+		float p1Min = plane[1] * min1;
+		float p1Max = plane[1] * max1;
+		float p2MinAndW = -plane[3] - plane[2] * min2;
+
+		if (p0Min + p1Min > p2MinAndW) continue;
+		if (p0Max + p1Min > p2MinAndW) continue;
+		if (p0Min + p1Max > p2MinAndW) continue;
+		if (p0Max + p1Max > p2MinAndW) continue;
+
+		float p2MaxAndW = -plane[3] - plane[2] * max2;
+
+		if (p0Min + p1Min > p2MaxAndW) continue;
+		if (p0Max + p1Min > p2MaxAndW) continue;
+		if (p0Min + p1Max > p2MaxAndW) continue;
+		if (p0Max + p1Max > p2MaxAndW) continue;
+		return 0;
+	}
+	return 1;
 }
 
 static void draw_level(T3DViewport *viewport, const struct n64_view *view)
@@ -3203,22 +3336,35 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 						level.visible[visible_count++] = list[i];
 					continue;
 				}
+				/* (the group's box is its batches' boxes together, exactly:
+				split_level_group's quarters of a 64th) */
+				unsigned inside = frustum_planes_inside(&viewport->viewFrustum, group_minimum.v, group_maximum.v);
+
 				for (int i = 0; i < group->count; i++)
 				{
 					struct level_batch *batch = &level.batches[list[i]];
 
-					if (t3d_frustum_vs_aabb_s16(&viewport->viewFrustum, batch->minimum, batch->maximum) &&
+					if (batch_in_frustum(&viewport->viewFrustum, batch->minimum, batch->maximum, inside) &&
 						!batch_beyond_fog(batch->minimum, batch->maximum))
 						level.visible[visible_count++] = list[i];
 				}
 			}
 			continue;
 		}
+		unsigned inside = 0;
+
+		if (level.cluster_boxes && level.cluster_boxes[c][0] <= level.cluster_boxes[c][3])
+		{
+			const int16_t *box = level.cluster_boxes[c];
+			float box_minimum[3] = {box[0], box[1], box[2]}, box_maximum[3] = {box[3], box[4], box[5]};
+
+			inside = frustum_planes_inside(&viewport->viewFrustum, box_minimum, box_maximum);
+		}
 		for (int b = cluster->first_batch; b < cluster->first_batch + cluster->batch_count; b++)
 		{
 			struct level_batch *batch = &level.batches[b];
 
-			if (t3d_frustum_vs_aabb_s16(&viewport->viewFrustum, batch->minimum, batch->maximum) &&
+			if (batch_in_frustum(&viewport->viewFrustum, batch->minimum, batch->maximum, inside) &&
 				!batch_beyond_fog(batch->minimum, batch->maximum))
 				level.visible[visible_count++] = (uint16_t)b;
 		}
@@ -3235,8 +3381,10 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 		level.sorted[level.material_starts[level.batches[level.visible[i]].material]++] = level.visible[i];
 	/* (material m's batches end at material_starts[m] now); the opaque
 	materials first, then the overlays over them (natural materials'
-	detail), then the transparent ones */
-	t3d_matrix_push(renderer.identity);
+	detail), then the transparent ones. The level's vertices are in the
+	world's place: loaded under the camera's matrix as the viewport left it
+	(an identity pushed on it made the same numbers on the RSP, its 16.16
+	product by 1 and 0 exact, at a matrix push and pop a view) */
 	for (int pass = 0; pass < 3; pass++)
 	{
 		for (int m = 0; m < material_count; m++)
@@ -3267,7 +3415,6 @@ static void draw_level(T3DViewport *viewport, const struct n64_view *view)
 			}
 		}
 	}
-	t3d_matrix_pop(1);
 }
 
 /* the current view as the particles and the paint project (n64_particles.c,
@@ -3385,13 +3532,16 @@ void n64_render_view(const struct n64_view *view)
 		}
 	}
 	t3d_viewport_attach(viewport);
-	apply_fog();
-	draw_sky(view);
-
-	/* the vertex colours are the lighting: no lights, a white ambient */
-	rdpq_set_env_color(RGBA32(0xFF, 0xFF, 0xFF, 0xFF));
+	/* the vertex colours are the lighting: no lights, a white ambient --
+	set with tiny3d's other settings for the view, before the RDP's (the
+	fog's colour, the sky, the level's first material): each change between
+	tiny3d's commands and rdpq's has the RSP swap the one's code and state
+	for the other's */
 	t3d_light_set_ambient(white);
 	t3d_light_set_count(0);
+	apply_fog();
+	draw_sky(view);
+	rdpq_set_env_color(RGBA32(0xFF, 0xFF, 0xFF, 0xFF));
 	render_phase(PHASE_LEVEL);
 	draw_level(viewport, view);
 	{
@@ -3575,6 +3725,23 @@ int n64_render_object(const struct n64_object *object)
 	return object_in_view;
 }
 
+/* (the order render_object reads the node matrices in: NULL, their own) */
+static const short *object_node_remap;
+
+/* (the first-person models: their node matrices read through the model's
+remapping table from the animation graph's, where the game copied them
+into the model's order first, 52 bytes a node, a memcpy each, every frame,
+for the renderer to read once) */
+int n64_render_object_remapped(const struct n64_object *object, const short *node_remap)
+{
+	int in_view;
+
+	object_node_remap = node_remap;
+	in_view = n64_render_object(object);
+	object_node_remap = NULL;
+	return in_view;
+}
+
 static void render_phase(int phase)
 {
 	unsigned long now;
@@ -3733,15 +3900,28 @@ static void flush_draws(void)
 
 		if (!loaded->blocks || !loaded->blocks[draw->batch])
 			continue;
+		/* rdpq's part first (the mode, the texture), then tiny3d's (the
+		node matrices' segment, which only the batch's block reads, and the
+		block): the first draw after rdpq's commands -- the paint's, the
+		first person's depth reset -- no longer goes to tiny3d's code and
+		back before them */
+		use_setup(loaded, draw->batch, batch, draw->color);
+		if (!current_matrices)
+		{
+			/* the blocks' place on tiny3d's matrix stack, one past the
+			camera's (load_model); the camera's back in force after them */
+			t3d_matrix_push_pos(1);
+		}
 		if (draw->matrices != current_matrices)
 		{
 			t3d_segment_set(SEGMENT_NODE_MATRICES, draw->matrices);
 			current_matrices = draw->matrices;
 		}
-		use_setup(loaded, draw->batch, batch, draw->color);
 		rspq_block_run(loaded->blocks[draw->batch]);
 		renderer.triangles += batch->triangle_count;
 	}
+	if (current_matrices)
+		t3d_matrix_pop(1);
 	queued_count = 0;
 }
 
@@ -3843,14 +4023,22 @@ static void render_object(const struct n64_object *object)
 	}
 	for (int n = 0; n < node_count; n++)
 	{
-		const float *m = object->node_matrices + n * 13;
-		float axes = m[0] * (WORLD_SCALE / MODEL_SCALE);
-		T3DMat4 matrix = {{
-			{m[1] * axes, m[2] * axes, m[3] * axes, 0.0f},
-			{m[4] * axes, m[5] * axes, m[6] * axes, 0.0f},
-			{m[7] * axes, m[8] * axes, m[9] * axes, 0.0f},
-			{m[10] * WORLD_SCALE, m[11] * WORLD_SCALE, m[12] * WORLD_SCALE, 1.0f},
-		}};
+		const float *m = object->node_matrices + (object_node_remap ? object_node_remap[n] : n) * 13;
+		/* The matrix in tiny3d's 16.16 fixed point: t3d_mat4_to_fixed_3x4
+		multiplied each number by 65536 before truncating it; here that is in
+		the scales already (the node's times WORLD_SCALE / MODEL_SCALE, the
+		position's WORLD_SCALE). A power of two scales a float exactly and
+		rounds with it, so each product is the same number as before, 12
+		multiplications a node fewer (and its copy through the stack and the
+		call): where a product had been too small for a float's exponent its
+		fixed point is 0 either way */
+		float axes = m[0] * (WORLD_SCALE / MODEL_SCALE * 65536.0f);
+		float rows[4][3] = {
+			{m[1] * axes, m[2] * axes, m[3] * axes},
+			{m[4] * axes, m[5] * axes, m[6] * axes},
+			{m[7] * axes, m[8] * axes, m[9] * axes},
+			{m[10] * (WORLD_SCALE * 65536.0f), m[11] * (WORLD_SCALE * 65536.0f), m[12] * (WORLD_SCALE * 65536.0f)},
+		};
 
 		if (!renderer.first_person && n < 64 && object->head_node >= 0 && object->head_node < node_count &&
 			(object->head_mask[n >> 5] & (1UL << (n & 31))))
@@ -3860,12 +4048,30 @@ static void render_object(const struct n64_object *object)
 			const float *head = object->node_matrices + object->head_node * 13;
 			for (int axis = 0; axis < 3; axis++)
 			{
-				for (int k = 0; k < 3; k++) matrix.m[axis][k] *= 1.8f;
-				matrix.m[3][axis] = (head[10 + axis] + (m[10 + axis] - head[10 + axis]) * 1.8f) * WORLD_SCALE;
+				for (int k = 0; k < 3; k++) rows[axis][k] *= 1.8f;
+				rows[3][axis] = (head[10 + axis] + (m[10 + axis] - head[10 + axis]) * 1.8f) * (WORLD_SCALE * 65536.0f);
 			}
 		}
-		/* (the last column is 0, 0, 0, 1: the 3x4 conversion, the same numbers) */
-		t3d_mat4_to_fixed_3x4(&matrices[n], &matrix);
+		/* (as t3d_mat4_to_fixed_3x4 packs them: the integer halves, then the
+		fractions, a row at a time; the last column 0, 0, 0, 1 -- written as
+		words that may alias the matrix's halves, which matrices[0]'s copy
+		below reads) */
+		for (int y = 0; y < 4; y++)
+		{
+			typedef uint64_t __attribute__((may_alias)) fixed_words;
+			uint32_t fixed0 = (uint32_t)(int32_t)rows[y][0];
+			uint32_t fixed1 = (uint32_t)(int32_t)rows[y][1];
+			uint32_t fixed2 = (uint32_t)(int32_t)rows[y][2];
+			uint64_t integers = (fixed0 & 0xFFFF0000) | (fixed1 >> 16);
+			uint64_t fractions = (fixed0 << 16) | (fixed1 & 0xFFFF);
+
+			integers <<= 32;
+			integers |= (fixed2 & 0xFFFF0000) | (y == 3);
+			fractions <<= 32;
+			fractions |= fixed2 << 16;
+			*(fixed_words *)matrices[n].m[y].i = integers;
+			*(fixed_words *)matrices[n].m[y].f = fractions;
+		}
 	}
 	/* nodes the game does not have (a model with more nodes than its
 	animation drives) keep the first node's matrix */

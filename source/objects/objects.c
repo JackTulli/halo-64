@@ -75,6 +75,13 @@ OBJECTS.C
 
 #define OBJECT_FRAME_INDEX_GET(object_index) ((object_index) + game_time_get())
 
+#ifdef HALO_N64
+/* object_header_block_get on a datum in hand: it looks the object up again
+for the same datum, then adds the block's offset (its asserts are out) */
+#define N64_OBJECT_BLOCK(object, reference) \
+	((void *)((byte *)(object) + (object)->object.reference.offset))
+#endif
+
 /* ---------- structures */
 
 struct object_globals
@@ -238,7 +245,13 @@ void *object_try_and_get_and_verify_type(
 	long object_index,
 	unsigned long valid_type_flags)
 {
+#ifdef HALO_N64
+	/* (the header's lookup in here, not called from here: object_try_and_get,
+	unit_try_and_get and the rest are one call that makes no frame) */
+	struct object_header_datum* header = n64_object_header_try_lookup(object_index);
+#else
 	struct object_header_datum* header = object_header_try_and_get(object_index);
+#endif
 	void *result = NULL;
 
 	if (header)
@@ -256,7 +269,15 @@ void *object_get_and_verify_type(
 	long object_index,
 	unsigned long valid_type_flags)
 {
+#ifdef HALO_N64
+	/* (the header's lookup in here: object_get, unit_get and the rest -- most
+	object lookups, ~640 places -- are one call that returns the datum, not a
+	call to the header's lookup and a load after it at each place. Like
+	before, an index that is not an object's reads through NULL.) */
+	struct object_datum *result = n64_object_header_lookup(object_index)->datum;
+#else
 	struct object_datum *result = object_header_get(object_index)->datum;
+#endif
 
 	match_vassert(
 		"c:\\halo\\SOURCE\\objects\\objects.c",
@@ -626,6 +647,11 @@ void *object_header_block_get(
 	long object_index,
 	struct object_header_block_reference *reference)
 {
+#ifdef HALO_N64
+	/* (with the asserts out, the header's lookup and the datum's were one,
+	called from a frame of its own: now inline, in a function with none) */
+	return (byte *)n64_object_header_lookup(object_index)->datum + reference->offset;
+#else
 	struct object_header_datum *object_header = object_header_get(object_index);
 	struct object_datum *object = object_get(object_index);
 
@@ -633,6 +659,7 @@ void *object_header_block_get(
 	match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 2444, reference->offset+reference->size<=object_header->data_size);
 
 	return (byte *)object + reference->offset;
+#endif
 }
 
 static long object_header_new(
@@ -754,7 +781,13 @@ void object_marker_end(
 boolean object_unmarked_function(
 	long object_index)
 {
+#ifdef HALO_N64
+	/* (the lookup inline: no frame, no call -- once for each object of
+	each cluster a collision query walks, here and below) */
+	struct object_datum *object = n64_object_header_lookup(object_index)->datum;
+#else
 	struct object_datum *object = object_get(object_index);
+#endif
 	boolean result;
 
 	match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 3526, object_globals->object_marker_initialized);
@@ -768,7 +801,11 @@ boolean object_mark_function(
 	long object_index)
 {
 	boolean result;
+#ifdef HALO_N64
+	struct object_datum *object = n64_object_header_lookup(object_index)->datum;
+#else
 	struct object_datum *object = object_get(object_index);
+#endif
 
 	match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 3543, object_globals->object_marker_initialized);
 
@@ -1208,16 +1245,16 @@ pellets, plasma bolts) is in no cluster partition: nothing drawn, nothing
 to collide with, and its acceleration by area damage is 0 -- but each tick
 of its flight unlinked it from its cluster's list (a walk of that list) and
 found its clusters again (a portal walk). Its location, activation and
-flight are as they were. */
+flight are as they were. (By the header in hand: object_get_type looked
+the object up again for its type.) */
 static boolean n64_object_unpartitioned(
-	long object_index,
-	struct object_datum *object)
+	struct object_header_datum const *header)
 {
 	struct object_definition *definition;
 
-	if (object_get_type(object_index) != _object_type_projectile)
+	if (header->type != _object_type_projectile)
 		return FALSE;
-	definition = object_definition_get(object->definition_index);
+	definition = object_definition_get(header->datum->definition_index);
 	return definition->object.model.index == NONE && definition->object.collision_model.index == NONE;
 }
 #endif
@@ -1238,8 +1275,16 @@ void object_disconnect_from_map(
 	else
 	{
 #ifdef HALO_N64
-		if (!n64_object_unpartitioned(object_index, object))
-#endif
+		/* (object_get(object_index) is object: not looked up again) */
+		if (!n64_object_unpartitioned(header))
+		cluster_partition_disconnect(
+			(TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ?
+				&collideable_object_cluster_partition :
+				&noncollideable_object_cluster_partition
+			),
+			object_index,
+			&object->object.first_cluster_reference_index);
+#else
 		cluster_partition_disconnect(
 			(TEST_FLAG(object_get(object_index)->object.flags, _object_has_collision_model_bit) ?
 				&collideable_object_cluster_partition :
@@ -1247,6 +1292,7 @@ void object_disconnect_from_map(
 			),
 			object_index,
 			&object->object.first_cluster_reference_index);
+#endif
 
 		if (TEST_FLAG(header->flags, _object_header_automatically_deactivate_bit))
 		{
@@ -1287,7 +1333,17 @@ real_matrix4x3 *object_get_node_matrices(
 	if (interpolated)
 		return interpolated;
 #endif
+#ifdef HALO_N64
+	/* (object_get's datum is object_header_block_get's: one lookup, not
+	two, for each object the renderer draws) */
+	{
+		struct object_datum *object = n64_object_header_lookup(object_index)->datum;
+
+		return (real_matrix4x3 *)((byte *)object + object->object.node_matrices.offset);
+	}
+#else
 	return (real_matrix4x3 *)object_header_block_get(object_index, &object_get(object_index)->object.node_matrices);
+#endif
 }
 
 char const *object_get_attachment_marker_name(
@@ -1845,8 +1901,19 @@ void object_reconnect_to_map(
 		SET_FLAG(header->flags, _object_header_child_bit, FALSE);
 
 #ifdef HALO_N64
-		if (!n64_object_unpartitioned(object_index, object))
-#endif
+		/* (object_get(object_index) is object: not looked up again) */
+		if (!n64_object_unpartitioned(header))
+		cluster_partition_reconnect(
+			(TEST_FLAG(object->object.flags, _object_has_collision_model_bit) ?
+				&collideable_object_cluster_partition :
+				&noncollideable_object_cluster_partition
+			),
+			object_index,
+			&object->object.first_cluster_reference_index,
+			&object->object.bounding_sphere_center,
+			object->object.bounding_sphere_radius,
+			&object->object.location);
+#else
 		cluster_partition_reconnect(
 			(TEST_FLAG(object_get(object_index)->object.flags, _object_has_collision_model_bit) ?
 				&collideable_object_cluster_partition :
@@ -1857,6 +1924,7 @@ void object_reconnect_to_map(
 			&object->object.bounding_sphere_center,
 			object->object.bounding_sphere_radius,
 			&object->object.location);
+#endif
 
 		if (TEST_FLAG(header->flags, _object_header_automatically_deactivate_bit))
 		{
@@ -1894,7 +1962,16 @@ real_matrix4x3 *object_get_node_matrix(
 			return &interpolated[node_index];
 	}
 #endif
+#ifdef HALO_N64
+	/* (one lookup, not two: as object_get_node_matrices) */
+	{
+		struct object_datum *object = n64_object_header_lookup(object_index)->datum;
+
+		return &((real_matrix4x3 *)((byte *)object + object->object.node_matrices.offset))[node_index];
+	}
+#else
 	return &((real_matrix4x3 *)object_header_block_get(object_index, &object_get(object_index)->object.node_matrices))[node_index];
+#endif
 }
 
 short object_get_marker_by_name(
@@ -1907,9 +1984,14 @@ short object_get_marker_by_name(
 
 	struct object_datum const *object = object_get(object_index);
 	struct object_definition const *object_definition = object_definition_get(object->definition_index);
+#ifdef HALO_N64
+	/* (the same datum, its node matrices: one lookup, not three) */
+	real_matrix4x3 const *matrices = (real_matrix4x3 *)N64_OBJECT_BLOCK(object, node_matrices);
+#else
 	struct object_datum *matrix_object = object_get(object_index);
 	real_matrix4x3 const *matrices = (real_matrix4x3 *)object_header_block_get(object_index,
 		&matrix_object->object.node_matrices);
+#endif
 
 	marker = model_get_marker_by_name(
 		object_definition->object.model.index,
@@ -1928,7 +2010,12 @@ short object_get_marker_by_name(
 		
 		markers[marker].node_index = 0;
 		matrix4x3_identity(&markers->node_matrix);
+#ifdef HALO_N64
+		/* (object_get_node_matrix(object_index, 0): the matrices above) */
+		markers[marker].matrix = matrices[0];
+#else
 		markers[marker].matrix = *object_get_node_matrix(object_index, 0);
+#endif
 
 		if (TEST_FLAG(object->object.flags, _object_mirrored_bit))
 		{
@@ -2413,12 +2500,22 @@ void object_compute_node_matrices(
 
 	struct object_datum *object = object_get(object_index);
 	struct object_definition *object_definition = object_definition_get(object->definition_index);
-	
+
+#ifdef HALO_N64
+	/* (object_header_block_get's datum is object's: not looked up twice
+	more) */
+	real_matrix4x3 *object_nodes = (real_matrix4x3 *)N64_OBJECT_BLOCK(object, node_matrices);
+	real_orientation *node_orientations =
+		TEST_FLAG(_object_mask_cannot_interpolate, object->object.type) ?
+		cannot_interpolate_node_orientations_storage :
+		(real_orientation *)N64_OBJECT_BLOCK(object, node_orientations);
+#else
 	real_matrix4x3 *object_nodes = (real_matrix4x3 *)object_header_block_get(object_index, &object->object.node_matrices);
 	real_orientation *node_orientations =
 		TEST_FLAG(_object_mask_cannot_interpolate, object->object.type) ?
 		cannot_interpolate_node_orientations_storage :
 		(real_orientation *)object_header_block_get(object_index, &object->object.node_orientations);
+#endif
 
 	if (object_definition->object.model.index!=NONE)
 	{
@@ -2798,12 +2895,23 @@ void object_compute_node_matrices(
 			{
 				real_orientation *orientation = &node_orientations[node_stack_index];
 
+#ifdef HALO_N64
+				/* (the orientation's matrix not stored in the node's place to be
+				read back by the multiply: the same numbers, matrix_math.c; the
+				parent, posed before its children, is another node) */
+				match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 2929, node->parent_node_index!=NONE);
+				matrix4x3_multiply_orientation(
+					&object_nodes[node->parent_node_index],
+					orientation,
+					&object_nodes[node_stack_index]);
+#else
 				matrix4x3_from_orientation(&object_nodes[node_stack_index], orientation);
 				match_assert("c:\\halo\\SOURCE\\objects\\objects.c", 2929, node->parent_node_index!=NONE);
 				matrix4x3_multiply(
 					&object_nodes[node->parent_node_index],
 					&object_nodes[node_stack_index],
 					&object_nodes[node_stack_index]);
+#endif
 			}
 
 			if (node_stack_index==0)
@@ -2868,9 +2976,13 @@ static void object_postprocess_node_matrices(
 	if (object_definition->object.model.index!=NONE &&
 		object_definition->object.animation_graph.index != NONE)
 	{
+#ifdef HALO_N64
+		real_matrix4x3 *matrices = (real_matrix4x3 *)N64_OBJECT_BLOCK(object, node_matrices);
+#else
 		real_matrix4x3 *matrices = (real_matrix4x3 *)object_header_block_get(
 				object_index,
 				&object->object.node_matrices);
+#endif
 		object_type_postprocess_node_matrices(object_index, matrices);
 	}
 
@@ -4104,7 +4216,12 @@ static boolean object_update(
 	long object_index)
 {
 	struct object_header_datum *header = object_header_get(object_index);
+#ifdef HALO_N64
+	/* (object_get's datum is the header's: one lookup) */
+	struct object_datum *object = header->datum;
+#else
 	struct object_datum *object = object_get(object_index);
+#endif
 	struct object_definition *object_definition = object_definition_get(object->definition_index);
 
 	boolean result = TRUE;
@@ -4941,6 +5058,12 @@ void objects_update(
 	{
 		if (object_header->identifier)
 		{
+#ifdef HALO_N64
+			/* (cleared only where it is set -- one object attached this tick,
+			if any: a store to every header dirtied each of their cache lines,
+			and each was written back to memory later, every tick) */
+			if (TEST_FLAG(object_header->flags, _object_header_do_not_update_bit))
+#endif
 			SET_FLAG(object_header->flags, _object_header_do_not_update_bit, FALSE);
 
 			if (TEST_FLAG(object_header->flags, _object_header_being_created_bit))

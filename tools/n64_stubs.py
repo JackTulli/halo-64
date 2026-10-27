@@ -9,7 +9,12 @@ them is defined here as doing nothing: functions return zero (NONE-like
 values are listed in OVERRIDES), data is zeroed. Each stand-in is written
 from the declaration the game sees, so its types are the real ones (a
 function returning real must return 0.0 in the floating point register,
-one returning a structure must fill the caller's buffer).
+one returning a structure must fill the caller's buffer). A number or a
+pointer is returned as a plain 0: the link-time optimisation then puts the
+answer in place of the call and drops what it guards (a stand-in that
+cleared its result with memset was a call to memset each time, and the game
+asks some of them for every object every tick: game_in_editor,
+network_game_distributed, cinematic_in_progress).
 
 Symbols the platform layer implements by hand are skipped: list them in
 port/n64/stubs_skip.txt.
@@ -22,6 +27,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 PREPROC = re.compile(r"^\s*#.*?(?<!\\)$", re.M | re.S)
+
+# return types whose zero is a plain 0 (pointers too); anything else, a
+# structure, is cleared with memset
+SCALAR_TYPES = {
+    "boolean", "char", "signed char", "unsigned char", "byte",
+    "short", "unsigned short", "word", "int", "unsigned int",
+    "long", "unsigned long", "dword", "real", "float", "double",
+}
 
 # functions whose "nothing happened" answer is not zero
 OVERRIDES = {
@@ -142,6 +155,8 @@ def main():
             body = OVERRIDES[name]
         elif rtype == "void":
             body = ""
+        elif rtype.endswith("*") or rtype in SCALAR_TYPES:
+            body = "return 0;"
         else:
             body = f"{rtype} result; memset(&result, 0, sizeof(result)); return result;"
         print(f"{rtype} {name}({params}) {{ {body} }} /* {path.relative_to(ROOT)} */")

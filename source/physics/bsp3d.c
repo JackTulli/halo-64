@@ -115,7 +115,14 @@ long bsp3d_test_point(
 			node->plane_designator,
 			real_plane3d);
 
+#ifdef HALO_N64
+		/* (plane3d_distance_to_point's operations in place, in its order: on
+		the N64 it is two calls a node) */
+		node_index = BSP_FLAGGED_INDEX(node->children[
+			point->x*plane->n.i + point->y*plane->n.j + point->z*plane->n.k - plane->d >= 0.f]);
+#else
 		node_index = BSP_FLAGGED_INDEX(node->children[plane3d_distance_to_point(plane, point) >= 0.f]);
+#endif
 	}
 	while (!(node_index & LONG_MIN));
 

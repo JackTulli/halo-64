@@ -727,13 +727,16 @@ static void draw_particles(const struct n64_particle_view *view)
 {
 	static struct drawn drawn[MAXIMUM_PARTICLES];
 	int count = 0;
-	float m22, m32;
+	float m22, m32, largest;
 
 	if (!fx.live || !fx.atlas.buffer)
 		return;
 	/* tiny3d's depth: OpenGL's projection, then (ndc / 2 + 1/2) x 0x7FFF */
 	m22 = (view->z_far + view->z_near) / (view->z_near - view->z_far);
 	m32 = -2.f * view->z_far * view->z_near / (view->z_far - view->z_near);
+	/* (the largest half-size below, the view's: a division a particle, the
+	compiler not knowing the view is not one of the particles drawn) */
+	largest = MAXIMUM_PIXELS * view->pixels_per_unit / 207.f;
 	for (int i = 0; i < MAXIMUM_PARTICLES; i++)
 	{
 		struct particle const *p = &fx.particles[i];
@@ -773,8 +776,8 @@ static void draw_particles(const struct n64_particle_view *view)
 		radius *= scale;
 		/* (no bigger than MAXIMUM_PIXELS across a half: a flash right at the
 		eye filled the view) */
-		if (radius > MAXIMUM_PIXELS * view->pixels_per_unit / 207.f)
-			radius = MAXIMUM_PIXELS * view->pixels_per_unit / 207.f;
+		if (radius > largest)
+			radius = largest;
 		if (radius < 0.4f || d->x0 + radius < view->x0 || d->x0 - radius > view->x1 ||
 			d->y0 + radius < view->y0 || d->y0 - radius > view->y1)
 			continue;
@@ -832,6 +835,9 @@ static void draw_particles(const struct n64_particle_view *view)
 		return;
 	qsort(drawn, count, sizeof(drawn[0]), compare_drawn);
 	rdpq_sync_pipe();
+	/* (one batch of mode changes: the RSP works the render mode out once,
+	not once a change, every view) */
+	rdpq_mode_begin();
 	rdpq_set_mode_standard();
 	/* (the colour flat, the glow's shape in the alpha: colour times the
 	texture as well darkened every edge into a ring) */
@@ -840,6 +846,7 @@ static void draw_particles(const struct n64_particle_view *view)
 	rdpq_mode_zbuf(true, false);
 	rdpq_mode_zoverride(true, 0.f, 0);
 	rdpq_mode_filter(FILTER_BILINEAR);
+	rdpq_mode_end();
 	rdpq_tex_upload(TILE0, &fx.atlas, NULL);
 	int last_flame = 0;
 	for (int i = 0; i < count; i++)
@@ -1083,6 +1090,7 @@ static void draw_explosions(const struct n64_particle_view *view)
 		return;
 	qsort(puffs, count, sizeof(puffs[0]), compare_puffs);
 	rdpq_sync_pipe();
+	rdpq_mode_begin();
 	rdpq_set_mode_standard();
 	/* the colour from the edge's (ENV) to the middle's (PRIM) by the texel,
 	the texel times the puff's alpha the alpha */
@@ -1091,6 +1099,7 @@ static void draw_explosions(const struct n64_particle_view *view)
 	rdpq_mode_zbuf(true, false);
 	rdpq_mode_zoverride(true, 0.f, 0);
 	rdpq_mode_filter(FILTER_BILINEAR);
+	rdpq_mode_end();
 	rdpq_tex_upload(TILE0, &fx.fireball, NULL);
 	/* The three immutable 32x32 I4 splats share TMEM with the 32x32 I8
 	   fireball: 1024 + 3*512 = 2560 bytes, below the RDP's 4096 bytes. */
@@ -1106,15 +1115,23 @@ static void draw_explosions(const struct n64_particle_view *view)
 				rdpq_tex_upload(TILE1 + pattern, &mask, &(rdpq_texparms_t){.tmem_addr = 1024 + pattern * 512});
 			}
 		}
+	/* (ENV set again only when it changes: each change waits for the RDP's
+	pipeline, a sync before it, and a fireball's puffs share their colours) */
+	uint32_t env = 0;
 	for (int i = 0; i < count; i++)
 	{
 		struct puff const *p = &puffs[i];
 		int s0 = p->flip & 1 ? FIREBALL : 0, t0 = p->flip & 2 ? FIREBALL : 0;
 		int tile = p->paint ? TILE1 + ((p->flip >> 2) % 3) : TILE0;
+		uint32_t puff_env = (uint32_t)p->env[0] << 24 | (uint32_t)p->env[1] << 16 | (uint32_t)p->env[2] << 8 | 0xFF;
 		if (p->paint && !n64_paint_mask((p->flip >> 2) % 3)) continue;
 
 		rdpq_set_prim_color(RGBA32(p->prim[0], p->prim[1], p->prim[2], p->prim[3]));
-		rdpq_set_env_color(RGBA32(p->env[0], p->env[1], p->env[2], 0xFF));
+		if (puff_env != env)
+		{
+			rdpq_set_env_color(RGBA32(p->env[0], p->env[1], p->env[2], 0xFF));
+			env = puff_env;
+		}
 		rdpq_set_prim_depth_raw(p->depth, 0);
 		rdpq_texture_rectangle_scaled(tile, p->x0, p->y0, p->x1, p->y1, s0, t0, FIREBALL - s0, FIREBALL - t0);
 	}
@@ -1136,12 +1153,14 @@ static void draw_sniper_ribbons(const struct n64_particle_view *view)
             surface_t mask = surface_make_linear(sniper_mask, FMT_I4, 16, 4);
             data_cache_hit_writeback(sniper_mask, sizeof(sniper_mask));
             rdpq_sync_pipe();
+            rdpq_mode_begin();
             rdpq_set_mode_standard();
             rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
             rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
             rdpq_mode_zbuf(true, false);
             rdpq_mode_persp(true);
             rdpq_mode_filter(FILTER_BILINEAR);
+            rdpq_mode_end();
             rdpq_tex_upload(TILE0, &mask, NULL);
             started = 1;
         }

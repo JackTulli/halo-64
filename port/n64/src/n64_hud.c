@@ -470,11 +470,15 @@ static unsigned channel(unsigned long color, int shift)
 	return (color >> shift) & 0xFF;
 }
 
+/* (the mode's changes one batch, rdpq_mode_begin's: the RSP works the render
+mode out once, at the end, where each change did it again, every time a
+recording is shown -- the same mode in the end) */
 static void set_mode(int mode)
 {
 	if (hud.mode == mode)
 		return;
 	rdpq_sync_pipe();
+	rdpq_mode_begin();
 	rdpq_set_mode_standard();
 	rdpq_mode_filter(hud.point ? FILTER_POINT : FILTER_BILINEAR);
 	switch (mode)
@@ -491,7 +495,6 @@ static void set_mode(int mode)
 		rdpq_mode_combiner(RDPQ_COMBINER_TEX);
 		rdpq_mode_alphacompare(1);
 		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY_CONST);
-		rdpq_set_fog_color(RGBA32(0, 0, 0, 0xB0));
 		break;
 	case _mode_blip:
 		/* the dot's intensity times the blip's as alpha */
@@ -499,6 +502,9 @@ static void set_mode(int mode)
 		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
 		break;
 	}
+	rdpq_mode_end();
+	if (mode == _mode_meter_glow)
+		rdpq_set_fog_color(RGBA32(0, 0, 0, 0xB0));
 	hud.mode = mode;
 }
 
@@ -518,6 +524,20 @@ static void set_filter(int point)
 	}
 }
 
+/* a quad's mode and filter: a new mode is set with the filter the quad wants
+(set after the mode, a filter that changed as well was a second pipe sync and
+render mode change, nothing drawn in between) */
+static __attribute__((noinline)) void set_state(int mode, int point)
+{
+	if (hud.mode == mode)
+	{
+		set_filter(point);
+		return;
+	}
+	hud.point = point;
+	set_mode(mode);
+}
+
 /* a colour Halo adds (colour * texture + framebuffer * (1 - alpha * texture
 alpha)) as one the RDP blends over the framebuffer (its additive blending
 wraps around): mostly opaque colours keep their alpha (the colour brightened
@@ -535,12 +555,6 @@ static color_t over_color(unsigned long argb)
 	if (!a)
 		return RGBA32(0, 0, 0, 0);
 	return RGBA32(MIN(255u, r * 255 / a), MIN(255u, g * 255 / a), MIN(255u, b * 255 / a), a);
-}
-
-static void set_quad_color(unsigned long argb)
-{
-	set_mode(_mode_over);
-	rdpq_set_prim_color(over_color(argb));
 }
 
 /* the part of a meter's sprite a quad shows, as Halo's meter shader colours
@@ -620,36 +634,71 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 		for (int x = 0; x < width; x++)
 			strongest = in[x * 2 + 1] > strongest ? in[x * 2 + 1] : strongest;
 	}
-	for (int y = 0; y < height; y++)
+	/* A texel's colour depends on its order and shape alone (the quad's
+	colours, the strongest and the scale are the meter's): a texel the same
+	as the one before it, or the one above it, takes that one's colour, and a
+	meter's texels are runs of a few (a bar's order changes along it, its
+	shape at its edges) -- worked out once each, not nine divisions a texel.
+	A row is made in cached memory, then copied into the slot (uncached)
+	whole words at a time, its width exactly */
 	{
-		const uint8_t *in = (const uint8_t *)source.buffer + (t0 + y) * source.stride + s0 * 2;
-		uint16_t *out = (uint16_t *)((uint8_t *)entry->surface.buffer + y * entry->surface.stride);
+		typedef uint16_t __attribute__((may_alias)) texel_pair;
+		uint16_t rows[2][METER_SLOT_WIDTH] __attribute__((aligned(8)));
+		const texel_pair *above = NULL;
 
-		for (int x = 0; x < width; x++)
+		for (int y = 0; y < height; y++)
 		{
-			unsigned order = in[x * 2], shape = in[x * 2 + 1];
-			int covered = shape && shape * 2 >= strongest;
-			unsigned k = div255((shape * 4 >= strongest * 3 ? shape : strongest * 3 / 4) * scale);
+			const uint8_t *in = (const uint8_t *)source.buffer + (t0 + y) * source.stride + s0 * 2;
+			const texel_pair *pairs = (const texel_pair *)in;
+			uint16_t *made = rows[y & 1], *made_above = rows[(y & 1) ^ 1];
+			uint16_t *out = (uint16_t *)((uint8_t *)entry->surface.buffer + y * entry->surface.stride);
+			unsigned last = 0x10000, last_made = 0;
+			int x;
 
-			if (covered && order >= maximum_alpha)
-				out[x] = empty;
-			else
+			for (x = 0; x < width; x++)
 			{
-				unsigned r = div255(channel(quad->minimum_color, 16) * (255 - order) + channel(quad->maximum_color, 16) * order);
-				unsigned g = div255(channel(quad->minimum_color, 8) * (255 - order) + channel(quad->maximum_color, 8) * order);
-				unsigned b = div255(channel(quad->minimum_color, 0) * (255 - order) + channel(quad->maximum_color, 0) * order);
+				unsigned pair = pairs[x];
 
-				if (order >= minimum_alpha)
+				if (pair == last)
 				{
-					r = MIN(255u, r + channel(quad->flash_color, 16));
-					g = MIN(255u, g + channel(quad->flash_color, 8));
-					b = MIN(255u, b + channel(quad->flash_color, 0));
+					made[x] = last_made;
+					continue;
 				}
-				r = div255(r * k);
-				g = div255(g * k);
-				b = div255(b * k);
-				out[x] = ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (covered && order < maximum_alpha);
+				last = pair;
+				if (above && above[x] == pair)
+				{
+					made[x] = last_made = made_above[x];
+					continue;
+				}
+				{
+					unsigned order = in[x * 2], shape = in[x * 2 + 1];
+					int covered = shape && shape * 2 >= strongest;
+					unsigned k = div255((shape * 4 >= strongest * 3 ? shape : strongest * 3 / 4) * scale);
+
+					if (covered && order >= maximum_alpha)
+						made[x] = empty;
+					else
+					{
+						unsigned r = div255(channel(quad->minimum_color, 16) * (255 - order) + channel(quad->maximum_color, 16) * order);
+						unsigned g = div255(channel(quad->minimum_color, 8) * (255 - order) + channel(quad->maximum_color, 8) * order);
+						unsigned b = div255(channel(quad->minimum_color, 0) * (255 - order) + channel(quad->maximum_color, 0) * order);
+
+						if (order >= minimum_alpha)
+						{
+							r = MIN(255u, r + channel(quad->flash_color, 16));
+							g = MIN(255u, g + channel(quad->flash_color, 8));
+							b = MIN(255u, b + channel(quad->flash_color, 0));
+						}
+						r = div255(r * k);
+						g = div255(g * k);
+						b = div255(b * k);
+						made[x] = ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (covered && order < maximum_alpha);
+					}
+					last_made = made[x];
+				}
 			}
+			memcpy(out, made, width * sizeof(*made));
+			above = pairs;
 		}
 	}
 	data_cache_hit_writeback(entry->surface.buffer, entry->surface.stride * entry->surface.height);
@@ -702,7 +751,9 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 	surface_t surface;
 	float s0, t0, s1, t1;
 	int is0, it0, is1, it1;
-	int upright;
+	int upright, drawn_upright;
+	int mode = _mode_over, point = hud.point;
+	float scale_x = 0.f, scale_y = 0.f;
 
 	hud.quads++;
 	if (hud.dump)
@@ -747,27 +798,34 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 		is1 = MIN(is1 - is0, surface.width);
 		it1 = MIN(it1 - it0, surface.height);
 		is0 = it0 = 0;
-		set_mode(quad->tint_color >> 24 >= 0x80 ? _mode_meter_glow : _mode_meter);
+		mode = quad->tint_color >> 24 >= 0x80 ? _mode_meter_glow : _mode_meter;
 	}
-	else
-		set_quad_color(quad->color);
 
-	if (upright && s1 > s0 && t1 > t0)
+	/* the filter the quad wants, set with its mode (set_state); a rotated
+	quad's bilinear, a meter not drawn keeping the one in force. (Point
+	sampled at the screen's own multiple of the sprites' half size: 1 at
+	320x240, 2 at 640x480 -- whole texels to whole pixels) */
+	drawn_upright = upright && s1 > s0 && t1 > t0;
+	if (drawn_upright)
+	{
+		float native_x = n64_render_layout_scale_x() * 2.f, native_y = n64_render_layout_scale_y() * 2.f;
+
+		scale_x = (quad->x[1] - quad->x[0]) / (s1 - s0);
+		scale_y = (quad->y[2] - quad->y[1]) / (t1 - t0);
+		point = native_x == (float)(int)native_x &&
+			fabsf(scale_x - native_x) < 0.02f && fabsf(scale_y - native_y) < 0.02f;
+	}
+	else if (!quad->meter)
+		point = 0;
+	set_state(mode, point);
+	if (!quad->meter)
+		rdpq_set_prim_color(over_color(quad->color));
+
+	if (drawn_upright)
 	{
 		int width = is1 - is0, height = it1 - it0;
-		float scale_x = (quad->x[1] - quad->x[0]) / (s1 - s0);
-		float scale_y = (quad->y[2] - quad->y[1]) / (t1 - t0);
 		int flip_x = quad->s[0] > quad->s[2], flip_y = quad->t[0] > quad->t[2];
 		int row_bytes = (TEX_FORMAT_PIX2BYTES(surface_get_format(&surface), width) + 7) & ~7;
-
-		/* (point sampled at the screen's own multiple of the sprites' half
-		size: 1 at 320x240, 2 at 640x480 -- whole texels to whole pixels) */
-		{
-			float native_x = n64_render_layout_scale_x() * 2.f, native_y = n64_render_layout_scale_y() * 2.f;
-
-			set_filter(native_x == (float)(int)native_x &&
-				fabsf(scale_x - native_x) < 0.02f && fabsf(scale_y - native_y) < 0.02f);
-		}
 
 		/* a rectangle of the sprite that fits TMEM, unflipped: one upload
 		(none when the last quad's is still there) and one scaled rectangle
@@ -828,7 +886,6 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 	else if (!quad->meter)
 	{
 		hud.tmem_pixels = NULL;
-		set_filter(0);
 		draw_rotated(quad, &surface);
 	}
 	hud.quad_ticks += TICKS_READ() - start;
@@ -880,8 +937,7 @@ void n64_hud_blip(float x, float y, float width, float height, unsigned long col
 		debugf("hud blip %d,%d size %d color %08lx\n", (int)x, (int)y, (int)width, color);
 	if (!(color & 0xF0F0F0) || !hud.blip.buffer)
 		return;
-	set_mode(_mode_blip);
-	set_filter(0);
+	set_state(_mode_blip, 0);
 	rdpq_set_prim_color(over_color(color & 0xFFFFFF));
 	/* what rdpq_tex_blit drew (its one strip: the dot's upload, then the
 	scaled rectangle), the dot uploaded once for all the blips in a row */

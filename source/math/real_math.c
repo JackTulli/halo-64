@@ -299,6 +299,20 @@ void quaternions_multiply(
 	real_quaternion const *q1,
 	real_quaternion *result)
 {
+#ifdef HALO_N64
+	/* Both quaternions read first, so that a result over either needs no
+	copy: -Os made each copy below a memcpy call, and the overlays, the
+	aiming and looking screens and the first-person weapon multiply into a
+	node's own rotation (result == q1), every node of every pose. The same
+	products and sums in the same order. */
+	real i0 = q0->v.i, j0 = q0->v.j, k0 = q0->v.k, w0 = q0->w;
+	real i1 = q1->v.i, j1 = q1->v.j, k1 = q1->v.k, w1 = q1->w;
+
+	result->v.i = + j0*k1 + i0*w1 + w0*i1 - k0*j1;
+	result->v.j = + w0*j1 + j0*w1 + k0*i1 - i0*k1;
+	result->v.k = + k0*w1 + i0*j1 + w0*k1 - j0*i1;
+	result->w = + w0*w1 - i0*i1 - j0*j1 - k0*k1;
+#else
 	real_quaternion temporary;
 
 	if (q0== result)
@@ -335,11 +349,12 @@ void quaternions_multiply(
 					;
 
 	result->w =
-					+ q0->w  *q1->w 
-					- q0->v.i*q1->v.i 
-					- q0->v.j*q1->v.j 
+					+ q0->w  *q1->w
+					- q0->v.i*q1->v.i
+					- q0->v.j*q1->v.j
 					- q0->v.k*q1->v.k
 					;
+#endif
 
 	return;
 }
@@ -2474,8 +2489,48 @@ real_euler_angles2d *euler_angles2d_from_vector3d(
 	real_euler_angles2d *angles,
 	real_vector3d const *vector)
 {
+#ifdef HALO_N64
+	/* The last two vectors' angles. A unit's aiming and looking vectors,
+	the same relative to the same body while it looks where it aims, and its
+	aiming and the aiming it wants, the same once it has turned, become
+	angles every tick (unit_euler_aiming_update, unit_preprocess_node_
+	orientations): two arc tangents and a square root each. The angles are a
+	function of the vector's three numbers alone, so the ones kept are the
+	ones working them out again would make. (No caller writes the angles
+	over their own vector, so the vector is the same while its angles are
+	worked out.) */
+	static struct
+	{
+		unsigned long vector[3];
+		real_euler_angles2d angles;
+	} last[2];
+	static int filled, next;
+	unsigned long const *key = (unsigned long const *)vector;
+	int k;
+
+	for (k = 0; k < filled; k++)
+	{
+		if (last[k].vector[0] == key[0] && last[k].vector[1] == key[1] && last[k].vector[2] == key[2])
+		{
+			angles->yaw = last[k].angles.yaw;
+			angles->pitch = last[k].angles.pitch;
+			return angles;
+		}
+	}
+	k = next;
+	next = !next;
+	if (filled < 2)
+		filled++;
+	last[k].vector[0] = key[0];
+	last[k].vector[1] = key[1];
+	last[k].vector[2] = key[2];
+#endif
 	angles->yaw = arctangent(vector->j, vector->i);
 	angles->pitch = arctangent(vector->k, square_root(vector->i*vector->i+vector->j*vector->j));
+#ifdef HALO_N64
+	last[k].angles.yaw = angles->yaw;
+	last[k].angles.pitch = angles->pitch;
+#endif
 	return angles;
 }
 
@@ -3230,6 +3285,37 @@ static __inline real n64_trig_reduce(
 	return ((x - y * 0.78515625f) - y * 2.4187564849853515625e-4f) - y * 3.77489497744594108e-8f;
 }
 
+/* The last angle reduced: a sine and a cosine of the same angle (a
+direction from its yaw and pitch, a rotation's matrix, a turned HUD
+bitmap, sine(x) and cosine(x) side by side all over the game) reduce it
+once. The reduction depends on the angle alone, so the remainder and
+octant kept are the ones a second reduction would make. */
+static struct
+{
+	unsigned long angle; /* the angle's bits, a NaN's (none) at first */
+	int octant;
+	real remainder;
+} n64_trig_last = { 0xFFFFFFFFUL, 0, 0.f };
+
+static __inline real n64_trig_reduce_once(
+	real x,
+	int *octant)
+{
+	union { real f; unsigned long u; } angle;
+
+	angle.f = x;
+	if (angle.u == n64_trig_last.angle)
+	{
+		*octant = n64_trig_last.octant;
+		return n64_trig_last.remainder;
+	}
+	x = n64_trig_reduce(x, octant);
+	n64_trig_last.angle = angle.u;
+	n64_trig_last.octant = *octant;
+	n64_trig_last.remainder = x;
+	return x;
+}
+
 static __inline real n64_sine_polynomial(
 	real x)
 {
@@ -3254,7 +3340,7 @@ real n64_sinf(
 
 	if (!(x < 8192.f))
 		return sinf(angle);
-	x = n64_trig_reduce(x, &octant);
+	x = n64_trig_reduce_once(x, &octant);
 	if (octant > 3)
 	{
 		negative = !negative;
@@ -3272,7 +3358,7 @@ real n64_cosf(
 
 	if (!(x < 8192.f))
 		return cosf(angle);
-	x = n64_trig_reduce(x, &octant);
+	x = n64_trig_reduce_once(x, &octant);
 	if (octant > 3)
 	{
 		negative = !negative;

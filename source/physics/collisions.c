@@ -590,10 +590,16 @@ boolean collision_test_vector(
 						object_test_vector would take nothing of it, children
 						and all, and its datum -- read and marked -- is
 						three or four cache misses) */
-						if (!TEST_FLAG(flags, object_header_get(object_index)->type + _collision_test_objects_first_type_bit))
+						struct object_header_datum const *header = object_header_get(object_index);
+
+						if (!TEST_FLAG(flags, header->type + _collision_test_objects_first_type_bit))
 							continue;
-#endif
+						/* (marked through the header in hand: object_mark_function
+						looked the same object up again) */
+						if (n64_object_mark(header->datum) &&
+#else
 						if (object_mark_function(object_index) &&
+#endif
 							object_test_vector(
 								object_index,
 								flags,
@@ -1858,24 +1864,58 @@ static boolean n64_pill_features_in_sphere(
 				children -- of a type the pill doesn't collide with, by its
 				header, its datum not read or marked) */
 				struct object_header_datum const *header = object_header_get(object_index);
+				struct object_datum *object;
+				real reach;
+				real delta_x;
+				real delta_y;
+				real delta_z;
 
 				if (TEST_FLAG(_object_mask_item, header->type) &&
 					!TEST_FLAG(flags, header->type + _collision_test_objects_first_type_bit))
 				{
 					continue;
 				}
-				if (object_mark_function(object_index))
+				/* (object_mark_function in place: the same mark, made the
+				same way) */
+				object = header->datum;
+				if (object->object.magic_number == global_object_marker)
 				{
-					object_get_features_in_sphere(
-						flags,
-						object_index,
-						center,
-						radius,
-						height,
-						width,
-						ignore_object_index,
-						features);
+					continue;
 				}
+				object->object.magic_number = global_object_marker;
+				/* (then object_get_features_in_sphere's own first tests, in
+				its order, before the call: most objects in the clusters are
+				out of the pill's reach, and one out of reach with no siblings
+				-- an object in a cluster is no one's child -- adds nothing) */
+				if (object->object.next_object_index == NONE)
+				{
+					if (object_index == ignore_object_index ||
+						TEST_FLAG(object->object.flags, _object_invisible_bit) ||
+						TEST_FLAG(object->object.flags, _object_no_collisions_bit) ||
+						(TEST_FLAG(object->object.damage_flags, _object_dead_bit) &&
+							object->object.type == _object_type_biped))
+					{
+						continue;
+					}
+					reach = object->object.bounding_sphere_radius;
+					reach += radius;
+					delta_x = object->object.bounding_sphere_center.x - center->x;
+					delta_y = object->object.bounding_sphere_center.y - center->y;
+					delta_z = object->object.bounding_sphere_center.z - center->z;
+					if (!(delta_x * delta_x + delta_y * delta_y + delta_z * delta_z <= reach * reach))
+					{
+						continue;
+					}
+				}
+				object_get_features_in_sphere(
+					flags,
+					object_index,
+					center,
+					radius,
+					height,
+					width,
+					ignore_object_index,
+					features);
 			}
 		}
 		object_marker_end();

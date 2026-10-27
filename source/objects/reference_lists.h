@@ -26,6 +26,10 @@ struct data_reference
 	long next_reference_index;
 };
 
+#ifdef HALO_N64
+typedef char n64_data_reference_size_assert[sizeof(struct data_reference) == 12 ? 1 : -1];
+#endif
+
 /* ---------- prototypes/EXAMPLE.C */
 
 /* ---------- globals */
@@ -51,7 +55,29 @@ __inline long reference_list_get_next_datum_index(
 
 	if (*reference_index!=NONE)
 	{
+#ifdef HALO_N64
+		/* datum_get's tests, inline and without its multiply: every
+		reference list is reference_list_new's, an array of
+		sizeof(struct data_reference) elements. A cluster's objects are
+		walked through here for each collision query (a reference and a call
+		to datum_get for each object in the clusters it reaches). As in
+		objects.h's object lookups, one unsigned compare of the index's low
+		half stands for "not negative, below the count"; an index that is no
+		reference's reads through NULL, as datum_get's did. */
+		long index = *reference_index;
+		unsigned long absolute_index = (unsigned short)index;
+		long identifier = index >> 16;
+
+		reference = NULL;
+		if (absolute_index < (unsigned long)(unsigned short)array->count)
+		{
+			reference = (struct data_reference *)array->data + absolute_index;
+			if (identifier ? reference->identifier != identifier : !reference->identifier)
+				reference = NULL;
+		}
+#else
 		reference = (struct data_reference *)datum_get(array, *reference_index);
+#endif
 		*reference_index = reference->next_reference_index;
 		result = reference->datum_index;
 	}

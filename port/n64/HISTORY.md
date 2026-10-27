@@ -5,6 +5,66 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+27 October: an optimisation pass that changes nothing the game does or
+draws -- every change gives the same numbers and the same pixels, checked
+against the code it replaces (host tests of the rewritten arithmetic, about
+590 million cases, no difference) -- and leaves 5.7 KB more of the heap
+free. Not measured on hardware or in ares: the estimates are from
+instruction counts and the October profiles.
+
+- The models' matrices (4-player is limited by the RSP): each part of a
+  model loaded its vertices between a matrix push and a pop, a matrix
+  read back, multiplied and normalised on the RSP each, ~800 a frame for
+  four first-person views. `flush_draws` now moves tiny3d's stack up once
+  and each node is set there (`t3d_matrix_set(m, true)`, tiny3d's own
+  pattern, the same microcode path), once per node change. The level's
+  identity push and pop went (the camera times an identity is the camera
+  in 16.16), the lights moved next to the viewport's other tiny3d
+  settings, a batch's last strip carries the triangles' sync.
+- Node matrices go to 16.16 in one step (`render_object`: the scales are
+  powers of two, so folding 65536 into them changes no number), the first
+  person's read straight from the animation graph through the remapping
+  table (no 52-byte copy a node a frame).
+- Object lookups: the object header array's element is 12 bytes, so a
+  header is found by shifts, not `mult`; one unsigned compare stands for
+  "not negative, below the count"; `object_get` and friends do the lookup
+  in themselves (one leaf call); repeated lookups of the same object in a
+  function share one; `datum_get` and the reference lists' walks take the
+  same shorter tests. `objects_update` clears the "don't update" bit only
+  where it is set (a store dirtied every header's cache line every tick).
+- The generated stand-ins that return a number return 0 (53 of them had
+  been merged into one body that called memset to clear a byte, from
+  `game_in_editor` and the like, per object per tick).
+- Collision: the BSP walks work out plane distances in place (two calls a
+  node), a cluster portal and a pill's objects are tested first in place
+  for the common miss before the full test is called.
+- Animation and math: `quaternions_multiply` without its copies (memcpy
+  calls at -Os), the animation stream cache's hit search without the LRU
+  compare, a node's matrix made from its orientation and multiplied in one
+  (`matrix4x3_multiply_orientation`), sine/cosine pairs reducing the angle
+  once, the last two vectors' euler angles and the last four colour
+  bounds' HSV kept (pure functions of their inputs).
+- HUD, text and particles batch their render mode changes
+  (`rdpq_mode_begin/end`: one recompute on the RSP); the HUD sets a quad's
+  mode and filter together; meter texels equal to their neighbour reuse
+  its colour; explosion puffs set ENV only when it changes.
+- Decals: each vertex's plane distance once, no copies between the
+  clipping planes, a mark wholly behind the eye left out before its
+  clipping (exact: the depth pull scales a vertex by 0.5-1), the combiner
+  and texture set again only when they change.
+- Dead per-frame work: a vblank debug string formatted every frame into a
+  full buffer and a 984-byte profile history copy, both read only by
+  displays and dumps the N64 cannot turn on. The 5-second tick summary
+  is logged only with `debug_stats` (it cost a few ms in the tick it fell
+  in). `csmemset`/`csmemcpy` are the compiler's builtins (each was a call
+  to a jump to libc's). Models, the level, its streamed chunks, its tiles
+  and the decal bank are read without stdio's 1 KB buffer (one DMA a read
+  instead of 1 KB pieces copied on).
+- Tried and left out: the tiny vector helpers as GNU extern inlines
+  (the -Os build stopped inlining them on 15 October): every call went,
+  but the code grew 19.5 KB -- too much of the heap. `-mno-memcpy` (+8.6
+  KB) likewise.
+
 26 October: a FIELD OF VIEW setting, the menus redrawn, the level pictures
 the size of their frames, and the sniper rifle's two white bars gone.
 

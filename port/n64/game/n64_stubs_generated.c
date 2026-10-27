@@ -50,17 +50,17 @@ struct ai_debug_state ai_debug; /* source/ai/ai_debug.h */
 struct cinematic_global_data * cinematic_globals; /* source/cutscene/cinematics.h */
 struct sound_environment_definition const default_sound_environment; /* source/sound/sound_environment_definitions.h */
 
-long actor_aim_grenade(long actor_index, real_point3d const *origin, real_vector3d *vector) { long result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/actors.h */
-boolean actor_aim_jump(long actor_index, long unit_index, boolean leap, real jump_magnitude, real_vector3d *jump_velocity) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/actors.h */
-long actor_aim_projectile(long actor_index, real_point3d const *origin, real_vector3d *vector, real *error_reference) { long result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/actors.h */
+long actor_aim_grenade(long actor_index, real_point3d const *origin, real_vector3d *vector) { return 0; } /* source/ai/actors.h */
+boolean actor_aim_jump(long actor_index, long unit_index, boolean leap, real jump_magnitude, real_vector3d *jump_velocity) { return 0; } /* source/ai/actors.h */
+long actor_aim_projectile(long actor_index, real_point3d const *origin, real_vector3d *vector, real *error_reference) { return 0; } /* source/ai/actors.h */
 void actor_died(long actor_index) {  } /* source/ai/actors.h */
-boolean actor_firing_blindly(long actor_index) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/actors.h */
-boolean actor_get_running_blind_vector(long actor_index, real_vector3d *run_vector) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/actors.h */
-boolean actor_has_unlimited_grenades(long actor_index) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/actors.h */
-boolean actor_is_leaping(long actor_index) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/actors.h */
-short actors_spawn_from_unit(long unit_index, long actor_variant_definition_index, short actor_count, real throw_velocity) { short result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/actors.h */
+boolean actor_firing_blindly(long actor_index) { return 0; } /* source/ai/actors.h */
+boolean actor_get_running_blind_vector(long actor_index, real_vector3d *run_vector) { return 0; } /* source/ai/actors.h */
+boolean actor_has_unlimited_grenades(long actor_index) { return 0; } /* source/ai/actors.h */
+boolean actor_is_leaping(long actor_index) { return 0; } /* source/ai/actors.h */
+short actors_spawn_from_unit(long unit_index, long actor_variant_definition_index, short actor_count, real throw_velocity) { return 0; } /* source/ai/actors.h */
 void actor_swarm_unit_died(long actor_index, long unit_index) {  } /* source/ai/actors.h */
-boolean ai_adjust_damage(long actor_index, struct damage_data *damage, real *total_damage) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/ai.h */
+boolean ai_adjust_damage(long actor_index, struct damage_data *damage, real *total_damage) { return 0; } /* source/ai/ai.h */
 void ai_communication_event(short communication_type, long subject_unit_index, long cause_unit_index, short hostility, short damage_type, short information_type, struct ai_information_data *information_data) {  } /* source/ai/ai_communication.h */
 void ai_communication_finished(long unit_index, short priority, short vocalization_type, boolean reply_to_player, long preselected_reply_actor_index, struct ai_information_packet *information) {  } /* source/ai/ai_communication.h */
 void ai_communication_notify(long unit_index, short priority, short vocalization_type, struct ai_information_packet *information) {  } /* source/ai/ai_communication.h */
@@ -69,13 +69,13 @@ void ai_communication_started(long unit_index, short priority, short vocalizatio
 void ai_create_mounted_weapons_for_unit(long unit_index) {  } /* source/ai/ai_runtime.h */
 void ai_debug_change_selected_actor(boolean a1) {  } /* source/ai/ai_debug.h */
 void ai_debug_change_selected_encounter(boolean a1) {  } /* source/ai/ai_debug.h */
-char * ai_debug_describe_actor(long actor_index, long unit_index, boolean include_squad, char *buffer, long bufsize) { char * result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/ai_debug.h */
+char * ai_debug_describe_actor(long actor_index, long unit_index, boolean include_squad, char *buffer, long bufsize) { return 0; } /* source/ai/ai_debug.h */
 void ai_debug_initialize_for_new_map(void) {  } /* source/ai/ai_debug.h */
 void ai_disconnect_from_structure_bsp(void) {  } /* source/ai/ai.h */
 void ai_dispose(void) {  } /* source/ai/ai_runtime.h */
 void ai_dispose_from_old_map(void) {  } /* source/ai/ai_runtime.h */
-boolean ai_enemies_attacking_player(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/ai.h */
-boolean ai_enemies_can_see_player(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/ai.h */
+boolean ai_enemies_attacking_player(void) { return 0; } /* source/ai/ai.h */
+boolean ai_enemies_can_see_player(void) { return 0; } /* source/ai/ai.h */
 void ai_find_inactive_encounters(byte *working_memory, short working_memory_size) {  } /* source/ai/ai.h */
 void ai_handle_allegiance_status_changed(short team1_index, short team2_index, boolean currently_broken, boolean permanently_broken) {  } /* source/ai/ai_runtime.h */
 void ai_handle_bump(long unit_index, long object_index, union real_vector3d const *old_velocity) {  } /* source/ai/ai_runtime.h */
@@ -84,20 +84,20 @@ void ai_handle_death(long unit_index, long killer_object_index, short damage_cat
 void ai_handle_deleted_object(long object_index) {  } /* source/ai/ai_runtime.h */
 void ai_handle_enter_vehicle(long unit_index, long vehicle_index) {  } /* source/ai/ai.h */
 void ai_handle_exit_vehicle(long unit_index, long vehicle_index) {  } /* source/ai/ai.h */
-boolean ai_handle_killing_spree(long unit_index, short killing_spree_count) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/ai_runtime.h */
+boolean ai_handle_killing_spree(long unit_index, short killing_spree_count) { return 0; } /* source/ai/ai_runtime.h */
 void ai_handle_spatial_effect(long object_index, union real_point3d const *position, short effect_type, short volume, short count) {  } /* source/ai/ai.h */
 void ai_handle_unit_effect(long unit_index, short effect_type, short volume) {  } /* source/ai/ai_runtime.h */
 void ai_initialize(void) {  } /* source/ai/ai.h */
 void ai_initialize_for_new_map(void) {  } /* source/ai/ai.h */
 void ai_place(void) {  } /* source/ai/ai.h */
-short ai_profile_change_render_spray(void) { short result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/ai_profile.h */
+short ai_profile_change_render_spray(void) { return 0; } /* source/ai/ai_profile.h */
 void ai_reconnect_to_structure_bsp(void) {  } /* source/ai/ai.h */
-boolean ai_release_inactive_encounters(char *result_description, boolean *more_to_release, byte *working_memory, short working_memory_size) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/ai.h */
-boolean ai_release_inactive_swarms(char *result_description, boolean *more_to_release, byte *working_memory, short working_memory_size) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/ai.h */
+boolean ai_release_inactive_encounters(char *result_description, boolean *more_to_release, byte *working_memory, short working_memory_size) { return 0; } /* source/ai/ai.h */
+boolean ai_release_inactive_swarms(char *result_description, boolean *more_to_release, byte *working_memory, short working_memory_size) { return 0; } /* source/ai/ai.h */
 void ai_scripting_erase_all(void) {  } /* source/ai/ai_script.h */
-boolean ai_try_vehicle_eviction(long actor_index, long entering_unit_index, boolean immediate) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/ai/ai.h */
+boolean ai_try_vehicle_eviction(long actor_index, long entering_unit_index, boolean immediate) { return 0; } /* source/ai/ai.h */
 void ai_update(void) {  } /* source/ai/ai.h */
-boolean bink_playback_active(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/bink/bink_playback.h */
+boolean bink_playback_active(void) { return 0; } /* source/bink/bink_playback.h */
 void bink_playback_dispose(void) {  } /* source/bink/bink_playback.h */
 void bink_playback_initialize(void) {  } /* source/bink/bink_playback.h */
 void bink_playback_stop(void) {  } /* source/bink/bink_playback.h */
@@ -105,13 +105,13 @@ void bink_playback_update(void) {  } /* source/bink/bink_playback.h */
 void build_sprite(struct build_sprite_data *data, short mode, short sequence_index, short sprite_index, real_point3d const *untransformed_origin, real_vector3d const *untransformed_direction, real rotation, real scale, real_argb_color const *color, real fade, unsigned long flags) {  } /* source/render/render_sprite.h */
 void build_sprites_begin(struct build_sprite_data *data, short maximum_sprite_count, long bitmap_group_index, struct shader_effect_definition const *shader, unsigned long flags) {  } /* source/render/render_sprite.h */
 void build_sprites_end(struct build_sprite_data *data) {  } /* source/render/render_sprite.h */
-boolean cinematic_can_be_skipped(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/cutscene/cinematics.h */
+boolean cinematic_can_be_skipped(void) { return 0; } /* source/cutscene/cinematics.h */
 void cinematic_dispose(void) {  } /* source/cutscene/cinematics.h */
 void cinematic_dispose_from_old_map(void) {  } /* source/cutscene/cinematics.h */
 void cinematic_initialize(void) {  } /* source/cutscene/cinematics.h */
 void cinematic_initialize_for_new_map(void) {  } /* source/cutscene/cinematics.h */
-boolean cinematic_in_progress(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/cutscene/cinematics.h */
-volatile unsigned int * d3d_find_flipcount(void) { volatile unsigned int * result; memset(&result, 0, sizeof(result)); return result; } /* source/main/d3d_intimacy.h */
+boolean cinematic_in_progress(void) { return 0; } /* source/cutscene/cinematics.h */
+volatile unsigned int * d3d_find_flipcount(void) { return 0; } /* source/main/d3d_intimacy.h */
 void display_error_damaged_media(void) {  } /* source/interface/ui_widget.h */
 void display_error_deferred(short error_code, short local_player_index, boolean modal, boolean pause_game_time) {  } /* source/interface/ui_widget.h */
 void display_error_when_main_menu_loaded(short error_code) {  } /* source/interface/ui_widget.h */
@@ -123,58 +123,58 @@ void editor_dispose(void) {  } /* source/editor/editor_stubs.h */
 void editor_dispose_from_old_map(void) {  } /* source/editor/editor_stubs.h */
 void editor_initialize(void) {  } /* source/editor/editor_stubs.h */
 void editor_initialize_for_new_map(void) {  } /* source/editor/editor_stubs.h */
-boolean editor_should_exit(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/editor/editor_stubs.h */
+boolean editor_should_exit(void) { return 0; } /* source/editor/editor_stubs.h */
 void editor_update(void) {  } /* source/editor/editor_stubs.h */
-boolean game_in_editor(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/editor/editor_stubs.h */
+boolean game_in_editor(void) { return 0; } /* source/editor/editor_stubs.h */
 void game_sound_clear(void) {  } /* source/sound/game_sound.h */
 void game_sound_dispose(void) {  } /* source/sound/game_sound.h */
 void game_sound_restore(void) {  } /* source/sound/game_sound.h */
-boolean game_state_read_from_file(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/saved games/game_state.h */
+boolean game_state_read_from_file(void) { return 0; } /* source/saved games/game_state.h */
 void game_state_read_from_persistent_storage(void *buffer, long buffer_size) {  } /* source/saved games/game_state.h */
-boolean game_state_read_header_from_persistent_storage(void *header, unsigned long *header_checksum, long header_size, long buffer_size, boolean *corrupted) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/saved games/game_state.h */
+boolean game_state_read_header_from_persistent_storage(void *header, unsigned long *header_checksum, long header_size, long buffer_size, boolean *corrupted) { return 0; } /* source/saved games/game_state.h */
 struct network_game_client * global_network_game_client_get(void) { return NULL; } /* source/networking/network_game_globals.h */
 struct network_game_server * global_network_game_server_get(void) { return NULL; } /* source/networking/network_game_globals.h */
-boolean hs_compile_and_evaluate(char const *expression) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/hs/hs.h */
+boolean hs_compile_and_evaluate(char const *expression) { return 0; } /* source/hs/hs.h */
 void hs_dispose(void) {  } /* source/hs/hs.h */
 void hs_dispose_from_old_map(void) {  } /* source/game/game.c */
 void hs_initialize(void) {  } /* source/hs/hs.h */
 void hs_initialize_for_new_map(void) {  } /* source/hs/hs.h */
 void hs_runtime_dispose_from_old_map(void) {  } /* source/hs/hs.h */
 void hs_runtime_initialize_for_new_map(void) {  } /* source/hs/hs.h */
-short hs_tokens_enumerate(char const *substring, long type_flags, char const **results, short maximum_count) { short result; memset(&result, 0, sizeof(result)); return result; } /* source/hs/hs.h */
+short hs_tokens_enumerate(char const *substring, long type_flags, char const **results, short maximum_count) { return 0; } /* source/hs/hs.h */
 void hs_update(void) {  } /* source/hs/hs.h */
 void initialize_network_game_packets(void) {  } /* source/networking/network_messages.h */
 void main_menu_active(boolean active) {  } /* source/interface/ui_widget.h */
-boolean main_menu_is_active(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/interface/ui_widget.h */
+boolean main_menu_is_active(void) { return 0; } /* source/interface/ui_widget.h */
 void main_screen_shell_begin_fade(unsigned long fade_duration_milliseconds) {  } /* source/interface/ui_widget.h */
 void main_screen_shell_load(void) {  } /* source/interface/ui_widget.h */
 void network_damage_aftermath(long object_index, struct damage_data const *damage, unsigned long being_damaged_flags, real shield_damage, real body_damage, real body_damage_multiplier, short body_part, short node_index, short region_index, short material_index) {  } /* source/objects/damage.c */
 boolean network_damage_deals(struct damage_data const *damage, long object_index, short node_index, short region_index, short material_index, real_vector3d const *object_normal, boolean authorized) { return TRUE; } /* source/objects/damage.c */
 void network_damage_player_effect(long player_index, struct damage_data const *damage, real total_damage) {  } /* source/objects/damage.c */
-boolean network_damage_replaying_kill(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/objects/damage.c */
+boolean network_damage_replaying_kill(void) { return 0; } /* source/objects/damage.c */
 void network_distributed_new_game(void) {  } /* source/game/game.c */
 void network_distributed_player_killed(long *killing_player_index, long *killing_object_index, long dead_player_index, boolean *friendly_fire) {  } /* source/game/game_engine.c */
 void network_distributed_player_picked_up(long player_index, short kind, long definition_index, short count) {  } /* source/game/players.c */
 void network_distributed_tick(void) {  } /* source/game/game_time.c */
 void network_game_abort(void) {  } /* source/networking/network_game_globals.h */
-boolean network_game_client_end_frame(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/networking/network_game_globals.h */
-boolean network_game_client_start_frame(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/networking/network_game_globals.h */
-boolean network_game_distributed(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/networking/network_game_globals.h */
-boolean network_game_distributed_client(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/networking/network_game_globals.h */
-boolean network_game_is_active(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/networking/network_game_globals.h */
-long network_game_server_get_oldest_client_update_received(struct network_game_server *server) { long result; memset(&result, 0, sizeof(result)); return result; } /* source/networking/network_server_manager.h */
-boolean network_game_server_reset_to_pregame(struct network_game_server *server) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/networking/network_server_manager.h */
+boolean network_game_client_end_frame(void) { return 0; } /* source/networking/network_game_globals.h */
+boolean network_game_client_start_frame(void) { return 0; } /* source/networking/network_game_globals.h */
+boolean network_game_distributed(void) { return 0; } /* source/networking/network_game_globals.h */
+boolean network_game_distributed_client(void) { return 0; } /* source/networking/network_game_globals.h */
+boolean network_game_is_active(void) { return 0; } /* source/networking/network_game_globals.h */
+long network_game_server_get_oldest_client_update_received(struct network_game_server *server) { return 0; } /* source/networking/network_server_manager.h */
+boolean network_game_server_reset_to_pregame(struct network_game_server *server) { return 0; } /* source/networking/network_server_manager.h */
 void network_game_server_stalled_on_client(struct network_game_server *server, boolean stalled) {  } /* source/networking/network_server_manager.h */
-boolean network_game_server_start_frame(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/networking/network_game_globals.h */
+boolean network_game_server_start_frame(void) { return 0; } /* source/networking/network_game_globals.h */
 void network_game_server_switch_to_postgame(struct network_game_server *server) {  } /* source/networking/network_server_manager.h */
 void network_game_server_update_ticks(struct network_game_server *server, short tick_count) {  } /* source/networking/network_server_manager.h */
-boolean network_objects_creating_host_object(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/objects/objects.c */
+boolean network_objects_creating_host_object(void) { return 0; } /* source/objects/objects.c */
 boolean network_objects_may_delete(long object_index) { return TRUE; } /* source/objects/objects.c */
 long network_objects_new_object_index(void) { return NONE; } /* source/objects/objects.c */
 void network_objects_placed(void) {  } /* source/game/game.c */
 void network_test_update(boolean main_menu_loaded, real seconds) {  } /* source/main/main.c */
-struct render_lighting * object_get_cached_render_lighting(long object_index, real level_of_detail_pixels) { struct render_lighting * result; memset(&result, 0, sizeof(result)); return result; } /* source/render/render_objects.h */
-boolean player_profile_get_enclosing_directory_path(long profile, char *full_path) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/saved games/player_profile.h */
+struct render_lighting * object_get_cached_render_lighting(long object_index, real level_of_detail_pixels) { return 0; } /* source/render/render_objects.h */
+boolean player_profile_get_enclosing_directory_path(long profile, char *full_path) { return 0; } /* source/saved games/player_profile.h */
 void player_profile_save_last_level_played(short local_player_index) {  } /* source/saved games/player_profile.h */
 void player_profile_save_level_completed(short local_player_index) {  } /* source/saved games/player_profile.h */
 void process_ui_widgets(void) {  } /* source/interface/ui_widget.h */
@@ -191,17 +191,17 @@ void rasterizer_decals_initialize(void) {  } /* source/rasterizer/rasterizer.h *
 void rasterizer_decals_initialize_for_new_map(void) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_decals_update_function_pointers(void) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_decal_vertices_delete(long decal_vertex_buffer_index) {  } /* source/rasterizer/rasterizer.h */
-void * rasterizer_decal_vertices_lock(short cache_index, unsigned long cache_size) { void * result; memset(&result, 0, sizeof(result)); return result; } /* source/rasterizer/rasterizer.h */
+void * rasterizer_decal_vertices_lock(short cache_index, unsigned long cache_size) { return 0; } /* source/rasterizer/rasterizer.h */
 long rasterizer_decal_vertices_new(long size) { return NONE; } /* source/rasterizer/rasterizer.h */
 void rasterizer_decal_vertices_unlock(void) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_dispose_from_old_map(void) {  } /* source/rasterizer/common/rasterizer_common.h */
 void rasterizer_dynamic_triangles_delete(long triangle_buffer_index) {  } /* source/rasterizer/rasterizer.h */
-short * rasterizer_dynamic_triangles_lock(long triangle_buffer_index) { short * result; memset(&result, 0, sizeof(result)); return result; } /* source/rasterizer/rasterizer.h */
+short * rasterizer_dynamic_triangles_lock(long triangle_buffer_index) { return 0; } /* source/rasterizer/rasterizer.h */
 long rasterizer_dynamic_triangles_new(long triangle_count) { return NONE; } /* source/rasterizer/rasterizer.h */
 void rasterizer_dynamic_triangles_unlock(long triangle_buffer_index) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_dynamic_unlit_geometry_draw(struct shader const *shader, struct bitmap_data const *bitmap, struct render_animation const *animation, long dynamic_triangle_buffer_index, long dynamic_vertex_buffer_index, long vertex_count, real_point3d const *centroid, unsigned long geometry_flags) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_dynamic_vertices_delete(long dynamic_vertex_buffer_index) {  } /* source/rasterizer/rasterizer.h */
-void * rasterizer_dynamic_vertices_lock(long dynamic_vertex_buffer_index) { void * result; memset(&result, 0, sizeof(result)); return result; } /* source/rasterizer/rasterizer.h */
+void * rasterizer_dynamic_vertices_lock(long dynamic_vertex_buffer_index) { return 0; } /* source/rasterizer/rasterizer.h */
 long rasterizer_dynamic_vertices_new(short type, long vertex_count) { return NONE; } /* source/rasterizer/rasterizer.h */
 void rasterizer_dynamic_vertices_unlock(long dynamic_vertex_buffer_index) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_frame_begin(const struct rasterizer_frame_begin_parameters *parameters) {  } /* source/rasterizer/rasterizer.h */
@@ -218,25 +218,25 @@ void rasterizer_present(struct bitmap_data *screenshot_bitmap, const point2d *sc
 void rasterizer_profile_enable(boolean enable) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_reset_state(void) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_screen_effect(struct rasterizer_cinematic_screen_effect_parameters *parameters) {  } /* source/rasterizer/rasterizer.h */
-real rasterizer_script_screen_effect_get_value(short effect_index) { real result; memset(&result, 0, sizeof(result)); return result; } /* source/rasterizer/rasterizer_cinematics.h */
+real rasterizer_script_screen_effect_get_value(short effect_index) { return 0; } /* source/rasterizer/rasterizer_cinematics.h */
 void rasterizer_transparent_geometry_draw(boolean water) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_widget_begin(short type, word flags) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_widget_draw_sprite3d(real_point3d const *point, real radius, real_vector2d const *scale, real rotation, unsigned long color) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_widget_end(void) {  } /* source/rasterizer/rasterizer.h */
-boolean rasterizer_widget_set_texture(short stage_index, long bitmap_group_index, short sequence_index) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/rasterizer/rasterizer.h */
+boolean rasterizer_widget_set_texture(short stage_index, long bitmap_group_index, short sequence_index) { return 0; } /* source/rasterizer/rasterizer.h */
 void rasterizer_widget_submit(long object_index, long widget_index, real_point3d const *centroid, rasterizer_widget_render_proc render_proc) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_window_begin(struct rasterizer_window_begin_parameters const *parameters) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_window_end(void) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_windows_begin(void) {  } /* source/rasterizer/rasterizer.h */
 void rasterizer_windows_end(void) {  } /* source/rasterizer/rasterizer.h */
-boolean recorded_animation_controlling_unit(long unit_index) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/cutscene/recorded_animations.h */
+boolean recorded_animation_controlling_unit(long unit_index) { return 0; } /* source/cutscene/recorded_animations.h */
 void recorded_animations_clear_debug_storage(void) {  } /* source/cutscene/recorded_animations.h */
 void recorded_animations_dispose(void) {  } /* source/cutscene/recorded_animations.c */
 void recorded_animations_dispose_from_old_map(void) {  } /* source/cutscene/recorded_animations.c */
 void recorded_animations_initialize(void) {  } /* source/cutscene/recorded_animations.h */
 void recorded_animations_initialize_for_new_map(void) {  } /* source/cutscene/recorded_animations.h */
 void recorded_animations_update(void) {  } /* source/cutscene/recorded_animations.h */
-short remap_sticks_for_local_player(short icon, short local_player_index) { short result; memset(&result, 0, sizeof(result)); return result; } /* source/interface/ui_widget.h */
+short remap_sticks_for_local_player(short icon, short local_player_index) { return 0; } /* source/interface/ui_widget.h */
 void render_debug_line(boolean immediate, real_point3d const *point0, real_point3d const *point1, real_argb_color const *color) {  } /* source/render/render_debug.h */
 void render_debug_matrix(boolean immediate, struct real_matrix4x3 const *matrix, real size) {  } /* source/render/render_debug.h */
 void render_debug_pill(boolean immediate, real_point3d const *base, real_vector3d const *height, real width, real_argb_color const *color) {  } /* source/render/render_debug.h */
@@ -261,7 +261,7 @@ void sound_initialize(void) {  } /* source/sound/sound_manager.h */
 void sound_initialize_for_new_map(void) {  } /* source/sound/sound_manager.h */
 void sound_reconnect_to_structure_bsp(void) {  } /* source/sound/sound_manager.h */
 void sound_render(void) {  } /* source/sound/sound_manager.h */
-long sound_render_time(void) { long result; memset(&result, 0, sizeof(result)); return result; } /* source/sound/sound_manager.h */
+long sound_render_time(void) { return 0; } /* source/sound/sound_manager.h */
 void sound_scenery_delete(long object_index) {  } /* source/objects/object_types.c */
 boolean sound_scenery_new(long object_index) { return TRUE; } /* source/objects/object_types.c */
 void structure_detail_objects_dispose(void) {  } /* source/structures/structures.h */
@@ -274,10 +274,10 @@ void telnet_console_initialize(void) {  } /* source/networking/telnet_console.h 
 void telnet_console_print(char *string) {  } /* source/networking/telnet_console.h */
 void telnet_console_process(void) {  } /* source/networking/telnet_console.h */
 void texture_cache_close(void) {  } /* source/cache/cache_files.c */
-char const * tiff_export(struct file_reference *file, struct bitmap_data *bitmap) { char const * result; memset(&result, 0, sizeof(result)); return result; } /* source/bitmaps/tiff_file.h */
-short transport_dispose(void) { short result; memset(&result, 0, sizeof(result)); return result; } /* source/bungie_net/network/transport.h */
-short transport_initialize(void) { short result; memset(&result, 0, sizeof(result)); return result; } /* source/bungie_net/network/transport.h */
-boolean ui_main_menu_music_active(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/interface/ui_widget.h */
+char const * tiff_export(struct file_reference *file, struct bitmap_data *bitmap) { return 0; } /* source/bitmaps/tiff_file.h */
+short transport_dispose(void) { return 0; } /* source/bungie_net/network/transport.h */
+short transport_initialize(void) { return 0; } /* source/bungie_net/network/transport.h */
+boolean ui_main_menu_music_active(void) { return 0; } /* source/interface/ui_widget.h */
 void ui_set_next_level(short level) {  } /* source/interface/ui_widget.h */
 void ui_stop_main_menu_music(void) {  } /* source/interface/ui_widget.h */
 void ui_widget_load_progress_widget(void) {  } /* source/interface/ui_widget.h */
@@ -288,6 +288,6 @@ void ui_widgets_inhibit_processing(boolean inhibit) {  } /* source/interface/ui_
 void ui_widgets_initialize(void) {  } /* source/interface/ui_widget.h */
 void ui_widgets_safe_to_load(boolean safe) {  } /* source/interface/ui_widget.h */
 void ui_widgets_set_fade_value(real value) {  } /* source/interface/ui_widget.h */
-boolean virtual_keyboard_active(void) { boolean result; memset(&result, 0, sizeof(result)); return result; } /* source/interface/virtual_keyboard.h */
+boolean virtual_keyboard_active(void) { return 0; } /* source/interface/virtual_keyboard.h */
 void virtual_keyboard_close(void) {  } /* source/interface/virtual_keyboard.h */
 void xbox_demos_launch(void) {  } /* source/interface/marketing_and_strategic_business_development.h */

@@ -1578,10 +1578,18 @@ void n64_game_tick(
 		unsigned long average_us = (unsigned long)(n64_tick_profile.total * 1000000 / N64_TICKS_PER_SECOND / 150);
 		unsigned long worst_us = (unsigned long)((unsigned long long)n64_tick_profile.worst * 1000000 / N64_TICKS_PER_SECOND);
 		unsigned long window_ms = (unsigned long)((now - n64_tick_profile.window_start) * 1000 / N64_TICKS_PER_SECOND);
+		/* (these lines with "debug_stats", as the renderer's statistics:
+		formatting them -- every player's nine floats among them -- cost the
+		tick they fell in a few milliseconds every 5 s. The sums are emptied
+		as before either way) */
+		int stats = n64_debug_flag("debug_stats");
 
-		snprintf(line, sizeof(line), "tick: %lu.%02lu ms average, %lu.%02lu ms worst; 150 ticks (5 s of game) took %lu ms",
-			average_us / 1000, (average_us % 1000) / 10, worst_us / 1000, (worst_us % 1000) / 10, window_ms);
-		n64_log(line);
+		if (stats)
+		{
+			snprintf(line, sizeof(line), "tick: %lu.%02lu ms average, %lu.%02lu ms worst; 150 ticks (5 s of game) took %lu ms",
+				average_us / 1000, (average_us % 1000) / 10, worst_us / 1000, (worst_us % 1000) / 10, window_ms);
+			n64_log(line);
+		}
 		{
 			char phases[320];
 			int length = 0;
@@ -1589,12 +1597,14 @@ void n64_game_tick(
 
 			for (i = 0; i < 8; i++)
 			{
-				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%lu ", n64_tick_phase_names[i],
-					(unsigned long)((unsigned long long)n64_tick_phases[i] * 1000 / N64_TICKS_PER_SECOND / 150),
-					(unsigned long)((unsigned long long)n64_tick_phases[i] * 10000 / N64_TICKS_PER_SECOND / 150 % 10));
+				if (stats)
+					length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%lu ", n64_tick_phase_names[i],
+						(unsigned long)((unsigned long long)n64_tick_phases[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+						(unsigned long)((unsigned long long)n64_tick_phases[i] * 10000 / N64_TICKS_PER_SECOND / 150 % 10));
 				n64_tick_phases[i] = 0;
 			}
-			n64_log(phases);
+			if (stats)
+				n64_log(phases);
 			if (n64_debug_flag("debug_ray_callers"))
 			{
 				for (i = 0; i < 16 && n64_ray_callers[i][0]; i++)
@@ -1606,7 +1616,7 @@ void n64_game_tick(
 				}
 			}
 			length = 0;
-			for (i = 0; i < 12; i++)
+			for (i = 0; i < 12 && stats; i++)
 			{
 				if (!n64_object_type_count[i])
 					continue;
@@ -1617,42 +1627,52 @@ void n64_game_tick(
 			}
 			for (i = 0; i < 16; i++)
 				n64_object_type_time[i] = n64_object_type_count[i] = 0;
-			n64_log(phases);
+			if (stats)
+				n64_log(phases);
 			length = 0;
 			for (i = 0; i < 5; i++)
 			{
-				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ", n64_object_stage_names[i],
-					(unsigned long)((unsigned long long)n64_object_stage_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
-					(unsigned long)((unsigned long long)n64_object_stage_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
+				if (stats)
+					length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ", n64_object_stage_names[i],
+						(unsigned long)((unsigned long long)n64_object_stage_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+						(unsigned long)((unsigned long long)n64_object_stage_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
 				n64_object_stage_time[i] = 0;
 			}
-			n64_log(phases);
+			if (stats)
+				n64_log(phases);
 			{
 				extern unsigned long n64_unmoved_reasons[4];
 
-				length = snprintf(phases, sizeof(phases), "type %d (not still %lu, overlays %lu, moved %lu, skipped %lu): ",
-					n64_stage_type, n64_unmoved_reasons[0], n64_unmoved_reasons[1], n64_unmoved_reasons[2],
-					n64_unmoved_reasons[3]);
+				if (stats)
+					length = snprintf(phases, sizeof(phases), "type %d (not still %lu, overlays %lu, moved %lu, skipped %lu): ",
+						n64_stage_type, n64_unmoved_reasons[0], n64_unmoved_reasons[1], n64_unmoved_reasons[2],
+						n64_unmoved_reasons[3]);
 				n64_unmoved_reasons[0] = n64_unmoved_reasons[1] = n64_unmoved_reasons[2] = n64_unmoved_reasons[3] = 0;
 			}
 			for (i = 0; i < 5; i++)
 			{
-				length += snprintf(phases + length, sizeof(phases) - length, "part%d %lu.%02lu ", i,
-					(unsigned long)((unsigned long long)n64_part_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
-					(unsigned long)((unsigned long long)n64_part_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
+				if (stats)
+					length += snprintf(phases + length, sizeof(phases) - length, "part%d %lu.%02lu ", i,
+						(unsigned long)((unsigned long long)n64_part_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+						(unsigned long)((unsigned long long)n64_part_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
 				n64_part_time[i] = 0;
 			}
 			for (i = 0; i < 5; i++)
 			{
-				length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ", n64_object_stage_names[i],
-					(unsigned long)((unsigned long long)n64_equipment_stage_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
-					(unsigned long)((unsigned long long)n64_equipment_stage_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
+				if (stats)
+					length += snprintf(phases + length, sizeof(phases) - length, "%s %lu.%02lu ", n64_object_stage_names[i],
+						(unsigned long)((unsigned long long)n64_equipment_stage_time[i] * 1000 / N64_TICKS_PER_SECOND / 150),
+						(unsigned long)((unsigned long long)n64_equipment_stage_time[i] * 100000 / N64_TICKS_PER_SECOND / 150 % 100));
 				n64_equipment_stage_time[i] = 0;
 			}
-			snprintf(phases + length, sizeof(phases) - length, "\n");
-			n64_log(phases);
+			if (stats)
+			{
+				snprintf(phases + length, sizeof(phases) - length, "\n");
+				n64_log(phases);
+			}
 		}
-		n64_log_players();
+		if (stats)
+			n64_log_players();
 		memset(&n64_tick_profile, 0, sizeof(n64_tick_profile));
 		n64_tick_profile.window_start = now;
 	}

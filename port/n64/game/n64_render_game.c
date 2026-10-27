@@ -333,7 +333,10 @@ static void gather_frame_objects(
 		if (definition->object.model.index == NONE)
 			continue;
 		entry->object_index = iterator.index;
-		entry->ultimate_parent = object_get_ultimate_parent(iterator.index);
+		/* (an object without a parent is its own: object_get_ultimate_parent
+		would look it up to find that out) */
+		entry->ultimate_parent = object->object.parent_object_index == NONE ?
+			iterator.index : object_get_ultimate_parent(iterator.index);
 		entry->cluster = object->object.location.cluster_index;
 		n64->model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(definition->object.model.index);
 		n64->node_count = (short)model_definition_get(definition->object.model.index)->nodes.count;
@@ -449,13 +452,16 @@ static void render_objects_for_view(
 }
 
 /* ---------- the first-person weapon (interface/first_person_weapons.c poses
-it; its draw hands each model here) */
+it; its draw hands each model here: the animation graph's node matrices and
+the model's remapping table, the model's node n being the graph's node
+node_remap[n]) */
 
 static boolean first_person_begun;
 
 void n64_first_person_model_draw(
 	long model_index,
 	struct real_matrix4x3 const *node_matrices,
+	short const *node_remap,
 	real_rgb_color const *tint)
 {
 	static unsigned char const no_permutations[MAXIMUM_REGIONS_PER_OBJECT] = { 0 };
@@ -497,7 +503,7 @@ void n64_first_person_model_draw(
 		long unit_index = player_get(player_index)->unit_index;
 		if (unit_index != NONE) n64.tint[3] = object_camouflage_opacity(object_try_and_get(unit_index));
 	}
-	n64_render_object(&n64);
+	n64_render_object_remapped(&n64, node_remap);
 }
 
 /* ---------- frames */

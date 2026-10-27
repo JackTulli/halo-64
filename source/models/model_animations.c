@@ -572,8 +572,14 @@ void animation_graph_node_matrices_from_orientations(
 			else
 				parent_matrix = &node_matrices[node->parent_node_index];
 
+#ifdef HALO_N64
+			/* (the orientation's matrix kept in registers: the same numbers,
+			matrix_math.c) */
+			matrix4x3_multiply_orientation(parent_matrix, &node_orientations[node_index], &node_matrices[node_index]);
+#else
 			matrix4x3_from_orientation(&local_matrix, &node_orientations[node_index]);
 			matrix4x3_multiply(parent_matrix, &local_matrix, &node_matrices[node_index]);
+#endif
 
 			if (node->next_sibling_node_index != NONE)
 			{

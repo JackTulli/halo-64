@@ -152,11 +152,14 @@ void n64_text_draw_scaled(const struct n64_font *font, float x, int y, unsigned 
 	}
 	atlas = sprite_get_pixels(font->atlas);
 	rdpq_sync_pipe();
+	/* (one batch of mode changes: the RSP works the render mode out once) */
+	rdpq_mode_begin();
 	rdpq_set_mode_standard();
 	/* the colour, the glyph's coverage as alpha */
 	rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
 	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
 	rdpq_mode_filter(squeezed ? FILTER_BILINEAR : FILTER_POINT);
+	rdpq_mode_end();
 	rdpq_set_prim_color(RGBA32((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, color >> 24));
 	/* rdpq_tex_blit loaded each glyph on its own, the texture loader's work
 	on the CPU per character. A band of the atlas's rows (as many as TMEM
