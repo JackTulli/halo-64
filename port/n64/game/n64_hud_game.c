@@ -5,7 +5,8 @@ The HUD as the game draws it: the rasterizer calls interface/hud*.c,
 motion_sensor.c and game_engine.c make, turned into the N64 HUD's (n64.h,
 port/n64/src/n64_hud.c). The game lays the HUD out on a 640x480 screen;
 the N64 shows 320x240, and the HUD's bitmaps are half size
-(tools/n64/hud.py), so positions and texels both halve.
+(tools/n64/hud.py), so positions and texels both halve (n64_hud.c doubles
+the texels across for the full-width set of a HUD 640 across).
 
 A bitmap the converter exported carries its sprite's number + 1 in
 pixels_offset; the others have none, and the game skips them

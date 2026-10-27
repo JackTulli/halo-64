@@ -627,6 +627,10 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1);
 void n64_hud_end(void);
 /* the views this frame (more views: each one's HUD code runs less often) */
 void n64_hud_set_view_count(int count);
+/* the HUD's sprites for a display 640 across (on): the full-width set
+(tools/n64/hud.py) where the map has one and room (bytes) holds all of it,
+else the half-size set */
+void n64_hud_set_wide(int on, unsigned long room);
 /* the views' HUD recordings dropped (the display changed size) */
 void n64_hud_forget_recordings(void);
 /* room on the heap for count blocks of size bytes at once, models dropped

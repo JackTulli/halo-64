@@ -933,6 +933,8 @@ static void game_display_init(void)
 	first = 0;
 	screen_width = 320;
 	screen_height = 240;
+	/* (the HUD 320 across: the half-size sprites) */
+	n64_hud_set_wide(0, 0);
 }
 
 /* the display closed, the game's z-buffer with it */
@@ -1138,6 +1140,15 @@ static int display_fits(int width, int height, int count)
 	return fits;
 }
 
+/* the room for the HUD's full-width sprites once a display is made: the
+heap less the models' room (as display_fits leaves it) */
+static unsigned long hud_sprite_room(void)
+{
+	unsigned long free_bytes = n64_heap_free();
+
+	return free_bytes > ROOM_FOR_MODELS ? free_bytes - ROOM_FOR_MODELS : 0;
+}
+
 /* HUD RESOLUTION HIGH DETAIL: the display's two 640x240 buffers (300 KB
 each), then the 3D's 320x240 picture and its z-buffer (150 KB each): in the
 maps' home past the map's image, each that still fits there
@@ -1193,6 +1204,8 @@ static int try_hud_detail(void)
 	hud_clear_frames = 2;
 	display_mode = DISPLAY_GAME_HIGH;
 	n64_hud_forget_recordings();
+	/* (the HUD 640 across: its full-width sprites, where there is room) */
+	n64_hud_set_wide(1, hud_sprite_room());
 	sys_get_heap_stats(&heap);
 	debugf("n64: HUD 640x240 over 3D %dx%d, %d of 4 surfaces in the maps' home, heap %d KB free\n", width, height,
 		in_home, heap.free / 1024);
@@ -1285,6 +1298,9 @@ static void try_high_detail(void)
 			screen_height = modes[i].height;
 			display_mode = DISPLAY_GAME_HIGH;
 			n64_hud_forget_recordings();
+			/* (a HUD 640 across, at 240 lines or 480: the full-width
+			sprites, where there is room) */
+			n64_hud_set_wide(modes[i].width == 640, hud_sprite_room());
 			sys_get_heap_stats(&heap);
 			debugf("n64: %s detail %dx%d%s, %d buffers (%d in the maps' home), heap %d KB free\n",
 				want_high_detail == N64_DETAIL_ULTRA ? "ultra" : "high", screen_width, screen_height,
