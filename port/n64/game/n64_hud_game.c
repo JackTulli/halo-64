@@ -284,13 +284,22 @@ static void draw_text(
 	rectangle2d const *bounds,
 	char const *text)
 {
-	rectangle2d window = render.camera.window_bounds;
 	short x, y;
 
-	if (!bounds)
-		bounds = &window;
-	x = (short)hud_x(bounds->x0);
-	y = (short)hud_y(bounds->y0);
+	/* (Halo's text bounds are the view's -- its window bounds moved by the
+	view's corner, as for its bitmaps: the view's corner added, else in 2
+	to 4 players' views but the first every text fell inside the first
+	view's corner and was cut away by its own view's scissor) */
+	if (bounds)
+	{
+		x = (short)hud_x(bounds->x0 + render.camera.viewport_bounds.x0);
+		y = (short)hud_y(bounds->y0 + render.camera.viewport_bounds.y0);
+	}
+	else
+	{
+		x = (short)hud_x(render.camera.window_bounds.x0);
+		y = (short)hud_y(render.camera.window_bounds.y0);
+	}
 	n64_hud_text(x, y, 0xFFFFFFFF, text);
 }
 
@@ -307,6 +316,35 @@ void rasterizer_draw_string(
 	if (string && *string)
 		draw_text(bounds, string);
 	return;
+}
+
+/* where the last text drawn on a HUD line ended (Halo's virtual pixels):
+the next piece of that line, and its button icon, start there
+(hud_messaging.c render_state_bitmap); reset at each state message;
+"button" when a button was placed there since */
+static struct { short x, y, dy, button; } text_pen = {0, SHORT_MIN, 0, 0};
+
+void n64_hud_text_pen_reset(void)
+{
+	text_pen.y = SHORT_MIN;
+	text_pen.dy = 0;
+	text_pen.button = 0;
+}
+
+short n64_hud_text_pen_wrapped(void)
+{
+	/* (how far down the state line's last piece went when it was
+	wrapped: the messages under the line move down as far) */
+	return text_pen.y != SHORT_MIN ? text_pen.dy : 0;
+}
+
+short n64_hud_text_pen(short y)
+{
+	/* (a button after a wrapped piece stays where Halo put it) */
+	if (y != text_pen.y || text_pen.dy)
+		return SHORT_MIN;
+	text_pen.button = 1;
+	return text_pen.x;
 }
 
 void rasterizer_draw_unicode_string(
@@ -328,7 +366,60 @@ void rasterizer_draw_unicode_string(
 		text[i] = string[i] < 128 ? (char)string[i] : '?';
 	text[i] = 0;
 	if (i)
-		draw_text(bounds, text);
+	{
+		/* (Halo lays a state message out piece by piece, the first line of
+		each indented to where the last piece ended: draw_string's initial
+		indent; without it every piece started at the line's start, one
+		over the other) */
+		extern short draw_string_initial_indent(void);
+		rectangle2d indented = bounds ? *bounds : render.camera.window_bounds;
+		/* (no bounds: the window's, made the view's as Halo's are -- the
+		text drawer adds the view's corner) */
+		if (!bounds)
+			offset_rectangle2d(&indented, -render.camera.viewport_bounds.x0, -render.camera.viewport_bounds.y0);
+		real text_scale = n64_render_layout_scale_x() * n64_render_hud_squeeze();
+		short indent = draw_string_initial_indent();
+
+		indented.x0 += indent;
+		/* (the N64's font draws wider or narrower than Halo's font
+		measured -- about twice as wide at 320 across: a piece continuing a
+		line starts where the last piece as drawn ended, not where Halo's
+		measure put it; after a button, where Halo put it, past the button
+		placed at the pen) */
+		short line_y = indented.y0, dy = 0;
+		char *piece = text;
+		real width = n64_hud_text_width(piece) / text_scale;
+		short right = (short)(render.camera.window_bounds.x1 - render.camera.viewport_bounds.x0);
+
+		if (indent > 0 && line_y == text_pen.y)
+		{
+			/* (on a line this drawer broke, after the last piece alone:
+			Halo's indent measures the line unbroken) */
+			if (!text_pen.button || text_pen.x > indented.x0 || text_pen.dy > 0)
+				indented.x0 = text_pen.x;
+			dy = text_pen.dy;
+			/* (past the view's right edge -- 3 and 4 players' views: the
+			piece on a new line under the last, without its leading
+			spaces) */
+			if (bounds && indented.x0 + width > right && indented.x0 > bounds->x0)
+			{
+				indented.x0 = bounds->x0;
+				dy += (short)(n64_hud_text_height() / n64_render_layout_scale_y() + 2.f);
+				while (*piece == ' ')
+					piece++;
+				width = n64_hud_text_width(piece) / text_scale;
+			}
+		}
+		indented.y0 += dy;
+		draw_text(&indented, piece);
+		/* (measured again: the first text drawn loads the font, and before
+		that the width was a guess) */
+		width = n64_hud_text_width(piece) / text_scale;
+		text_pen.x = (short)(indented.x0 + width + 0.5f);
+		text_pen.y = line_y;
+		text_pen.dy = dy;
+		text_pen.button = 0;
+	}
 	return;
 }
 
