@@ -590,6 +590,17 @@ static void render_state_bitmap(
 	pixel32 color,
 	struct icon_hud_element_definition const *icon)
 {
+#ifdef HALO_N64
+	{
+		/* (the button after the text the N64 drew, wider or narrower than
+		Halo's measure: port/n64/game/n64_hud_game.c's text pen) */
+		extern short n64_hud_text_pen(short y);
+		short pen = n64_hud_text_pen(bounds->y0);
+
+		if (pen != SHORT_MIN)
+			cursor_bounds->x0 = pen;
+	}
+#endif
 	long bitmap_group_index = hud_globals->messaging.messaging_icons.index;
 	long frame_index = 0;
 	struct bitmap_data const *bitmap = NULL;
@@ -1409,6 +1420,9 @@ void hud_messaging_update(
 		boolean help_active;
 		boolean state_active;
 		short message_index;
+#ifdef HALO_N64
+		short n64_wrapped = 0;
+#endif
 
 		hud_calculate_point(
 			local_player_index,
@@ -1497,6 +1511,13 @@ void hud_messaging_update(
 				pixel_color = real_argb_color_to_pixel32(&state_color);
 			}
 
+#ifdef HALO_N64
+			{
+				extern void n64_hud_text_pen_reset(void);
+
+				n64_hud_text_pen_reset();
+			}
+#endif
 			line_bounds.x0 = screen_point.x;
 			line_bounds.x1 = render.camera.window_bounds.x1 -
 				render.camera.viewport_bounds.x0;
@@ -1800,6 +1821,13 @@ void hud_messaging_update(
 				}
 			}
 
+#ifdef HALO_N64
+			{
+				extern short n64_hud_text_pen_wrapped(void);
+
+				n64_wrapped = n64_hud_text_pen_wrapped();
+			}
+#endif
 			draw_string_set_indents(0, 0);
 			line_height = first_line_height;
 			line_top = line_cursor.y1;
@@ -1821,6 +1849,11 @@ void hud_messaging_update(
 			}
 			maximum_message_count--;
 		}
+#ifdef HALO_N64
+		/* (the messages below the lines the N64's text drawer added when
+		it wrapped the state message: port/n64/game/n64_hud_game.c) */
+		line_top += n64_wrapped;
+#endif
 
 		qsort(
 			datum->messages,

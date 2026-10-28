@@ -406,6 +406,16 @@ void draw_string_set_tab_stops(
 	return;
 }
 
+#ifdef HALO_N64
+/* the first line's indent (the N64's text drawer, port/n64/game/
+n64_hud_game.c: a HUD state message's pieces -- "Press", the button, "to
+enter", the seat, "of", the vehicle -- each start where the last ended) */
+short draw_string_initial_indent(void)
+{
+	return font_drawing_globals.initial_indent;
+}
+#endif
+
 void draw_string_set_indents(
 	short initial_indent,
 	short paragraph_indent)
