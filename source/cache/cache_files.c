@@ -412,6 +412,11 @@ long tag_loaded(
 	static short next_recent;
 	short recent_index;
 
+	/* an empty tag reference (its name NULL, its index NONE): no tag
+	(the PC rocket Warthog's seat HUDs on the original multiplayer maps) */
+	if (!name)
+		return NONE;
+
 	for (recent_index = 0; recent_index < NUMBEROF(recent); recent_index++)
 	{
 		if (recent[recent_index].name == name && recent[recent_index].group_tag == group_tag &&
