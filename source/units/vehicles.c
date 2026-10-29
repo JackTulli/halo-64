@@ -1033,6 +1033,20 @@ static void update_alien_fighter_physics_new(
 		scale_vector3d(&angular_acceleration,
 			(physics->zz_moment+physics->yy_moment+physics->xx_moment)*(1.0f/3), &magic_torque);
 		scale_vector3d(&magic_torque, vehicle->unit.seat_power[0], &magic_torque);
+#ifdef HALO_N64
+		{
+			/* (the N64 moves a vehicle every other tick, n64_vehicle_physics_turn,
+			and physics_update gives each torque the step's ticks of effect. This
+			one is a correction toward the desired spin, worked out for one tick
+			(the retail executable's logic, as here): given twice, it went past
+			that spin by more than it was off, the error grew every step, and
+			the Banshee flipped and threw its pilot. Given once a step, as Halo
+			gives it once a tick) */
+			extern real n64_vehicle_physics_step(void);
+
+			scale_vector3d(&magic_torque, 1.0f/n64_vehicle_physics_step(), &magic_torque);
+		}
+#endif
 
 		spin = magnitude3d(&vehicle->object.angular_velocity)/definition->unknown314;
 
