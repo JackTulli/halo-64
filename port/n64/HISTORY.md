@@ -5,6 +5,44 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+29 October: version 0.6.6, four pull requests by jz-k (details and
+measurements in each pull request's description).
+
+- HUD state messages (pull request 20, issue 6's garbled "Press ... to
+  enter" prompt): the text drawer honours `draw_string`'s first-line
+  indent (`draw_string_initial_indent`), so a message laid out piece by
+  piece continues where the last piece ended as drawn, and adds the view's
+  corner to Halo's view-relative bounds (views 2-4 drew inside view 1 and
+  were cut by their own scissor). A piece past the view's right edge
+  wraps under the last one.
+- HUD RESOLUTION (pull request 22): a Settings row after 3D RESOLUTION,
+  HIGH DETAIL by default (byte 15 bit 3 set for STANDARD, so older records
+  read as HIGH DETAIL). The display is 640x240 at 240p while the 3D stays
+  320x240 in a surface of its own (`hud3d`, with `game_zbuf`); before each
+  view's HUD the views drawn since are doubled across into the display
+  (`hud_display_phase`, point sampled), and the HUD and text are drawn
+  there. The display buffer is taken at the first HUD phase, not at the
+  frame's start. `hud_detail_may_fit` checks the total memory before
+  anything is closed; where the map leaves no room the normal display is
+  kept (a debug line only). `tools/n64/hud.py` also makes each HUD sprite
+  at full width and half height (`hud/<map>-wide.list`, first line
+  `#<bytes>` for the room check, kept by `prune.py`); `n64_hud_set_wide`
+  draws from that set when the HUD is 640 across and the heap less
+  `ROOM_FOR_MODELS` holds all of it, which covers 3D HIGH DETAIL and ULTRA
+  DETAIL at 640x480 too. Not on the Campaign cartridge (971 KB free at the
+  check). About +5 KB of program, +80 KB of ROM.
+- The Banshee (pull request 23): `update_alien_fighter_physics_new`'s
+  steering torque is a one-tick correction toward the wanted spin, and
+  `physics_update` gave it the step's two (or four) ticks of effect, so
+  each step overshot by more than the error and the Banshee flipped about
+  two seconds after its pilot got in. The torque is divided by
+  `n64_vehicle_physics_step()`.
+- Empty tag references (pull request 24): the PC expansion's rocket
+  Warthog, copied onto the original maps, has seat HUD references whose
+  tag (`unhi`) was left out, written with a NULL name; `tag_loaded`
+  compared it in `_stricmp` when a player took the driver's seat. A NULL
+  name now returns NONE.
+
 27 October: an optimisation pass that changes nothing the game does or
 draws -- every change gives the same numbers and the same pixels, checked
 against the code it replaces (host tests of the rewritten arithmetic, about
