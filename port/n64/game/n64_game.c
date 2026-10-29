@@ -292,6 +292,9 @@ void n64_game_setup(
 	high detail, 640x240, or ultra, 480i) */
 	n64_render_set_high_detail(n64_debug_flag("debug_ultra_detail") ? N64_DETAIL_ULTRA :
 		n64_debug_flag("debug_high_detail") ? N64_DETAIL_HIGH : 0);
+	/* (port.json flag "debug_hud_detail": HUD RESOLUTION high detail, the HUD
+	at 640x240) */
+	n64_render_set_hud_detail(n64_debug_flag("debug_hud_detail"));
 	for (i = 0; i < 4; i++)
 	{
 		static short const colors[4] = {2, 3, 6, 5};

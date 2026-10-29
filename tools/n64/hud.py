@@ -3,13 +3,17 @@ port/n64/game/n64_hud_game.c).
 
 Every image of every bitmap a HUD tag uses (unit, weapon and grenade HUD
 interfaces, the HUD globals, HUD numbers) becomes a sprite at half its size
-(the game lays the HUD out on 640x480; the N64 shows 320x240), in IA8
+(the game lays the HUD out on 640x480; the N64 shows 320x240), and a second
+one at its full width and half its height, for a HUD 640 wide with 240
+lines (high detail's: n64_hud_set_wide), in IA8
 (intensity and alpha: the HUD's bitmaps are grey, tinted by the HUD's
 colours), IA16 for the meters (intensity = each texel's fill order, alpha =
 the shape; 4 bits are too coarse) or RGBA16 for the rare coloured one. The
 HUD's bitmaps are premultiplied; all but the meters are stored straight. The image's bitmap data
 (in the converted tags) carries the sprite's number + 1 in pixels_offset:
-rom:/hud/<hash>.sprite, named in number order by rom:/hud/<map>.list.
+rom:/hud/<hash>.sprite, named in number order by rom:/hud/<map>.list (the
+full-width ones by rom:/hud/<map>-wide.list, in the same order, after a line
+"#<bytes>": the memory they all load into, for the game's room check).
 """
 
 import struct
@@ -43,12 +47,34 @@ def unpremultiply(img):
     return Image.merge("RGBA", (divide(r), divide(g), divide(b), a))
 
 
-def halve(img, premultiplied):
-    """an image at half size, each texel its area's mean (Lanczos rang: its
-    undershoot, divided by a small alpha, left dark texels along every thin
-    outline). Premultiplied channels are averaged each on its own; a meter's
-    fill order is weighted by its shape (PIL weights colour by alpha)"""
-    size = (max(1, img.width // 2), max(1, img.height // 2))
+def sprite_bytes(path):
+    """the memory a sprite loads into, as the game counts it
+    (n64_hud.c sprite_bytes): a compressed asset's original size and
+    in-place margin (its "DCA" header's LEB128 fields), else the file's size"""
+    data = Path(path).read_bytes()[:16]
+    if data[:3] != b"DCA":
+        return Path(path).stat().st_size
+    fields, p = [], 5
+    for _ in range(3):
+        value = shift = 0
+        while p < len(data):
+            byte = data[p]
+            p += 1
+            value |= (byte & 0x7F) << shift
+            shift += 7
+            if not byte & 0x80:
+                break
+        fields.append(value)
+    return fields[1] + fields[2]
+
+
+def halve(img, premultiplied, full_width=False):
+    """an image at half size (full_width: half its height alone), each texel
+    its area's mean (Lanczos rang: its undershoot, divided by a small alpha,
+    left dark texels along every thin outline). Premultiplied channels are
+    averaged each on its own; a meter's fill order is weighted by its shape
+    (PIL weights colour by alpha)"""
+    size = (img.width if full_width else max(1, img.width // 2), max(1, img.height // 2))
     if not premultiplied:
         return img.resize(size, Image.BOX)
     return Image.merge("RGBA", [c.resize(size, Image.BOX) for c in img.split()])
@@ -94,6 +120,7 @@ class HudExporter:
         self.sprite_of = {}
         self.count = 0
         self.names = []
+        self.wide_names = []
 
     def collect(self):
         bitmaps = []
@@ -126,13 +153,19 @@ class HudExporter:
                 number = self.count
                 self.write(img, out / f"{number}.png", "meter" in tag.name)
                 self.names.append(share_file(out / f"{number}.sprite", self.out_dir / "hud", ".sprite"))
+                self.write(img, out / f"{number}w.png", "meter" in tag.name, full_width=True)
+                self.wide_names.append(share_file(out / f"{number}w.sprite", self.out_dir / "hud", ".sprite"))
                 self.sprite_of[pointer + i * size] = number
                 self.count += 1
         write_list(self.out_dir / "hud" / f"{self.map_name}.list", self.names)
+        hud_dir = self.out_dir / "hud"
+        loaded = sum(sprite_bytes(hud_dir / f"{name}.sprite") for name in self.wide_names)
+        (hud_dir / f"{self.map_name}-wide.list").write_text(
+            f"#{loaded}\n" + "".join(f"{n}\n" for n in self.wide_names), newline="\n")
         return self.count
 
-    def write(self, img, png, meter):
-        img = halve(img.convert("RGBA"), not meter)
+    def write(self, img, png, meter, full_width=False):
+        img = halve(img.convert("RGBA"), not meter, full_width)
         if not meter:
             img = bleed(unpremultiply(img))
         r, g, b, a = img.split()

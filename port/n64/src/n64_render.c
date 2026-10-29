@@ -41,6 +41,22 @@ from the 16-bit picture's dither; libdragon takes it at 320 across only
 with the VI's anti-aliasing filter, which is on either way: without the
 RDP's coverage it leaves the picture as it is) */
 static int want_antialias, want_dedither;
+/* Settings: HUD RESOLUTION HIGH DETAIL (n64_render_set_hud_detail): the
+game's display at 640x240 at 240p, as high detail's, while its 3D stays at
+320x240, drawn into a picture of its own (hud3d, with game_zbuf), and each
+view's doubled across into the display before its HUD and text are drawn
+there (hud_display_phase). The views are laid out in the 3D's pixels
+(SCREEN_WIDTH is the 3D's while it is drawn), the HUD in the display's. */
+static int want_hud_detail;
+static surface_t hud3d;
+/* the frame's display buffer; whether it is the RDP's target now (the
+HUD's phase) rather than hud3d (the 3D's); the views already doubled into
+it; the display's pixels for one of the 3D's; frames still to clear the
+display first (a new display, or new views: what no view covers is black)
+and the views it was cleared for */
+static surface_t *hud_display;
+static int hud_on_display, hud_views_doubled, hud_scale_x, hud_scale_y;
+static int hud_clear_frames, hud_cleared_views;
 
 static filter_options_t display_filters(void)
 {
@@ -746,6 +762,93 @@ static void stretch_view(void)
 	renderer.current_texture = -2;
 }
 
+/* HUD RESOLUTION HIGH DETAIL: the 3D's pixels in a rectangle of hud3d
+doubled across into the display (point sampled, as stretch_view widens) */
+static void hud_double(int x0, int y0, int x1, int y1)
+{
+	if (x1 <= x0 || y1 <= y0)
+		return;
+	rdpq_set_scissor(x0 * hud_scale_x, y0 * hud_scale_y, x1 * hud_scale_x, y1 * hud_scale_y);
+	rdpq_tex_blit(&hud3d, x0 * hud_scale_x, y0 * hud_scale_y, &(rdpq_blitparms_t){
+		.s0 = x0, .t0 = y0, .width = x1 - x0, .height = y1 - y0,
+		.scale_x = (float)hud_scale_x, .scale_y = (float)hud_scale_y,
+	});
+}
+
+/* HUD RESOLUTION HIGH DETAIL: the display the RDP's target, for a view's
+HUD (and the frame's last 2D), the views drawn since the last time doubled
+across into it first (a frame of none: all of hud3d, its clear colour) */
+static void hud_display_phase(void)
+{
+	int first = !hud_display;
+
+	if (!hud3d.buffer || hud_on_display)
+		return;
+	if (first)
+	{
+		/* (the frame's buffer: waited for here, its wait counted) */
+		unsigned long before = TICKS_READ();
+
+		hud_display = display_get();
+		render_wait_us += TICKS_TO_US(TICKS_READ() - before);
+	}
+	/* (hud3d's last pixels in memory before they are read: stretch_view) */
+	rdpq_sync_pipe();
+	rdpq_set_color_image(hud_display);
+	if (first && hud_clear_frames)
+	{
+		/* (each of the display's two buffers once, at the frame's first
+		HUD phase: black where no view is doubled; a later phase of the
+		same frame would clear what its views and HUD drew) */
+		hud_clear_frames--;
+		rdpq_set_mode_fill(RGBA32(0, 0, 0, 0xFF));
+		rdpq_fill_rectangle(0, 0, hud_display->width, hud_display->height);
+	}
+	rdpq_set_mode_standard();
+	rdpq_mode_filter(FILTER_POINT);
+	if (!renderer.view_count)
+		hud_double(0, 0, hud3d.width, hud3d.height);
+	for (int v = hud_views_doubled; v < renderer.view_count; v++)
+		hud_double(renderer.rects[v][0], renderer.rects[v][1], renderer.rects[v][2], renderer.rects[v][3]);
+	hud_views_doubled = renderer.view_count;
+	renderer.current_texture = -2;
+	renderer.surface = hud_display;
+	screen_width = hud_display->width;
+	screen_height = hud_display->height;
+	hud_on_display = 1;
+}
+
+/* and hud3d the target again, for the next view's 3D */
+static void hud_3d_phase(void)
+{
+	if (!hud3d.buffer || !hud_on_display)
+		return;
+	rdpq_sync_pipe();
+	rdpq_set_color_image(&hud3d);
+	renderer.surface = &hud3d;
+	screen_width = hud3d.width;
+	screen_height = hud3d.height;
+	hud_on_display = 0;
+}
+
+void n64_render_hud_end(void)
+{
+	hud_3d_phase();
+}
+
+/* a view's rectangle, laid out in the 3D's pixels, in the display's (where
+its HUD is drawn): the same unless the HUD is at 640x240 over the 3D's
+320x240 */
+void n64_render_hud_rect(int *x0, int *y0, int *x1, int *y1)
+{
+	if (!hud3d.buffer)
+		return;
+	*x0 *= hud_scale_x;
+	*x1 *= hud_scale_x;
+	*y0 *= hud_scale_y;
+	*y1 *= hud_scale_y;
+}
+
 /* a scene's models without a level (the menu's: levels/<name>.mdl) */
 void n64_render_load_scene(const char *name)
 {
@@ -830,6 +933,8 @@ static void game_display_init(void)
 	first = 0;
 	screen_width = 320;
 	screen_height = 240;
+	/* (the HUD 320 across: the half-size sprites) */
+	n64_hud_set_wide(0, 0);
 }
 
 /* the display closed, the game's z-buffer with it */
@@ -839,6 +944,9 @@ static void game_display_close(void)
 	if (game_zbuf.buffer)
 		surface_free(&game_zbuf);
 	game_zbuf = (surface_t){0};
+	if (hud3d.buffer)
+		surface_free(&hud3d);
+	hud3d = (surface_t){0};
 }
 
 /* while the menu runs, the place the game's buffers had, kept for them (so
@@ -962,6 +1070,11 @@ void n64_render_set_high_detail(int level)
 	want_high_detail = level >= N64_DETAIL_ULTRA ? N64_DETAIL_ULTRA : level > 0 ? N64_DETAIL_HIGH : 0;
 }
 
+void n64_render_set_hud_detail(int on)
+{
+	want_hud_detail = on != 0;
+}
+
 void n64_render_set_anamorphic(int on)
 {
 	anamorphic = on != 0;
@@ -1027,6 +1140,95 @@ static int display_fits(int width, int height, int count)
 	return fits;
 }
 
+/* the room for the HUD's full-width sprites once a display is made: the
+heap less the models' room (as display_fits leaves it) */
+static unsigned long hud_sprite_room(void)
+{
+	unsigned long free_bytes = n64_heap_free();
+
+	return free_bytes > ROOM_FOR_MODELS ? free_bytes - ROOM_FOR_MODELS : 0;
+}
+
+/* HUD RESOLUTION HIGH DETAIL: the display's two 640x240 buffers (300 KB
+each), then the 3D's 320x240 picture and its z-buffer (150 KB each): in the
+maps' home past the map's image, each that still fits there
+(n64_display_lend), the others from the heap, with room left for the models
+(as display_fits). 1 if made. */
+static int try_hud_detail(void)
+{
+	int width = 320, height = 240;
+	unsigned long sizes[4] = {640 * 240 * 2 + 256, 640 * 240 * 2 + 256,
+		(unsigned long)width * height * 2 + 256, (unsigned long)width * height * 2 + 256};
+	void *blocks[5] = {NULL, NULL, NULL, NULL, NULL};
+	unsigned long home_size, room;
+	void *home = n64_map_home_free_part(&home_size);
+	int fits = 1, in_home = 0;
+	heap_stats_t heap;
+
+	room = home ? home_size : 0;
+	for (int i = 0; i < 4 && fits; i++)
+	{
+		if (sizes[i] <= room)
+			room -= sizes[i], in_home++;
+		else
+			fits = (blocks[i] = malloc(sizes[i])) != NULL;
+	}
+	if (fits)
+		fits = (blocks[4] = malloc(ROOM_FOR_MODELS)) != NULL;
+	for (int i = 0; i < 5; i++)
+		free(blocks[i]);
+	if (!fits)
+		return 0;
+	if (in_home)
+	{
+		n64_display_lend(home, home_size);
+		home_in_use = 1;
+	}
+	/* (240p, as high detail: no interlaced picture for the HUD; 480i is
+	ultra detail's alone) */
+	display_init((resolution_t){.width = 640, .height = 240, .interlaced = INTERLACE_OFF}, DEPTH_16_BPP, 2,
+		GAMMA_NONE, display_filters());
+	hud3d = surface_alloc(FMT_RGBA16, width, height);
+	game_zbuf = surface_alloc(FMT_RGBA16, width, height);
+	n64_display_lend(NULL, 0);
+	if (!hud3d.buffer || !game_zbuf.buffer)
+	{
+		game_display_close();
+		home_in_use = 0;
+		return 0;
+	}
+	screen_width = width;
+	screen_height = height;
+	hud_scale_x = 640 / width;
+	hud_scale_y = 240 / height;
+	hud_clear_frames = 2;
+	display_mode = DISPLAY_GAME_HIGH;
+	n64_hud_forget_recordings();
+	/* (the HUD 640 across: its full-width sprites, where there is room) */
+	n64_hud_set_wide(1, hud_sprite_room());
+	sys_get_heap_stats(&heap);
+	debugf("n64: HUD 640x240 over 3D %dx%d, %d of 4 surfaces in the maps' home, heap %d KB free\n", width, height,
+		in_home, heap.free / 1024);
+	return 1;
+}
+
+/* HUD RESOLUTION HIGH DETAIL asked for (over a 320x240 3D): whether the
+memory it needs is there at all, the game's display (if on the heap) and the
+models' cache counted as freed (try_hud_detail then says whether it fits in
+the pieces there are). Without it nothing is touched, the game as without
+the setting (the display closed and made again on a map that left little
+room found no z-buffer: "no memory for the z-buffer", the PC cartridge's
+Infinity) */
+static int hud_detail_may_fit(void)
+{
+	unsigned long home_size;
+	unsigned long needed = 2 * (640UL * 240 * 2 + 256) + 2 * (320UL * 240 * 2 + 256) + ROOM_FOR_MODELS;
+
+	n64_map_home_free_part(&home_size);
+	return n64_heap_free() + models.loaded_bytes + models.texture_bytes + (home_in_use ? 0 : GAME_DISPLAY_BYTES) +
+		home_size >= needed;
+}
+
 /* The game's display in more detail, the first of these the map leaves
 room for. Ultra detail starts at 480i -- 640x480 (two buffers of 600 KB and
 the z-buffer's 600 KB, where 320x240 took 600 KB in all), else 512x480 (480
@@ -1048,13 +1250,29 @@ static void try_high_detail(void)
 	heap_stats_t heap;
 
 	tried_high_detail = 1;
+	if (want_hud_detail && !want_high_detail && !hud_detail_may_fit())
+	{
+		/* (no word on the screen: the setting is on by default, and the
+		HUD as it was is no fault -- its help says the map may leave no
+		room) */
+		char pieces[200];
+
+		n64_heap_describe(pieces, sizeof(pieces));
+		debugf("n64: no room for the HUD at 640x240 on this map, the display kept (heap %lu KB free, models %lu KB: %s)\n",
+			n64_heap_free() / 1024, (models.loaded_bytes + models.texture_bytes) / 1024, pieces);
+		return;
+	}
 	rspq_wait();
 	game_display_close();
 	drop_all_models();
 	/* (the models' memory freed: their releases were deferred) */
 	rspq_wait();
+	/* (the HUD at 640x240 over the 3D's 320x240; high and ultra detail have
+	their HUD at their own resolution already) */
+	if (want_hud_detail && !want_high_detail && try_hud_detail())
+		return;
 	for (int i = want_high_detail == N64_DETAIL_ULTRA ? 0 : FIRST_HIGH_DETAIL_MODE;
-		i < (int)(sizeof(modes) / sizeof(modes[0])); i++)
+		want_high_detail && i < (int)(sizeof(modes) / sizeof(modes[0])); i++)
 	{
 		/* the buffers in the maps' home past the map's image, as many as
 		fit there (a smaller map leaves room), the rest and the z-buffer
@@ -1080,6 +1298,9 @@ static void try_high_detail(void)
 			screen_height = modes[i].height;
 			display_mode = DISPLAY_GAME_HIGH;
 			n64_hud_forget_recordings();
+			/* (a HUD 640 across, at 240 lines or 480: the full-width
+			sprites, where there is room) */
+			n64_hud_set_wide(modes[i].width == 640, hud_sprite_room());
 			sys_get_heap_stats(&heap);
 			debugf("n64: %s detail %dx%d%s, %d buffers (%d in the maps' home), heap %d KB free\n",
 				want_high_detail == N64_DETAIL_ULTRA ? "ultra" : "high", screen_width, screen_height,
@@ -1088,14 +1309,16 @@ static void try_high_detail(void)
 		}
 	}
 	game_display_init();
-	notice_high_detail_frames = 150;
+	if (want_high_detail)
+		notice_high_detail_frames = 150;
 	{
 		/* (what the heap had: its free pieces) */
 		char pieces[200];
 
 		n64_heap_describe(pieces, sizeof(pieces));
-		debugf("n64: no room for %s detail on this map (heap %lu KB free: %s)\n",
-			want_high_detail == N64_DETAIL_ULTRA ? "ultra" : "high", n64_heap_free() / 1024, pieces);
+		debugf("n64: no room for %s on this map (heap %lu KB free: %s)\n",
+			want_high_detail == N64_DETAIL_ULTRA ? "ultra detail" : want_high_detail ? "high detail" : "the HUD at 640x240",
+			n64_heap_free() / 1024, pieces);
 	}
 }
 
@@ -2465,13 +2688,30 @@ void n64_render_frame_begin(void)
 			debugf("n64: the uncached blocks' reserve was spent (%d so far), taken again\n",
 				n64_uncached_reserve_spent());
 	}
-	if (want_high_detail && display_mode == DISPLAY_GAME && !tried_high_detail && level.data)
+	if ((want_high_detail || want_hud_detail) && display_mode == DISPLAY_GAME && !tried_high_detail && level.data)
 		try_high_detail();
-	renderer.surface = display_get();
+	if (hud3d.buffer)
+	{
+		/* (the HUD at 640x240: the 3D into hud3d first, and the display's
+		buffer taken only for the HUD, hud_display_phase -- with two
+		buffers, the last frame still waiting to be shown while this one's
+		3D is drawn) */
+		hud_display = NULL;
+		renderer.surface = &hud3d;
+		screen_width = hud3d.width;
+		screen_height = hud3d.height;
+		hud_on_display = 0;
+		hud_views_doubled = 0;
+		if (renderer.view_total != hud_cleared_views)
+			hud_clear_frames = 2;
+		hud_cleared_views = renderer.view_total;
+	}
+	else
+		renderer.surface = display_get();
 	render_wait_us = TICKS_TO_US(TICKS_READ() - before_display);
 	render_start_ticks = TICKS_READ();
 	frame_zbuf = menu_zbuf.buffer ? &menu_zbuf :
-		display_mode == DISPLAY_GAME && game_zbuf.buffer ? &game_zbuf : display_get_zbuf();
+		(display_mode == DISPLAY_GAME || hud3d.buffer) && game_zbuf.buffer ? &game_zbuf : display_get_zbuf();
 	/* (a z-buffer without memory is one at address 0, over the code: stop
 	and say so instead) */
 	if (!frame_zbuf || !frame_zbuf->buffer)
@@ -3463,6 +3703,7 @@ void n64_render_view(const struct n64_view *view)
 		return;
 	flush_draws();
 	stretch_view();
+	hud_3d_phase();
 	renderer.rects[renderer.view_count][0] = view->x0;
 	renderer.rects[renderer.view_count][1] = view->y0;
 	renderer.rects[renderer.view_count][2] = view->x1;
@@ -3769,6 +4010,7 @@ void n64_render_hud_phase(void)
 {
 	flush_draws();
 	stretch_view();
+	hud_display_phase();
 	render_phase(PHASE_HUD);
 }
 
@@ -4122,8 +4364,12 @@ static void draw_crosshairs(void)
 	rdpq_set_mode_fill(RGBA32(0x60, 0xD0, 0xFF, 0xFF));
 	for (int i = 0; i < renderer.view_count && n64_debug_flag("debug_no_hud"); i++)
 	{
-		int x = (renderer.rects[i][0] + renderer.rects[i][2]) / 2;
-		int y = (renderer.rects[i][1] + renderer.rects[i][3]) / 2;
+		int x0 = renderer.rects[i][0], y0 = renderer.rects[i][1], x1 = renderer.rects[i][2], y1 = renderer.rects[i][3];
+		int x, y;
+
+		n64_render_hud_rect(&x0, &y0, &x1, &y1);
+		x = (x0 + x1) / 2;
+		y = (y0 + y1) / 2;
 
 		rdpq_fill_rectangle(x - 6, y, x - 2, y + 1);
 		rdpq_fill_rectangle(x + 2, y, x + 6, y + 1);
@@ -4132,9 +4378,13 @@ static void draw_crosshairs(void)
 	}
 	if (renderer.view_count == 2)
 	{
-		/* the line between the two views */
+		/* the line between the two views: two of the 3D's lines, in the
+		display's pixels (n64_render_hud_rect) */
+		int x0 = 0, y0 = renderer.rects[1][1] - 1, x1 = 0, y1 = renderer.rects[1][1] + 1;
+
+		n64_render_hud_rect(&x0, &y0, &x1, &y1);
 		rdpq_set_mode_fill(RGBA32(0, 0, 0, 0xFF));
-		rdpq_fill_rectangle(0, renderer.rects[1][1] - 1, SCREEN_WIDTH, renderer.rects[1][1] + 1);
+		rdpq_fill_rectangle(0, y0, SCREEN_WIDTH, y1);
 	}
 }
 
@@ -4169,7 +4419,10 @@ static void draw_counter(void)
 		render_cpu_us / 1000, (render_cpu_us % 1000) / 100, render_wait_us / 1000, (render_wait_us % 1000) / 100);
 	/* the 3D's resolution (narrower with medium and chunky: the screen's
 	after it), 480 lines interlaced */
-	if (chunky_width(SCREEN_WIDTH) != SCREEN_WIDTH)
+	if (hud3d.buffer)
+		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 22, "3D %dx%d, HUD %dx%d",
+			chunky_width(hud3d.width), hud3d.height, SCREEN_WIDTH, SCREEN_HEIGHT);
+	else if (chunky_width(SCREEN_WIDTH) != SCREEN_WIDTH)
 		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 8, 22, "3D %dx%d ON %dx%d", chunky_width(SCREEN_WIDTH),
 			SCREEN_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT);
 	else
@@ -4230,12 +4483,17 @@ void n64_render_frame_end(void)
 	}
 	flush_draws();
 	stretch_view();
+	hud_display_phase();
 	render_phase(PHASE_NONE);
 	n64_profile_poll();
 	draw_crosshairs();
 	draw_counter();
 	debug_rdpq_mark("frame end");
-	rdpq_detach_show();
+	/* (the display shown: with the HUD at 640x240, not hud3d, attached) */
+	if (hud3d.buffer)
+		rdpq_detach_cb((void (*)(void *))display_show, hud_display);
+	else
+		rdpq_detach_show();
 	n64_render_wait_sync_full();
 	render_cpu_us = TICKS_TO_US(TICKS_READ() - render_start_ticks);
 	renderer.draw_ticks += TICKS_READ() - render_start_ticks;

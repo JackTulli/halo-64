@@ -25,6 +25,8 @@ def main():
         # <map>-low, the sets with better view models <map>[-low]-fp<n>)
         names = maps + [f"{m}-low" for m in maps]
         names += [f"{m}-fp{q}" for m in names for q in (1, 2)]
+        # (and the HUD's full-width sprites, hud/<map>-wide.list)
+        names += [f"{m}-wide" for m in maps]
         for m in names:
             listing = root / list_name.format(map=m)
             if listing.exists():

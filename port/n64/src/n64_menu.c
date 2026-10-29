@@ -229,6 +229,9 @@ static struct
 	/* DECALS off (n64_paint_set_decals), ANTI-ALIASING and DEDITHER on
 	(n64_render_set_antialias, n64_render_set_dedither) */
 	int no_decals, antialias, dedither;
+	/* HUD RESOLUTION STANDARD: the HUD 320 across, not at high detail
+	(n64_render_set_hud_detail) */
+	int hud_standard;
 	/* FIELD OF VIEW: degrees, FOV_MINIMUM to FOV_MAXIMUM a FOV_STEP at a
 	time (n64_field_of_view) */
 	int field_of_view;
@@ -952,9 +955,15 @@ enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE
 /* the buzz a controller gives when its rumble is turned on (frames) */
 #define RUMBLE_PULSE_FRAMES 12
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
-enum { SETTING_CHUNKY, SETTING_FIELD_OF_VIEW, SETTING_WIDESCREEN, SETTING_ANIMATIONS, SETTING_PARTICLES,
+enum { SETTING_CHUNKY, SETTING_HUD, SETTING_FIELD_OF_VIEW, SETTING_WIDESCREEN, SETTING_ANIMATIONS, SETTING_PARTICLES,
 	SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_TERRAIN, SETTING_ANTIALIAS, SETTING_DEDITHER, SETTING_HUD_INSET,
 	SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
+/* the Settings rows shown: HUD RESOLUTION is not on the campaign cartridge
+(its level leaves no room for a 640x240 HUD after the menu: the row would do
+nothing); a row's place in the list */
+#define SETTING_SHOWN(s) (!CAMPAIGN_CARTRIDGE || (s) != SETTING_HUD)
+#define SETTINGS_SHOWN (SETTING_COUNT - CAMPAIGN_CARTRIDGE)
+#define SETTING_PLACE(s) ((s) - (CAMPAIGN_CARTRIDGE && (s) > SETTING_HUD))
 #define FOV_DEFAULT 70
 #define FOV_MINIMUM 60
 #define FOV_MAXIMUM 110
@@ -1024,8 +1033,9 @@ static void settings_pack(unsigned char *bytes)
 	bytes[12] = (unsigned char)menu.fps_counter;
 	bytes[14] = (unsigned char)menu.terrain_detail;
 	/* (byte 15, a bit each, 0 in the records kept before them: DECALS off,
-	ANTI-ALIASING on, DEDITHER on) */
-	bytes[15] = (unsigned char)((menu.no_decals != 0) | (menu.antialias != 0) << 1 | (menu.dedither != 0) << 2);
+	ANTI-ALIASING on, DEDITHER on, HUD RESOLUTION STANDARD) */
+	bytes[15] = (unsigned char)((menu.no_decals != 0) | (menu.antialias != 0) << 1 | (menu.dedither != 0) << 2 |
+		(menu.hud_standard != 0) << 3);
 	/* (FIELD OF VIEW in degrees after the controllers', 0 in the records
 	kept before it: the default) */
 	bytes[40] = (unsigned char)menu.field_of_view;
@@ -1067,6 +1077,7 @@ static int settings_unpack(const unsigned char *bytes)
 	menu.no_decals = bytes[15] & 1;
 	menu.antialias = (bytes[15] >> 1) & 1;
 	menu.dedither = (bytes[15] >> 2) & 1;
+	menu.hud_standard = (bytes[15] >> 3) & 1;
 	menu.field_of_view = bytes[40] >= FOV_MINIMUM && bytes[40] <= FOV_MAXIMUM && !(bytes[40] % FOV_STEP) ?
 		bytes[40] : FOV_DEFAULT;
 	/* (the menu's display made next takes it too) */
@@ -1573,20 +1584,22 @@ static void draw_settings(int item)
 	/* (in a framed list, eight rows at a time, 30 apart, scrolled to keep the
 	chosen one in view with the next under it; a bar beside it shows where) */
 	enum { VISIBLE = 8, STEP = 30, TOP = 110, X0 = 104, X1 = 524 };
-	int first = item - (VISIBLE - 2), bottom = TOP + (VISIBLE - 1) * STEP;
+	int first = SETTING_PLACE(item) - (VISIBLE - 2), bottom = TOP + (VISIBLE - 1) * STEP;
 
-	if (first > SETTING_COUNT - VISIBLE)
-		first = SETTING_COUNT - VISIBLE;
+	if (first > SETTINGS_SHOWN - VISIBLE)
+		first = SETTINGS_SHOWN - VISIBLE;
 	if (first < 0)
 		first = 0;
 	page("SETTINGS", NULL);
 	box(X0 - 12, TOP - 30, X1 + 28, bottom + 18);
-	for (int s = first; s < first + VISIBLE && s < SETTING_COUNT; s++)
+	for (int s = 0; s < SETTING_COUNT; s++)
 	{
-		int y = TOP + (s - first) * STEP;
+		int y = TOP + (SETTING_PLACE(s) - first) * STEP;
 		const char *label = "";
 		char value[32];
 
+		if (!SETTING_SHOWN(s) || SETTING_PLACE(s) < first || SETTING_PLACE(s) >= first + VISIBLE)
+			continue;
 		value[0] = 0;
 		switch (s)
 		{
@@ -1595,6 +1608,13 @@ static void draw_settings(int item)
 			snprintf(value, sizeof(value), "%s", menu.chunky == RESOLUTION_ULTRA ? "ULTRA DETAIL" :
 				menu.chunky == RESOLUTION_HIGH ? "HIGH DETAIL" : menu.chunky == 2 ? "CHUNKY" :
 				menu.chunky == 1 ? "MEDIUM" : "STANDARD");
+			break;
+		case SETTING_HUD:
+			label = "HUD RESOLUTION";
+			/* (high and ultra detail draw the HUD at their own resolution:
+			nothing to choose) */
+			snprintf(value, sizeof(value), "%s", menu.chunky >= RESOLUTION_HIGH ? "SAME AS 3D" :
+				menu.hud_standard ? "STANDARD" : "HIGH DETAIL");
 			break;
 		case SETTING_FIELD_OF_VIEW:
 			label = "FIELD OF VIEW";
@@ -1655,15 +1675,34 @@ static void draw_settings(int item)
 		int top = TOP - 22, end = bottom + 10, span = end - top;
 
 		panel(X1 + 12, top, X1 + 16, end, 0x60608CC0);
-		panel(X1 + 12, top + span * first / SETTING_COUNT, X1 + 16, top + span * (first + VISIBLE) / SETTING_COUNT,
+		panel(X1 + 12, top + span * first / SETTINGS_SHOWN, X1 + 16, top + span * (first + VISIBLE) / SETTINGS_SHOWN,
 			0xE08CC0FF);
 	}
 	box(X0 - 12, bottom + 32, X1 + 28, bottom + 86);
-	for (int line = 0; line < 2; line++)
 	{
-		if (help[item][line][0])
-			text_centered(menu.small, SCREEN_W / 2, bottom + (help[item][1][0] ? 54 : 63) + line * 18, TEXT_COLOR,
-				help[item][line]);
+		const char *lines[2] = {help[item][0], help[item][1]};
+		char stays[48];
+
+		/* (HUD RESOLUTION's: what the 3D is drawn at under a 640x240
+		HUD, as 3D RESOLUTION has it) */
+		if (item == SETTING_HUD && menu.chunky >= RESOLUTION_HIGH)
+		{
+			lines[0] = "HIGH AND ULTRA 3D ALREADY DRAW THE HUD AT THEIR";
+			lines[1] = "OWN RESOLUTION. LOWER THE 3D TO CHOOSE.";
+		}
+		else if (item == SETTING_HUD)
+		{
+			snprintf(stays, sizeof(stays), "STAYS %dX240; STANDARD WHERE MEMORY IS SHORT",
+				menu.chunky == 2 ? 320 / 2 : menu.chunky == 1 ? 320 * 4 / 5 : 320);
+			lines[0] = "HIGH DETAIL: A SHARPER HUD AT 640X240; THE 3D";
+			lines[1] = stays;
+		}
+		for (int line = 0; line < 2; line++)
+		{
+			if (lines[line] && lines[line][0])
+				text_centered(menu.small, SCREEN_W / 2, bottom + (lines[1] && lines[1][0] ? 54 : 63) + line * 18,
+					TEXT_COLOR, lines[line]);
+		}
 	}
 	hints("A, LEFT, RIGHT  CHANGE        B  BACK");
 }
@@ -2136,6 +2175,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 		c->map = (c->map + 1) % (c->firefight ? FIREFIGHT_MAP_COUNT : MAP_COUNT);
 		menu.chunky = n64_debug_flag("debug_ultra_detail") ? RESOLUTION_ULTRA :
 			n64_debug_flag("debug_high_detail") ? RESOLUTION_HIGH : 0;
+		menu.hud_standard = !n64_debug_flag("debug_hud_detail");
 		menu.terrain_detail = 0;
 		debugf("n64: cycle: next map %s\n", n64_menu_map_folder(c->map));
 	}
@@ -2349,15 +2389,21 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				struct pad *pad = &pads[p];
 
 				if (pad->up)
-					setting = (setting + SETTING_COUNT - 1) % SETTING_COUNT;
+					do
+						setting = (setting + SETTING_COUNT - 1) % SETTING_COUNT;
+					while (!SETTING_SHOWN(setting));
 				if (pad->down)
-					setting = (setting + 1) % SETTING_COUNT;
+					do
+						setting = (setting + 1) % SETTING_COUNT;
+					while (!SETTING_SHOWN(setting));
 				/* (chunky, medium, standard, high detail, ultra detail: right
 				is higher) */
 				if (setting == SETTING_CHUNKY && pad->left)
 					menu.chunky = resolution_step(menu.chunky, -1);
 				else if (setting == SETTING_CHUNKY && (pad->right || pad->pressed.a))
 					menu.chunky = resolution_step(menu.chunky, 1);
+				if (setting == SETTING_HUD && menu.chunky < RESOLUTION_HIGH && (pad->left || pad->right || pad->pressed.a))
+					menu.hud_standard = !menu.hud_standard;
 				if (setting == SETTING_ANIMATIONS && (pad->left || pad->right || pad->pressed.a))
 					menu.half_animation = !menu.half_animation;
 				if (setting == SETTING_WIDESCREEN && (pad->left || pad->right || pad->pressed.a))
@@ -2571,6 +2617,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_render_set_antialias(menu.antialias);
 			n64_render_set_high_detail(menu.chunky == RESOLUTION_ULTRA ? N64_DETAIL_ULTRA :
 				menu.chunky == RESOLUTION_HIGH ? N64_DETAIL_HIGH : 0);
+			n64_render_set_hud_detail(!CAMPAIGN_CARTRIDGE && !menu.hud_standard);
 			n64_half_animation_rate = menu.half_animation;
 			n64_field_of_view = menu.field_of_view;
 			settings_save();

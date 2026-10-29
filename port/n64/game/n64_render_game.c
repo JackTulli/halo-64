@@ -727,9 +727,15 @@ void render_frame(
 				render.camera.window_bounds.y1 -= inset * 2;
 				interface_draw_screen();
 				render.camera.window_bounds = window_bounds;
-				/* Firefight's wave, lives and score, low in the middle */
+				/* Firefight's wave, lives and score, low in the middle (of
+				the view as its HUD is drawn: n64_render_hud_rect) */
 				if (n64_firefight_status(status, sizeof(status)))
-					n64_hud_text((view.x0 + view.x1) / 2 - 62, view.y1 - 16 - inset, 0xFFC0E0FF, status);
+				{
+					int x0 = view.x0, y0 = view.y0, x1 = view.x1, y1 = view.y1;
+
+					n64_render_hud_rect(&x0, &y0, &x1, &y1);
+					n64_hud_text((x0 + x1) / 2 - 62, y1 - 16 - inset, 0xFFC0E0FF, status);
+				}
 			}
 			n64_hud_end();
 		}
@@ -755,6 +761,8 @@ void render_frame_present(
 	(void)screenshot_index;
 	(void)bitmap;
 	render_frame_begin();
+	/* (the views' 2D's phase: with the HUD at 640x240, the display) */
+	n64_render_hud_phase();
 	{
 		/* START: the pause menu, over the frame (n64_game.c) */
 		extern void n64_game_pause_frame(void);

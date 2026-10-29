@@ -4,7 +4,10 @@ N64_HUD.C
 The HUD's drawing (n64.h): the game's own HUD code (interface/hud*.c,
 motion_sensor.c, game_engine.c) lays out its bitmaps, meters, numbers and
 text; port/n64/game/n64_hud_game.c hands each quad here. The bitmaps are
-half-size sprites on the cartridge (tools/n64/hud.py), loaded on first use.
+half-size sprites on the cartridge (tools/n64/hud.py), loaded on first use;
+with the HUD 640 across (high detail's, HUD RESOLUTION's) the full-width set
+beside them where there is room (n64_hud_set_wide), drawn a texel a pixel
+across.
 
 An upright quad is a blit (rdpq handles bitmaps larger than TMEM by parts);
 a rotated one is textured triangles. A meter's texture is made on the CPU,
@@ -71,8 +74,18 @@ static struct
 	/* rom:/hud/<map>.list: 16 characters a sprite */
 	char *names;
 	int name_count;
+	/* rom:/hud/<map>-wide.list, the full-width set (the same numbers),
+	read when first asked for; the memory it all loads into (its first
+	line); whether it is drawn from (n64_hud_set_wide) */
+	char *wide_names;
+	int wide_name_count;
+	unsigned long wide_bytes;
+	int wide;
 	sprite_t *sprites[MAXIMUM_SPRITES];
 	int missing[MAXIMUM_SPRITES];
+	/* a loaded sprite's set: full width (twice the half-size set's texels
+	across) */
+	unsigned char sprite_wide[MAXIMUM_SPRITES];
 	int x0, y0, x1, y1;
 	int view_count;
 	int mode;
@@ -116,7 +129,7 @@ static int upload_count;
 static struct meter_entry
 {
 	int sprite;
-	int s0, t0, width, height;
+	int s0, t0, width, height, step;
 	unsigned long minimum_color, maximum_color, flash_color, background_color, tint_color;
 	surface_t slot, surface;
 	unsigned long last_used;
@@ -173,7 +186,7 @@ stay): at the end of a game (n64_game_free_map), so that none of it is left
 above the memory the next map's image wants in one piece, and before a new
 map's. The RSP and the RDP done with them first, their recordings freed
 before it returns */
-void n64_hud_release(void)
+static void release_sprites(void)
 {
 	rspq_wait();
 	for (int i = 0; i < MAXIMUM_SPRITES; i++)
@@ -182,6 +195,7 @@ void n64_hud_release(void)
 			sprite_free(hud.sprites[i]);
 		hud.sprites[i] = NULL;
 		hud.missing[i] = 0;
+		hud.sprite_wide[i] = 0;
 	}
 	for (int i = 0; i < MAXIMUM_VIEWS; i++)
 	{
@@ -203,11 +217,45 @@ void n64_hud_release(void)
 		meters[i].sprite = -1;
 		meters[i].slot = slot;
 	}
+	hud.tmem_pixels = NULL;
+	/* (the deferred frees made) */
+	rspq_wait();
+}
+
+void n64_hud_release(void)
+{
+	release_sprites();
 	free(hud.names);
 	hud.names = NULL;
 	hud.name_count = 0;
-	/* (the deferred frees made) */
-	rspq_wait();
+	free(hud.wide_names);
+	hud.wide_names = NULL;
+	hud.wide_name_count = 0;
+	hud.wide_bytes = 0;
+	hud.wide = 0;
+}
+
+/* a list of sprite names (16 characters a line) read into names; the
+count. A first line "#<bytes>" (the full-width set's) into bytes */
+static int read_list(const char *path, char **names, unsigned long *bytes)
+{
+	char line[32];
+	int count = 0;
+	FILE *file = fopen(path, "r");
+
+	*names = NULL;
+	if (!file)
+		return 0;
+	*names = malloc(MAXIMUM_SPRITES * 16);
+	while (*names && count < MAXIMUM_SPRITES && fgets(line, sizeof(line), file))
+	{
+		if (line[0] == '#' && bytes)
+			*bytes = strtoul(line + 1, NULL, 10);
+		else if (strlen(line) >= 16)
+			memcpy(*names + 16 * count++, line, 16);
+	}
+	fclose(file);
+	return count;
 }
 
 void n64_hud_set_map(const char *map_name)
@@ -223,22 +271,40 @@ void n64_hud_set_map(const char *map_name)
 	snprintf(hud.map_name, sizeof(hud.map_name), "%s", map_name);
 	/* the sprites' names, in number order (tools/n64/hud.py) */
 	{
-		char path[64], line[32];
-		FILE *file;
+		char path[64];
 
 		snprintf(path, sizeof(path), "rom:/hud/%s.list", map_name);
-		file = fopen(path, "r");
-		if (file)
-		{
-			hud.names = malloc(MAXIMUM_SPRITES * 16);
-			while (hud.names && hud.name_count < MAXIMUM_SPRITES && fgets(line, sizeof(line), file))
-			{
-				if (strlen(line) >= 16)
-					memcpy(hud.names + 16 * hud.name_count++, line, 16);
-			}
-			fclose(file);
-		}
+		hud.name_count = read_list(path, &hud.names, NULL);
 	}
+}
+
+/* The HUD's sprites for a display 640 across (on): the full-width set,
+where the map has one and room is at least the memory all of it loads into
+(the caller's room check, as the display's: the heap less the models'
+room), else the half-size set as at 320 across. The sprites loaded so far,
+and all made from them, are given back when the set changes */
+void n64_hud_set_wide(int on, unsigned long room)
+{
+	if (on && !hud.wide_names && hud.name_count)
+	{
+		char path[64];
+
+		snprintf(path, sizeof(path), "rom:/hud/%s-wide.list", hud.map_name);
+		hud.wide_name_count = read_list(path, &hud.wide_names, &hud.wide_bytes);
+	}
+	on = on && hud.wide_name_count == hud.name_count && hud.wide_bytes && hud.wide_bytes <= room;
+	if (!on && hud.wide_names)
+	{
+		free(hud.wide_names);
+		hud.wide_names = NULL;
+		hud.wide_name_count = 0;
+		hud.wide_bytes = 0;
+	}
+	if (on == hud.wide)
+		return;
+	release_sprites();
+	hud.wide = on;
+	debugf("n64: HUD sprites %s (%lu KB of room)\n", on ? "full width" : "half size", room / 1024);
 }
 
 /* the memory a sprite file loads into: a compressed asset's header
@@ -278,36 +344,44 @@ static sprite_t *hud_sprite(int number)
 		return NULL;
 	if (!hud.sprites[number])
 	{
-		FILE *file;
+		int found = 0;
 
-		if (!hud.names || number >= hud.name_count)
+		/* the full-width set's sprite where it is in use, else -- or
+		without room for it -- the half-size set's */
+		for (int wide = hud.wide; wide >= 0 && !hud.sprites[number]; wide--)
 		{
-			hud.missing[number] = 1;
-			return NULL;
-		}
-		snprintf(path, sizeof(path), "rom:/hud/%.16s.sprite", hud.names + number * 16);
-		file = fopen(path, "rb");
-		if (!file)
-		{
-			hud.missing[number] = 1;
-			return NULL;
-		}
-		/* (asset_load doesn't check its allocation: the sprite's room is
-		looked for first, its quads left out until there is some) */
-		{
-			/* (and the room a recording began with kept for it: its
-			chunks are made as it goes) */
-			int room = n64_heap_has(sprite_bytes(file) + 1024 +
+			const char *names = wide ? hud.wide_names : hud.names;
+			FILE *file;
+			int room;
+
+			if (!names || number >= (wide ? hud.wide_name_count : hud.name_count))
+				continue;
+			snprintf(path, sizeof(path), "rom:/hud/%.16s.sprite", names + number * 16);
+			file = fopen(path, "rb");
+			if (!file)
+				continue;
+			found = 1;
+			/* (asset_load doesn't check its allocation: the sprite's room
+			is looked for first, its quads left out until there is some --
+			and the room a recording began with kept for it: its chunks are
+			made as it goes) */
+			room = n64_heap_has(sprite_bytes(file) + 1024 +
 				(hud.recording >= 0 ? RECORDING_ROOM_PIECE * RECORDING_ROOM_PIECES : 0));
-
 			fclose(file);
 			if (!room)
-				return NULL;
+				continue;
+			hud.sprites[number] = sprite_load(path);
+			hud.sprite_wide[number] = wide && hud.sprites[number];
 		}
-		hud.sprites[number] = sprite_load(path);
+		if (!found)
+		{
+			hud.missing[number] = 1;
+			return NULL;
+		}
 		if (hud.sprites[number] && n64_debug_flag("debug_hud_sprites"))
-			debugf("hud sprite %d: %dx%d format %d\n", number, hud.sprites[number]->width,
-				hud.sprites[number]->height, (int)sprite_get_format(hud.sprites[number]));
+			debugf("hud sprite %d: %dx%d format %d%s\n", number, hud.sprites[number]->width,
+				hud.sprites[number]->height, (int)sprite_get_format(hud.sprites[number]),
+				hud.sprite_wide[number] ? " (full width)" : "");
 	}
 	return hud.sprites[number];
 }
@@ -360,6 +434,8 @@ int n64_hud_inset(void)
 int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 {
 	n64_render_hud_phase();
+	/* (the view laid out in the 3D's pixels, its HUD in the display's) */
+	n64_render_hud_rect(&x0, &y0, &x1, &y1);
 	hud.x0 = x0;
 	hud.y0 = y0;
 	hud.x1 = x1;
@@ -463,6 +539,7 @@ void n64_hud_end(void)
 		emulated = n64_emulated_count;
 		hud.ticks = hud.quad_ticks = hud.meter_ticks = hud.quads = 0;
 	}
+	n64_render_hud_end();
 }
 
 static unsigned channel(unsigned long color, int shift)
@@ -572,7 +649,8 @@ meter */
 nine of them a texel) */
 #define div255 n64_div255
 
-static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprite, int s0, int t0, int width, int height)
+static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprite, int s0, int t0, int width, int height,
+	int step)
 {
 	struct meter_entry *entry, *oldest = &meters[0];
 	surface_t source = sprite_get_pixels(sprite);
@@ -588,6 +666,7 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 		struct meter_entry *m = &meters[i];
 
 		if (m->sprite == quad->sprite && m->s0 == s0 && m->t0 == t0 && m->width == width && m->height == height &&
+			m->step == step &&
 			m->minimum_color == quad->minimum_color && m->maximum_color == quad->maximum_color &&
 			m->flash_color == quad->flash_color && m->background_color == quad->background_color &&
 			m->tint_color == quad->tint_color)
@@ -609,6 +688,7 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 	entry->t0 = t0;
 	entry->width = width;
 	entry->height = height;
+	entry->step = step;
 	entry->minimum_color = quad->minimum_color;
 	entry->maximum_color = quad->maximum_color;
 	entry->flash_color = quad->flash_color;
@@ -632,7 +712,7 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 		const uint8_t *in = (const uint8_t *)source.buffer + (t0 + y) * source.stride + s0 * 2;
 
 		for (int x = 0; x < width; x++)
-			strongest = in[x * 2 + 1] > strongest ? in[x * 2 + 1] : strongest;
+			strongest = in[x * step * 2 + 1] > strongest ? in[x * step * 2 + 1] : strongest;
 	}
 	/* A texel's colour depends on its order and shape alone (the quad's
 	colours, the strongest and the scale are the meter's): a texel the same
@@ -657,7 +737,7 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 
 			for (x = 0; x < width; x++)
 			{
-				unsigned pair = pairs[x];
+				unsigned pair = pairs[x * step];
 
 				if (pair == last)
 				{
@@ -665,13 +745,13 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 					continue;
 				}
 				last = pair;
-				if (above && above[x] == pair)
+				if (above && above[x * step] == pair)
 				{
 					made[x] = last_made = made_above[x];
 					continue;
 				}
 				{
-					unsigned order = in[x * 2], shape = in[x * 2 + 1];
+					unsigned order = in[x * step * 2], shape = in[x * step * 2 + 1];
 					int covered = shape && shape * 2 >= strongest;
 					unsigned k = div255((shape * 4 >= strongest * 3 ? shape : strongest * 3 / 4) * scale);
 
@@ -744,16 +824,28 @@ static void draw_rotated(const struct n64_hud_quad *quad, const surface_t *surfa
 	}
 }
 
-void n64_hud_quad(const struct n64_hud_quad *quad)
+void n64_hud_quad(const struct n64_hud_quad *in)
 {
-	sprite_t *sprite = hud_sprite(quad->sprite);
+	sprite_t *sprite = hud_sprite(in->sprite);
 	unsigned long start = TICKS_READ();
+	const struct n64_hud_quad *quad = in;
+	struct n64_hud_quad full;
 	surface_t surface;
 	float s0, t0, s1, t1;
 	int is0, it0, is1, it1;
-	int upright, drawn_upright;
+	int upright, drawn_upright, wide = sprite && hud.sprite_wide[in->sprite];
 	int mode = _mode_over, point = hud.point;
 	float scale_x = 0.f, scale_y = 0.f;
+
+	/* (the game addresses the half-size set's texels; the full-width set
+	has twice as many across) */
+	if (wide)
+	{
+		full = *in;
+		for (int i = 0; i < 4; i++)
+			full.s[i] *= 2.f;
+		quad = &full;
+	}
 
 	hud.quads++;
 	if (hud.dump)
@@ -784,15 +876,17 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 	{
 		unsigned long meter_start = TICKS_READ();
 
-		/* the meter's own texture holds just the part shown */
-		surface_t *meter = meter_surface(quad, sprite, is0, it0, is1 - is0, it1 - it0);
+		/* the meter's own texture holds just the part shown (a full-width
+		part wider than a slot: every other column, the half-size set's) */
+		int step = is1 - is0 > METER_SLOT_WIDTH ? 2 : 1;
+		surface_t *meter = meter_surface(quad, sprite, is0, it0, (is1 - is0) / step, it1 - it0, step);
 
 		if (!meter)
 			return;
 		surface = *meter;
 		hud.meter_ticks += TICKS_READ() - meter_start;
-		s0 -= is0;
-		s1 -= is0;
+		s0 = (s0 - is0) / step;
+		s1 = (s1 - is0) / step;
 		t0 -= it0;
 		t1 -= it0;
 		is1 = MIN(is1 - is0, surface.width);
@@ -803,12 +897,14 @@ void n64_hud_quad(const struct n64_hud_quad *quad)
 
 	/* the filter the quad wants, set with its mode (set_state); a rotated
 	quad's bilinear, a meter not drawn keeping the one in force. (Point
-	sampled at the screen's own multiple of the sprites' half size: 1 at
-	320x240, 2 at 640x480 -- whole texels to whole pixels) */
+	sampled at the screen's own multiple of the sprites' size: the
+	half-size set's 1 at 320x240, 2 at 640x480; the full-width set's 1
+	across at 640 -- whole texels to whole pixels) */
 	drawn_upright = upright && s1 > s0 && t1 > t0;
 	if (drawn_upright)
 	{
-		float native_x = n64_render_layout_scale_x() * 2.f, native_y = n64_render_layout_scale_y() * 2.f;
+		float native_x = n64_render_layout_scale_x() * (wide ? 1.f : 2.f);
+		float native_y = n64_render_layout_scale_y() * 2.f;
 
 		scale_x = (quad->x[1] - quad->x[0]) / (s1 - s0);
 		scale_y = (quad->y[2] - quad->y[1]) / (t1 - t0);
