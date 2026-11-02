@@ -51,6 +51,9 @@ static inline unsigned n64_div255(unsigned x)
 	return (x + 1 + (x >> 8)) >> 8;
 }
 unsigned long n64_heap_describe(char *text, unsigned long size);
+int n64_heap_pieces(unsigned long *sizes, int max, unsigned long least);
+unsigned long n64_heap_top(char **start);
+void *n64_uncached_block(int align, unsigned long size, int reserve);
 int n64_heap_has(unsigned long size);
 void n64_heap_dump(const char *tag, const void *start);
 /* the maps' home (n64_game.c) and the display buffers lent from it
@@ -59,6 +62,8 @@ void n64_map_home_reserve(void);
 void *n64_map_home_free_part(unsigned long *size);
 void n64_display_set_home(void *start, unsigned long size);
 void n64_display_lend(void *start, unsigned long size);
+void n64_display_set_room(void **starts, const unsigned long *sizes, const char *whole, int count);
+void n64_display_lend_room(int on);
 int n64_render_home_in_use(void);
 int n64_render_view_models_hidden(void);
 /* a reserve for libdragon's uncached blocks (n64_main.c) */

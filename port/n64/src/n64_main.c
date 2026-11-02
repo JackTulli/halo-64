@@ -157,6 +157,54 @@ unsigned long n64_heap_describe(char *text, unsigned long size)
 	return largest;
 }
 
+/* The sizes of the heap's free chunks of least bytes or more, the smallest
+max of them, the smallest first: a request of a chunk's size less malloc's
+8 bytes gets that chunk (or one as big). The top chunk is not one of them
+(n64_render.c's game_room_top_block takes it, with the room above it). -1
+when the walk does not add up to malloc's own count of free memory
+(mallinfo, the top chunk included): the chunks are then not laid out as
+this expects. */
+int n64_heap_pieces(unsigned long *sizes, int max, unsigned long least)
+{
+	char *base = __malloc_sbrk_base, *top = __malloc_av_[2], *chunk;
+	unsigned long total = 0;
+	int count = 0;
+
+	if (base == (char *)-1 || !top)
+		return -1;
+	chunk = base + ((8 - ((unsigned long)base & 7)) & 7);
+	while (chunk < top)
+	{
+		unsigned long chunk_size = *(unsigned long *)(chunk + 4) & ~3UL, free_size;
+
+		if (chunk_size < 16 || chunk + chunk_size > top)
+			return -1;
+		free_size = *(unsigned long *)(chunk + chunk_size + 4) & 1 ? 0 : chunk_size;
+		total += free_size;
+		if (free_size >= least && (count < max || free_size < sizes[max - 1]))
+		{
+			int i = count < max ? count++ : max - 1;
+
+			for (; i > 0 && sizes[i - 1] > free_size; i--)
+				sizes[i] = sizes[i - 1];
+			sizes[i] = free_size;
+		}
+		chunk += chunk_size;
+	}
+	total += *(unsigned long *)(top + 4) & ~3UL;
+	return chunk == top && total == (unsigned long)mallinfo().fordblks ? count : -1;
+}
+
+/* malloc's top chunk: where it starts (NULL if malloc has none yet) and its
+size */
+unsigned long n64_heap_top(char **start)
+{
+	char *top = __malloc_av_[2];
+
+	*start = __malloc_sbrk_base == (char *)-1 ? NULL : top;
+	return *start ? *(unsigned long *)(top + 4) & ~3UL : 0;
+}
+
 /* testing (port.json flag "debug_heap_dump"): every block in use from
 start on, its offset from the heap's start, size and first two words, in
 the log -- what a game or the menu left behind */
@@ -341,6 +389,14 @@ static void *heap_uncached_or_reserve(int align, size_t size)
 	return block;
 }
 
+/* an uncached block as libdragon's surfaces get it (malloc_uncached_aligned
+from the heap; with reserve, the reserve given back if it must be): for the
+renderer to make a display's blocks itself (n64_render.c's game_room_trial) */
+void *n64_uncached_block(int align, unsigned long size, int reserve)
+{
+	return reserve ? heap_uncached_or_reserve(align, size) : heap_uncached(align, size);
+}
+
 /* the reserve taken (again); the number of times it was spent, so far */
 int n64_uncached_reserve_take(void)
 {
@@ -402,20 +458,67 @@ void n64_display_lend(void *start, unsigned long size)
 	lent_end = lent ? lent + size : NULL;
 }
 
+/* The display's room (n64_render.c's game_room): heap blocks the renderer
+holds when it makes the game's 320x240 display again. While they are lent,
+the surfaces libdragon makes are taken from them in turn, each from the
+first block it still fits in. (A loan of its own: the maps' home is one
+region that maps take back and is never freed; these are heap blocks.) A
+block that is exactly one surface is freed when libdragon frees that
+surface, as its own would be; freeing any other is nothing, and the renderer
+frees those blocks once the display has closed. */
+#define ROOM_BLOCKS 4
+
+static void **room_owner;
+static uint8_t *room_starts[ROOM_BLOCKS], *room_ends[ROOM_BLOCKS], *room_next;
+static char room_whole[ROOM_BLOCKS];
+static int room_count, room_lent = -1;
+
+void n64_display_set_room(void **starts, const unsigned long *sizes, const char *whole, int count)
+{
+	room_owner = starts;
+	room_count = count < ROOM_BLOCKS ? count : ROOM_BLOCKS;
+	for (int i = 0; i < room_count; i++)
+	{
+		room_starts[i] = starts[i];
+		room_ends[i] = room_starts[i] + sizes[i];
+		room_whole[i] = whole[i];
+	}
+	room_lent = -1;
+}
+
+void n64_display_lend_room(int on)
+{
+	room_lent = on && room_count ? 0 : -1;
+	room_next = room_lent == 0 ? room_starts[0] : NULL;
+}
+
+/* a surface of size bytes at a multiple of align (64 at least) cut from a
+loan, at *next before end: NULL if it does not fit */
+static void *lent_surface(uint8_t **next, uint8_t *end, int align, size_t size)
+{
+	uintptr_t alignment = align < 64 ? 64 : (uintptr_t)align;
+	uint8_t *block = (uint8_t *)(((uintptr_t)*next + alignment - 1) & ~(alignment - 1));
+	size_t rounded = (size + 15) & ~(size_t)15;
+
+	if (block + rounded > end)
+		return NULL;
+	*next = block + rounded;
+	data_cache_hit_invalidate(block, rounded);
+	return UncachedAddr(block);
+}
+
 void *__wrap_malloc_uncached_aligned(int align, size_t size)
 {
-	if (lent && size >= LENT_SURFACE)
-	{
-		uintptr_t alignment = align < 64 ? 64 : (uintptr_t)align;
-		uint8_t *block = (uint8_t *)(((uintptr_t)lent + alignment - 1) & ~(alignment - 1));
-		size_t rounded = (size + 15) & ~(size_t)15;
+	void *surface;
 
-		if (block + rounded <= lent_end)
-		{
-			lent = block + rounded;
-			data_cache_hit_invalidate(block, rounded);
-			return UncachedAddr(block);
-		}
+	if (lent && size >= LENT_SURFACE && (surface = lent_surface(&lent, lent_end, align, size)))
+		return surface;
+	while (room_lent >= 0 && room_lent < room_count && size >= LENT_SURFACE)
+	{
+		if ((surface = lent_surface(&room_next, room_ends[room_lent], align, size)))
+			return surface;
+		if (++room_lent < room_count)
+			room_next = room_starts[room_lent];
 	}
 	return heap_uncached_or_reserve(align, size);
 }
@@ -451,9 +554,20 @@ void __wrap_free_uncached(void *buffer)
 		small_uncached_used[(cached - small_uncached[0]) / SMALL_UNCACHED] = 0;
 		return;
 	}
-	/* (a display buffer lent from the map's home) */
+	/* (a display buffer lent from the map's home: nothing; from the
+	display's room: nothing, but a block that is exactly this surface is
+	freed here, as libdragon's own would be) */
 	if (home_start && cached >= home_start && cached < home_end)
 		return;
+	for (int i = 0; i < room_count; i++)
+		if (room_starts[i] && cached >= room_starts[i] && cached < room_ends[i])
+		{
+			if (!room_whole[i] || cached != room_starts[i])
+				return;
+			room_starts[i] = NULL;
+			room_owner[i] = NULL;
+			break;
+		}
 	if (poison_freed)
 	{
 		uint32_t *word = (uint32_t *)UncachedAddr(cached);
