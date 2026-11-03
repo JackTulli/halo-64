@@ -39,9 +39,10 @@ is drawn as it goes, unrecorded, that frame.
 places by size, the critical sprites first with a reserve on the heap and
 the arena -- on the cartridges whose maps have HUD images larger than
 256x256 for the converter to pack (tools/n64/hud.py): the PC Expansion's
-and the Custom Edition's (the PC's HUD bitmaps). The Xbox maps -- the
-main, online and campaign cartridges' -- have none, and no HUD sprite was
-refused there: their HUD is v0.6.6's */
+and the Custom Edition's (the PC's HUD bitmaps); there, only on the maps
+whose HUD the converter packed (n64_hud_packed). The Xbox maps -- every
+cartridge's -- have none, and no HUD sprite was refused there: their HUD
+is v0.6.6's */
 #if defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS)
 #define HUD_PACKING 1
 #else
@@ -284,7 +285,7 @@ static int meter_layout(void)
 {
 	int arena = hud.packed_count > 0 && hud.view_count <= 3;
 
-	if (hud.wide || meter_too_large || hud.view_count < 1 || hud.view_count > 4)
+	if (!hud.packed_count || hud.wide || meter_too_large || hud.view_count < 1 || hud.view_count > 4)
 		return 0;
 	return hud.view_count + (arena ? 8 : 0);
 }
@@ -724,6 +725,16 @@ static void swap_critical(void)
 			wanted, loaded);
 }
 
+/* whether this map's HUD is packed: the critical pass (n64_render_game.c),
+and with it the reserve, the retry windows, live_next, the swap and the
+meter places by size, only there; a map with no packed sprite -- the Xbox
+maps, on every cartridge, and the Custom Edition maps the converter did
+not pack -- has v0.6.6's HUD */
+int n64_hud_packed(void)
+{
+	return hud.packed_count > 0;
+}
+
 /* (the critical pass, hud.c) the sprites asked for meanwhile are critical;
 at its end, those it left out for want of room swapped in for a replaced
 weapon's (swap_critical) */
@@ -1124,7 +1135,7 @@ static sprite_t *hud_sprite(int number)
 				fclose(file);
 				file = NULL;
 			}
-			reserve = critical ? HUD_HEAP_RESERVE : HUD_HEAP_RESERVE_REST;
+			reserve = !hud.packed_count ? 0 : critical ? HUD_HEAP_RESERVE : HUD_HEAP_RESERVE_REST;
 			room = hud.swapping ? hud.recording < 0 :
 				n64_heap_has(bytes + (hud.recording >= 0 ? RECORDING_ROOM_PIECE * RECORDING_ROOM_PIECES : 0)) &&
 				n64_heap_free() >= bytes + reserve;
@@ -1162,9 +1173,9 @@ static sprite_t *hud_sprite(int number)
 			sprite_clear(number, SPRITE_WANTED);
 			hud.wanted_count--;
 		}
-		if (!hud.sprites[number] && hud.recording >= 0 && hud.recording < MAXIMUM_VIEWS)
+		if (!hud.sprites[number] && hud.packed_count && hud.recording >= 0 && hud.recording < MAXIMUM_VIEWS)
 			hud.live_next[hud.recording] = 1;
-		else if (!hud.sprites[number])
+		else if (!hud.sprites[number] && hud.packed_count)
 			hud.refused_at[number] = (unsigned short)(hud.views + 1);
 		if (hud.sprites[number] && n64_debug_flag("debug_hud_sprites"))
 			debugf("hud sprite %d: %dx%d format %d%s\n", number, hud.sprites[number]->width,
@@ -1643,7 +1654,7 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 				(m->bytes == entry->bytes && m->last_used < entry->last_used)))
 				entry = m;
 		}
-		if (!entry)
+		if (!entry || !hud.packed_count)
 			entry = oldest;
 	}
 	if (!entry)
