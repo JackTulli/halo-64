@@ -33,13 +33,27 @@ is drawn as it goes, unrecorded, that frame.
 #include "n64.h"
 
 #define MAXIMUM_SPRITES 256
+/* The PC maps' HUD: the meters' places by size -- on the cartridges whose
+maps are the PC's (the PC Expansion's and the Custom Edition's), which
+draw the PC's meters. The Xbox maps -- the main, online and campaign
+cartridges' -- keep v0.6.6's 12 slots */
+#if defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS)
+#define HUD_PACKING 1
+#else
+#define HUD_PACKING 0
+#endif
 #define MAXIMUM_VIEWS 4
 #define HUD_INTERVAL 2
-#define METER_CACHE 12
-/* a meter texture's slot: 128x32 RGBA16 (the parts of meters shown are
-smaller) */
+/* the meters' textures: RGBA16, at most 128x32 (the part of a meter
+shown), each in a place of the meter block made at boot (n64_hud_reserve):
+12 places of 8 KB, or with the half-size sprites places by size for the
+most meter textures the player count's HUDs draw at once (meter_layout) */
 #define METER_SLOT_WIDTH 128
 #define METER_SLOT_HEIGHT 32
+#define METER_BLOCK (12 * METER_SLOT_WIDTH * METER_SLOT_HEIGHT * 2)
+#define MAXIMUM_METER_PLACES 36
+/* (v0.6.6's meter slots, without HUD_PACKING) */
+#define METER_CACHE 12
 #define BLIP_SIZE 16
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -126,6 +140,81 @@ static struct upload_block
 } uploads[UPLOAD_BLOCKS];
 static int upload_count;
 
+#if HUD_PACKING
+static struct meter_entry
+{
+	int sprite;
+	int s0, t0, width, height, step;
+	unsigned long minimum_color, maximum_color, flash_color, background_color, tint_color;
+	surface_t surface;
+	uint8_t *place; /* in the meter block (uncached) */
+	unsigned long bytes; /* the place's */
+	unsigned long last_used;
+	unsigned long drawn; /* hud_frame when last drawn */
+} meters[MAXIMUM_METER_PLACES];
+static unsigned long meter_clock;
+/* the HUD's frames (n64_hud_set_view_count, each frame); the meter block
+(uncached), its places' layout (meter_layout's number, -1 none yet), how
+many places, and the bytes they take from its start */
+static unsigned long hud_frame;
+static uint8_t *meter_block;
+static int meter_layout_in_use = -1, meter_places;
+static unsigned long meter_bytes;
+/* a meter texture too large for the places by size: the 8 KB places for the
+rest of the map */
+static int meter_too_large;
+
+/* The places by size: the most meter textures one player's HUD draws at
+once, over every weapon and every vehicle seat with every weapon it may
+hold on the PC and Xbox maps, from their tags as hud_unit.c and
+hud_weapon.c draw them -- the unit's shield (three layers with the
+overshield), health and flashlight meters, a Warthog driver's two other
+seats' health, the weapon's meters: 8 with one player, 9 a player in
+split screen. With one player one of them may be larger than 4352 bytes
+(rows of whole 8 bytes: the assault rifle's bullet row is 114x27, 6264
+bytes; the sniper rifle's 107x22), the others are at most 4352 -- two
+places of 6272 (a bullet row's new texture at each shot beside the one
+still drawn) and 7 of 4352, a small texture taking a large place where
+it is free; in split
+screen each is at most 4096 bytes, at most 3 of a player's are over
+2048, and at most 8 are not. With the full-width sprites (twice as wide),
+the 12 places of 8 KB. 0: those; 1-4: the player count's */
+static int meter_layout(void)
+{
+	if (hud.wide || meter_too_large || hud.view_count < 1 || hud.view_count > 4)
+		return 0;
+	return hud.view_count;
+}
+
+static void place_meters(int layout)
+{
+	static const struct { unsigned short bytes, count[5]; } kinds[] =
+	{
+		{8192, {12, 0, 0, 0, 0}},
+		{6272, {0, 2, 0, 0, 0}},
+		{4352, {0, 7, 0, 0, 0}},
+		{4096, {0, 0, 6, 9, 12}},
+		{2048, {0, 0, 12, 18, 24}},
+	};
+	uint8_t *at = meter_block;
+
+	meter_places = 0;
+	for (unsigned k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++)
+	{
+		for (int i = 0; i < kinds[k].count[layout] && meter_places < MAXIMUM_METER_PLACES; i++)
+		{
+			memset(&meters[meter_places], 0, sizeof(meters[0]));
+			meters[meter_places].sprite = -1;
+			meters[meter_places].place = at;
+			meters[meter_places].bytes = kinds[k].bytes;
+			at += kinds[k].bytes;
+			meter_places++;
+		}
+	}
+	meter_bytes = at - meter_block;
+	meter_layout_in_use = layout;
+}
+#else
 static struct meter_entry
 {
 	int sprite;
@@ -135,6 +224,7 @@ static struct meter_entry
 	unsigned long last_used;
 } meters[METER_CACHE];
 static unsigned long meter_clock;
+#endif
 
 /* a soft round dot (Halo's blip bitmap is one), intensity 8 bits */
 static void make_blip(void)
@@ -159,6 +249,90 @@ static void make_blip(void)
 static struct n64_font *hud_font;
 static int hud_font_loaded;
 
+#if HUD_PACKING
+/* what the HUD keeps from its first map on -- the meters' texture slots
+(96 KB), the blip, its font -- made at boot (n64_main.c), at the heap's
+bottom: made with the first map, above its image, they split the heap a
+later, bigger map needs in one piece (n64_anim.c) */
+void n64_hud_reserve(void)
+{
+	if (!meter_block)
+	{
+		meter_block = malloc_uncached_aligned(64, METER_BLOCK);
+		if (meter_block)
+			place_meters(0);
+	}
+	if (!hud.blip.buffer)
+		make_blip();
+	if (!hud_font_loaded)
+	{
+		hud_font = n64_font_load("small");
+		hud_font_loaded = 1;
+	}
+}
+
+/* what the HUD made for its map -- the sprites, the recordings and their
+uploads, the sprites' names -- given back (the slots, the blip and the font
+stay): at the end of a game (n64_game_free_map), so that none of it is left
+above the memory the next map's image wants in one piece, and before a new
+map's. The RSP and the RDP done with them first, their recordings freed
+before it returns */
+static void drop_made(void);
+
+static void release_sprites(void)
+{
+	rspq_wait();
+	for (int i = 0; i < MAXIMUM_SPRITES; i++)
+	{
+		if (hud.sprites[i])
+			sprite_free(hud.sprites[i]);
+		hud.sprites[i] = NULL;
+		hud.missing[i] = 0;
+		hud.sprite_wide[i] = 0;
+	}
+	drop_made();
+}
+
+/* what the HUD made from its sprites -- the views' recordings, the
+uploads, the meters' textures -- given back (made again as the HUD is
+drawn); the RSP and the RDP done with them */
+static void drop_made(void)
+{
+	for (int i = 0; i < MAXIMUM_VIEWS; i++)
+	{
+		if (hud.recordings[i])
+			rdpq_call_deferred((void (*)(void *))rspq_block_free, hud.recordings[i]);
+		hud.recordings[i] = NULL;
+	}
+	for (int i = 0; i < upload_count; i++)
+	{
+		if (uploads[i].block)
+			rdpq_call_deferred((void (*)(void *))rspq_block_free, uploads[i].block);
+	}
+	upload_count = 0;
+	for (int i = 0; i < meter_places; i++)
+	{
+		meters[i].sprite = -1;
+		meters[i].last_used = 0;
+	}
+	hud.tmem_pixels = NULL;
+	/* (the deferred frees made) */
+	rspq_wait();
+}
+
+/* the meter places laid out again where the player count or the sprite set
+changed them (meter_layout): what was made from the old ones given back
+first, the RSP and the RDP done with it */
+static void check_layout(void)
+{
+	int layout = meter_layout();
+
+	if (!meter_block || layout == meter_layout_in_use)
+		return;
+	drop_made();
+	place_meters(layout);
+}
+#else
 /* what the HUD keeps from its first map on -- the meters' texture slots
 (96 KB), the blip, its font -- made at boot (n64_main.c), at the heap's
 bottom: made with the first map, above its image, they split the heap a
@@ -222,6 +396,12 @@ static void release_sprites(void)
 	rspq_wait();
 }
 
+/* (the meter places by size: the PC maps' cartridges only) */
+static inline void check_layout(void)
+{
+}
+#endif
+
 void n64_hud_release(void)
 {
 	release_sprites();
@@ -258,6 +438,29 @@ static int read_list(const char *path, char **names, unsigned long *bytes)
 	return count;
 }
 
+#if HUD_PACKING
+void n64_hud_set_map(const char *map_name)
+{
+	n64_hud_release();
+	meter_too_large = 0;
+	if (!meter_block)
+	{
+		meter_block = malloc_uncached_aligned(64, METER_BLOCK);
+		if (meter_block)
+			place_meters(0);
+	}
+	if (!hud.blip.buffer)
+		make_blip();
+	snprintf(hud.map_name, sizeof(hud.map_name), "%s", map_name);
+	/* the sprites' names, in number order (tools/n64/hud.py) */
+	{
+		char path[64];
+
+		snprintf(path, sizeof(path), "rom:/hud/%s.list", map_name);
+		hud.name_count = read_list(path, &hud.names, NULL);
+	}
+}
+#else
 void n64_hud_set_map(const char *map_name)
 {
 	n64_hud_release();
@@ -277,6 +480,7 @@ void n64_hud_set_map(const char *map_name)
 		hud.name_count = read_list(path, &hud.names, NULL);
 	}
 }
+#endif
 
 /* The HUD's sprites for a display 640 across (on): the full-width set,
 where the map has one and room is at least the memory all of it loads into
@@ -408,10 +612,19 @@ void n64_hud_forget_recordings(void)
 	}
 }
 
+#if HUD_PACKING
+/* (each frame, render_frame) */
+void n64_hud_set_view_count(int count)
+{
+	hud.view_count = count;
+	hud_frame++;
+}
+#else
 void n64_hud_set_view_count(int count)
 {
 	hud.view_count = count;
 }
+#endif
 
 void n64_hud_set_inset(int pixels)
 {
@@ -448,6 +661,7 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 	hud.view = view;
 	if (view < 0 || view >= MAXIMUM_VIEWS)
 		return 0;
+	check_layout();
 	/* with three or four views, each view's every sixth frame (the user's
 	choice: the HUD's code is ~5 ms a recording, and four views made one a
 	frame), the views' turns spread over the six (four views: frames 0, 1,
@@ -652,6 +866,70 @@ nine of them a texel) */
 static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprite, int s0, int t0, int width, int height,
 	int step)
 {
+#if HUD_PACKING
+	struct meter_entry *entry = NULL;
+	surface_t source = sprite_get_pixels(sprite);
+	unsigned long need;
+	unsigned minimum_alpha = quad->minimum_color >> 24, maximum_alpha = quad->flash_color >> 24;
+	unsigned scale = channel(quad->tint_color, 0);
+	unsigned empty_alpha = quad->background_color >> 24;
+	unsigned strongest = 0;
+	uint16_t empty;
+
+	meter_clock++;
+	for (int i = 0; i < meter_places; i++)
+	{
+		struct meter_entry *m = &meters[i];
+
+		if (m->sprite == quad->sprite && m->s0 == s0 && m->t0 == t0 && m->width == width && m->height == height &&
+			m->step == step &&
+			m->minimum_color == quad->minimum_color && m->maximum_color == quad->maximum_color &&
+			m->flash_color == quad->flash_color && m->background_color == quad->background_color &&
+			m->tint_color == quad->tint_color)
+		{
+			m->last_used = meter_clock;
+			m->drawn = hud_frame;
+			return &m->surface;
+		}
+	}
+	/* A new texture goes in a place no view still draws -- not drawn within
+	the views' recording interval and a frame more -- the smallest such that
+	it fits (rows of whole 8 bytes), the least recently used of those; a
+	small texture takes a larger place where the small ones are all drawn
+	still. Only where every place it fits is still drawn, the least recently
+	used of them. None fits: the 8 KB places from the next view on
+	(meter_layout), the meter left out until then */
+	width = MIN(width, METER_SLOT_WIDTH);
+	height = MIN(height, METER_SLOT_HEIGHT);
+	need = (unsigned long)((width * 2 + 7) & ~7) * height;
+	{
+		unsigned long window = (unsigned long)(hud.view_count > 2 ? 6 : hud.view_count == 2 ? 3 : HUD_INTERVAL) + 1;
+		struct meter_entry *oldest = NULL;
+
+		for (int i = 0; i < meter_places; i++)
+		{
+			struct meter_entry *m = &meters[i];
+
+			if (m->bytes < need)
+				continue;
+			if (!oldest || m->last_used < oldest->last_used)
+				oldest = m;
+			if ((m->sprite < 0 || hud_frame - m->drawn > window) && (!entry || m->bytes < entry->bytes ||
+				(m->bytes == entry->bytes && m->last_used < entry->last_used)))
+				entry = m;
+		}
+		if (!entry)
+			entry = oldest;
+	}
+	if (!entry)
+	{
+		if (meter_layout_in_use)
+			meter_too_large = 1;
+		return NULL;
+	}
+	entry->surface = surface_make(entry->place, FMT_RGBA16, width, height, (width * 2 + 7) & ~7);
+	entry->drawn = hud_frame;
+#else
 	struct meter_entry *entry, *oldest = &meters[0];
 	surface_t source = sprite_get_pixels(sprite);
 	unsigned minimum_alpha = quad->minimum_color >> 24, maximum_alpha = quad->flash_color >> 24;
@@ -683,6 +961,7 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 	width = MIN(width, METER_SLOT_WIDTH);
 	height = MIN(height, METER_SLOT_HEIGHT);
 	entry->surface = surface_make_sub(&entry->slot, 0, 0, width, height);
+#endif
 	entry->sprite = quad->sprite;
 	entry->s0 = s0;
 	entry->t0 = t0;
@@ -719,7 +998,7 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 	as the one before it, or the one above it, takes that one's colour, and a
 	meter's texels are runs of a few (a bar's order changes along it, its
 	shape at its edges) -- worked out once each, not nine divisions a texel.
-	A row is made in cached memory, then copied into the slot (uncached)
+	A row is made in cached memory, then copied into the place (uncached)
 	whole words at a time, its width exactly */
 	{
 		typedef uint16_t __attribute__((may_alias)) texel_pair;
