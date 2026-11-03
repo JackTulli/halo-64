@@ -202,6 +202,11 @@ class HudExporter:
         out.mkdir(parents=True, exist_ok=True)
         bf = {fl.name: o for o, fl in self.defs.fields("Bitmap")}
         size = self.defs.size("BitmapData")
+        # (the damage arrows' images: drawn from one sprite rectangle of a
+        # large image, cropped to it like the large images, on the maps that
+        # pack -- those with large images: the PC maps; the Xbox maps' lists
+        # stay as they were)
+        arrows = []
         for tag in bitmaps:
             if any(name in tag.name for name in SKIPPED_NAMES):
                 continue
@@ -219,6 +224,8 @@ class HudExporter:
                 number = self.count
                 if img.width * img.height > PACKED_TEXELS:
                     self.large.append((number, img, "meter" in tag.name, self.rectangles(tag, i, img)))
+                elif "damage_arrows" in tag.name:
+                    arrows.append((number, img, False, self.rectangles(tag, i, img)))
                 self.numbers_of.setdefault(tag.index, {})[i] = (number, img, "meter" in tag.name, tag)
                 self.write(img, out / f"{number}.png", "meter" in tag.name)
                 self.names.append(share_file(out / f"{number}.sprite", self.out_dir / "hud", ".sprite"))
@@ -226,6 +233,8 @@ class HudExporter:
                 self.wide_names.append(share_file(out / f"{number}w.sprite", self.out_dir / "hud", ".sprite"))
                 self.sprite_of[pointer + i * size] = number
                 self.count += 1
+        if self.large:
+            self.large.extend(arrows)
         self.find_whole()
         hud_dir = self.out_dir / "hud"
         self.wide_bytes = sum(sprite_bytes(hud_dir / f"{name}.sprite") for name in self.wide_names)

@@ -813,6 +813,12 @@ void hud_unit_n64_load_meters_first(
 		n64_load_first(definition->motion_sensor.foreground.interface_bitmap.index,
 			definition->motion_sensor.foreground.sequence_index);
 	}
+	/* (the damage arrows -- the side the player is hit from -- as
+	hud_render_damage_indicators draws them: information, with the critical
+	sprites; the PC maps' arrows are packed to the sequence's crop, 1.6 KB
+	with more than one player, 2.6 KB with one) */
+	n64_load_first(hud_globals->damage_indicators.indicator_bitmap.index, local_player_count() > 1 ?
+		hud_globals->damage_indicators.multiplayer_sequence_index : hud_globals->damage_indicators.sequence_index);
 }
 #endif
 
