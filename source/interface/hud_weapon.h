@@ -26,4 +26,9 @@ void hud_update_weapon(
 void hud_render_weapon_interface(
 	struct player_datum *player);
 
+#ifdef HALO_N64
+void hud_weapon_n64_load_critical_first(
+	struct player_datum const *player);
+#endif
+
 #endif // __HUD_WEAPON_H

@@ -17,6 +17,7 @@ renderer's (port/n64/src/n64_render.c).
 #include "game/game.h"
 #include "game/players.h"
 #include "game/local_players.h"
+#include "interface/hud.h"
 #include "interface/first_person_weapons.h"
 #include "interface/interface.h"
 #include "main/main.h"
@@ -708,6 +709,13 @@ void render_frame(
 		n64_render_view_particles();
 		if (!n64_debug_flag("debug_no_hud"))
 		{
+#if defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS)
+			/* the unit's shield and health meters' sprite asked for before the
+			rest of the HUD, and before the view's HUD recording begins (the
+			room a recording keeps would leave it out; the PC maps' cartridges:
+			n64_hud.c HUD_PACKING) */
+			hud_n64_load_critical_first(window->local_player_index);
+#endif
 			/* the game's own HUD (port/n64/game/n64_hud_game.c) */
 			if (n64_hud_begin(window_index, view.x0, view.y0, view.x1, view.y1))
 			{

@@ -90,6 +90,9 @@ symbols in this file:
 #include "interface/hud_messaging.h"
 #include "interface/hud_unit.h"
 #include "interface/hud_weapon.h"
+#ifdef HALO_N64
+#include "interface/hud_draw.h"
+#endif
 #include "interface/interface.h"
 #include "interface/motion_sensor.h"
 #include "items/weapon_definitions.h"
@@ -1207,6 +1210,38 @@ void temporary_hud_draw(
 
 	return;
 }
+
+#if defined(HALO_N64) && (defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS))
+/* (the PC maps' cartridges: n64_hud.c HUD_PACKING) */
+/* (N64) The HUD's critical sprites asked for before the rest of the view's
+HUD, before its recording begins, each where and when the game draws it:
+the shield and health meters and the motion sensor
+(hud_unit_n64_load_meters_first), the digits of the ammo and grenade counts
+(hud_draw_n64_load_digits_first), and the weapon's meters, the panels
+behind its count and the grenades' and its crosshair
+(hud_weapon_n64_load_critical_first). The HUD's sprites load in the order
+they are first asked for; where the heap has room for only some, these
+have it, and keep a smaller reserve than the rest (n64_hud.c) */
+extern void n64_hud_critical_pass(int on);
+
+void hud_n64_load_critical_first(
+	short local_player_index)
+{
+	long player_index = local_player_get_player_index(local_player_index);
+	director_perspective perspective = director_get_perspective(local_player_index);
+
+	if (player_index != NONE && hud_scripted_globals->show_hud &&
+		perspective != _director_perspective_neutral && perspective != _director_perspective_scripted &&
+		player_get(player_index)->unit_index != NONE)
+	{
+		n64_hud_critical_pass(TRUE);
+		hud_unit_n64_load_meters_first(player_get(player_index));
+		hud_draw_n64_load_digits_first();
+		hud_weapon_n64_load_critical_first(player_get(player_index));
+		n64_hud_critical_pass(FALSE);
+	}
+}
+#endif
 
 void hud_draw_screen(
 	void)

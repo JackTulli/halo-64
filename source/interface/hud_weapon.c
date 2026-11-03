@@ -956,6 +956,228 @@ finished:
 	return;
 }
 
+#if defined(HALO_N64) && (defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS))
+/* (the PC maps' cartridges: n64_hud.c HUD_PACKING) */
+/* (N64) The current weapon's meters, the panels behind its count (the
+static elements of a weapon HUD with numbers) and the grenades', and its
+crosshair (its aim crosshairs) asked for with the HUD's critical sprites,
+before the rest (hud_n64_load_critical_first), where
+hud_render_weapon_interface, render_grenade_hud and crosshairs_draw would
+draw them, in their map type. A meter is the readout of the rounds in the
+magazine (the bullet row: in one-player games no number shows it) or of a
+plasma weapon's heat; without its panel the white count stood on the scene
+itself, on snow unread. (The state messages, "Reload" and the like, are
+not critical: they load as they are drawn, where there is room) */
+/* (N64) a count's panel asked for with the critical sprites: its outline
+not (an outline, like a frame, is decoration: the owner's tiers) */
+static void n64_load_panel_first(
+	long bitmap_index,
+	short sequence_index)
+{
+	char const *name = bitmap_index != NONE ? tag_get_name(bitmap_index) : NULL;
+
+	if (name && !strstr(name, "outline"))
+		hud_draw_n64_load_sequence_first(bitmap_index, sequence_index);
+	else if (name)
+		hud_draw_n64_mark_sequence_decoration(bitmap_index, sequence_index);
+}
+
+/* (N64) a sequence's sprite asked for with the critical sprites, or marked
+a carried weapon's (mark: never given back for another critical sprite) */
+static void n64_weapon_sequence(
+	long bitmap_index,
+	short sequence_index,
+	boolean mark)
+{
+	if (mark)
+		hud_draw_n64_mark_sequence_carried(bitmap_index, sequence_index);
+	else
+		hud_draw_n64_load_sequence_first(bitmap_index, sequence_index);
+}
+
+/* (N64) a weapon HUD's critical sprites, its definition's and its parents':
+the meters, the count panels (their outlines decoration), the type icons
+(overlays) and the crosshairs -- at the zoom given, or every one when
+marking -- asked for, or marked a carried weapon's */
+static void n64_weapon_hud_sprites(
+	long hud_index,
+	short map_type_flags,
+	boolean crosshairs_only,
+	boolean crosshair,
+	long zoom,
+	boolean mark)
+{
+	short definition_count = 0;
+	short i, j;
+
+	while (hud_index != NONE && definition_count++ < MAXIMUM_WEAPON_HUD_DEFINITION_DEPTH)
+	{
+		struct weapon_hud_interface_definition *definition = weapon_hud_interface_definition_get(hud_index);
+
+		for (i = 0; !crosshairs_only && i < definition->meters.count; i++)
+		{
+			struct weapon_hud_meter_element *element =
+				TAG_BLOCK_GET_ELEMENT(&definition->meters, i, struct weapon_hud_meter_element);
+
+			if (!TEST_FLAG(element->header.runtime_flags, _hud_element_runtime_invalid_bit) &&
+				TEST_FLAG(map_type_flags, element->header.use_on_map_type))
+				n64_weapon_sequence(element->meter_element.meter_bitmap.index, element->meter_element.sequence_index, mark);
+		}
+		for (i = 0; !crosshairs_only && definition->numbers.count && i < definition->statics.count; i++)
+		{
+			struct weapon_hud_static_element *element =
+				TAG_BLOCK_GET_ELEMENT(&definition->statics, i, struct weapon_hud_static_element);
+			long bitmap_index = element->static_element.interface_bitmap.index;
+			char const *name = bitmap_index != NONE ? tag_get_name(bitmap_index) : NULL;
+
+			if (TEST_FLAG(element->header.runtime_flags, _hud_element_runtime_invalid_bit) ||
+				!TEST_FLAG(map_type_flags, element->header.use_on_map_type))
+				continue;
+			if (!mark)
+				n64_load_panel_first(bitmap_index, element->static_element.sequence_index);
+			else if (name && !strstr(name, "outline"))
+				hud_draw_n64_mark_sequence_carried(bitmap_index, element->static_element.sequence_index);
+		}
+		for (i = 0; !crosshairs_only && i < definition->overlays.count; i++)
+		{
+			struct weapon_hud_overlays_element *element =
+				TAG_BLOCK_GET_ELEMENT(&definition->overlays, i, struct weapon_hud_overlays_element);
+
+			if (!TEST_FLAG(element->runtime_flags, _hud_element_runtime_invalid_bit) &&
+				TEST_FLAG(map_type_flags, element->use_on_map_type))
+				hud_draw_n64_load_overlays_first(&element->overlays, mark);
+		}
+		for (i = 0; crosshair && i < definition->crosshairs.count; i++)
+		{
+			struct weapon_hud_crosshairs_element *element =
+				TAG_BLOCK_GET_ELEMENT(&definition->crosshairs, i, struct weapon_hud_crosshairs_element);
+
+			/* (the aim crosshairs, and the zoom reticles: those whose items
+			draw at this zoom, below) */
+			if ((element->crosshair_type != _crosshair_state_aim && element->crosshair_type != _crosshair_state_zoom) ||
+				!TEST_FLAG(map_type_flags, element->use_on_map_type))
+				continue;
+			for (j = 0; element->crosshairs.bitmap.index != NONE && j < element->crosshairs.items.count && j < 8; j++)
+			{
+				struct weapon_hud_crosshair_item *item =
+					TAG_BLOCK_GET_ELEMENT(&element->crosshairs.items, j, struct weapon_hud_crosshair_item);
+				struct bitmap_group *group = bitmap_group_get(element->crosshairs.bitmap.index);
+
+				/* (the items crosshairs_draw draws at this zoom, with a sequence
+				or bitmap of their bitmap's: an item that is not a sprite names
+				a bitmap, drawn whole) */
+				if (TEST_FLAG(item->flags, _hud_crosshair_runtime_invalid_bit) ||
+					(!mark && TEST_FLAG(item->flags, _hud_crosshair_not_on_default_zoom_bit) && zoom <= 0) ||
+					(!mark && TEST_FLAG(item->flags, _hud_crosshair_only_on_default_zoom_bit) && zoom != 0) ||
+					item->sequence_index < 0)
+					continue;
+				if (!TEST_FLAG(item->flags, _hud_crosshair_not_a_sprite_bit))
+				{
+					if (item->sequence_index < group->sequences.count)
+						n64_weapon_sequence(element->crosshairs.bitmap.index, item->sequence_index, mark);
+				}
+				else if (item->sequence_index < group->bitmaps.count)
+				{
+					struct bitmap_data *bitmap =
+						TAG_BLOCK_GET_ELEMENT(&group->bitmaps, item->sequence_index, struct bitmap_data);
+
+					if (bitmap->pixels_offset > 0 && !mark)
+						n64_hud_ensure_sprite((short)(bitmap->pixels_offset - 1));
+					else if (bitmap->pixels_offset > 0)
+						n64_hud_mark_carried_at((short)(bitmap->pixels_offset - 1), 0.f, 0.f);
+				}
+			}
+		}
+		hud_index = definition->parent_hud.index;
+	}
+}
+
+void hud_weapon_n64_load_critical_first(
+	struct player_datum const *player)
+{
+	long weapon_index, own_weapon_index, hud_index = NONE;
+	short map_type_flags;
+	short i;
+	boolean crosshair = TEST_FLAG(weapon_hud_globals->script_flags, _hud_crosshair_show_bit);
+	boolean crosshairs_only = FALSE;
+	struct unit_datum *unit;
+
+	if (player->unit_index == NONE)
+		return;
+	unit = unit_get(player->unit_index);
+	own_weapon_index = weapon_index = unit_inventory_get_weapon(player->unit_index, unit->unit.current_weapon_index);
+	/* (the weapon hud_render_weapon_interface draws: the unit's own; without
+	one, in a gunner's seat, the vehicle's; with no weapon at all, outside a
+	seat that allows none, the default HUD's crosshairs) */
+	if (weapon_index == NONE)
+	{
+		boolean seat_disallows_hud = FALSE;
+
+		if (unit->object.parent_object_index != NONE && unit->unit.parent_seat_index != NONE)
+		{
+			struct unit_datum *parent = unit_get(unit->object.parent_object_index);
+			struct unit_seat *seat = TAG_BLOCK_GET_ELEMENT(
+				&unit_definition_get(parent->definition_index)->unit.seats,
+				unit->unit.parent_seat_index,
+				struct unit_seat);
+
+			if (TEST_FLAG(seat->flags, _unit_seat_gunner_bit))
+				weapon_index = unit_inventory_get_weapon(unit->object.parent_object_index, parent->unit.current_weapon_index);
+			else
+				seat_disallows_hud = TRUE;
+		}
+		if (weapon_index == NONE && !seat_disallows_hud && !unit_get_weapon_count(player->unit_index))
+		{
+			hud_index = hud_globals->defaults.default_weapon_hud.index;
+			crosshairs_only = TRUE;
+		}
+	}
+	if (weapon_index != NONE)
+		hud_index = weapon_definition_get(weapon_get(weapon_index)->definition_index)->weapon.interface_definition.hud_interface.index;
+	map_type_flags = global_scenario_get()->type != _scenario_type_main_menu;
+	SET_FLAG(map_type_flags, 1, local_player_count() == 1);
+	SET_FLAG(map_type_flags, 2, local_player_count() > 1);
+	n64_weapon_hud_sprites(hud_index, map_type_flags, crosshairs_only, crosshair,
+		get_crosshair_state(player->local_player_index)->states[_crosshair_state_zoom].value.reference_data, FALSE);
+	/* (every weapon the unit carries, held or not, and the vehicle's it fires:
+	their critical sprites marked, never given back for another's) */
+	for (i = 0; i < MAXIMUM_WEAPONS_PER_UNIT; i++)
+	{
+		long carried = unit_inventory_get_weapon(player->unit_index, i);
+
+		if (carried != NONE)
+			n64_weapon_hud_sprites(
+				weapon_definition_get(weapon_get(carried)->definition_index)->weapon.interface_definition.hud_interface.index,
+				map_type_flags, FALSE, crosshair, 0, TRUE);
+	}
+	if (weapon_index != NONE && weapon_index != own_weapon_index)
+		n64_weapon_hud_sprites(hud_index, map_type_flags, FALSE, crosshair, 0, TRUE);
+	/* (the grenades, as render_grenade_hud draws them: not for a vehicle's
+	driver or gunner, nor with a weapon of the unit's own that throws none) */
+	{
+		short grenade_type = unit_get_current_grenade_type(player->unit_index);
+		long grenade_hud = grenade_type == NONE ? NONE : TAG_BLOCK_GET_ELEMENT(
+			&scenario_get_game_globals()->grenades, grenade_type, struct game_globals_grenade)->hud_interface.index;
+		struct unit_datum *parent = unit_try_and_get(unit->object.parent_object_index);
+		boolean controls_parent = parent &&
+			(parent->unit.driver_object_index == player->unit_index || parent->unit.gunner_object_index == player->unit_index);
+
+		if (grenade_hud != NONE && unit->unit.current_grenade_index != NONE && !controls_parent &&
+			!weapon_prevents_grenade_throwing(own_weapon_index))
+		{
+			struct grenade_hud_interface_definition *grenades = grenade_hud_interface_definition_get(grenade_hud);
+
+			n64_load_panel_first(grenades->background.interface_bitmap.index,
+				grenades->background.sequence_index);
+			n64_load_panel_first(grenades->grenade_count_panel.background.interface_bitmap.index,
+				grenades->grenade_count_panel.background.sequence_index);
+			/* (the grenade type icon: frag or plasma) */
+			hud_draw_n64_load_overlays_first(&grenades->overlays, FALSE);
+		}
+	}
+}
+#endif
+
 static void crosshairs_draw(
 	struct player_datum *player,
 	long weapon_index,

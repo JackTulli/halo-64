@@ -29,16 +29,19 @@ is drawn as it goes, unrecorded, that frame.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "n64.h"
 
 #define MAXIMUM_SPRITES 256
-/* The PC maps' HUD: the meters' places by size and packed sprites
-(rom:/hud/<map>.subs) -- on the cartridges whose maps are the PC's (the
-PC Expansion's and the Custom Edition's), which draw the PC's meters and
-have HUD images larger than 256x256 for the converter to pack
-(tools/n64/hud.py). The Xbox maps -- the main, online and campaign
-cartridges' -- have none, and keep v0.6.6's HUD */
+/* The PC maps' HUD: packed sprites (rom:/hud/<map>.subs), the meters'
+places by size, the critical sprites first with a reserve on the heap and
+the arena -- on the cartridges whose maps have HUD images larger than
+256x256 for the converter to pack (tools/n64/hud.py): the PC Expansion's
+and the Custom Edition's (the PC's HUD bitmaps). The Xbox maps -- the
+main, online and campaign cartridges' -- have none, and no HUD sprite was
+refused there: their HUD is v0.6.6's */
 #if defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS)
 #define HUD_PACKING 1
 #else
@@ -46,6 +49,8 @@ cartridges' -- have none, and keep v0.6.6's HUD */
 #endif
 /* packed sprites a map may have (rom:/hud/<map>.subs) */
 #define MAXIMUM_PACKED_SPRITES 64
+/* (v0.6.6's meter slots, without HUD_PACKING) */
+#define METER_CACHE 12
 #define MAXIMUM_VIEWS 4
 #define HUD_INTERVAL 2
 /* the meters' textures: RGBA16, at most 128x32 (the part of a meter
@@ -56,8 +61,6 @@ most meter textures the player count's HUDs draw at once (meter_layout) */
 #define METER_SLOT_HEIGHT 32
 #define METER_BLOCK (12 * METER_SLOT_WIDTH * METER_SLOT_HEIGHT * 2)
 #define MAXIMUM_METER_PLACES 36
-/* (v0.6.6's meter slots, without HUD_PACKING) */
-#define METER_CACHE 12
 #define BLIP_SIZE 16
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -69,6 +72,21 @@ commands come in pieces that double in size (rdpq's up to ~16 KB), and the
 sprites and uploads it loads come out of it too */
 #define RECORDING_ROOM_PIECE (18 * 1024)
 #define RECORDING_ROOM_PIECES 3
+/* the heap a HUD sprite leaves free for the game besides its own bytes: for
+the HUD's critical sprites (hud_n64_load_critical_first) the most the game
+itself took in play with no HUD sprites at all, 27088 bytes (Death Island,
+one player, eight bots, 2400 game frames), and at least 15% more; for the
+rest of the HUD 8 KB more, so that a critical sprite asked for later finds
+room the rest did not take. Without that much after it, a sprite is left
+out, as without room -- except where a weapon's critical sprites take the
+memory of the weapon they replace (swap_critical) */
+#define HUD_HEAP_RESERVE (32 * 1024)
+#define HUD_HEAP_RESERVE_REST (40 * 1024)
+/* the HUD views after which a critical sprite left out is asked for again */
+#define HUD_RETRY_VIEWS_CRITICAL 4
+/* the HUD views after which a sprite left out for want of room is asked for
+again */
+#define HUD_RETRY_VIEWS 32
 
 /* the float helpers the quads need, inline: newlib's fminf and fmaxf asked
 __fpclassifyf about every argument, and floorf and ceilf were calls */
@@ -128,18 +146,74 @@ static struct
 	int point;
 	/* n64_hud_inset; -1 before it is first asked for */
 	int inset;
+#if HUD_PACKING
+	/* hud.views when each sprite was last left out for want of room (+1,
+	its low 16 bits; 0 never): asked for again HUD_RETRY_VIEWS views later */
+	unsigned short refused_at[MAXIMUM_SPRITES];
+	/* a view whose recording left a sprite out for want of room: drawn as it
+	goes the next time, where the sprite needs no recording's room */
+	unsigned char live_next[MAXIMUM_VIEWS];
+	/* the critical pass under way (n64_hud_critical_pass), its number (0 to
+	65534), and the pass each sprite was last asked for in (+1; 0
+	never): a sprite asked for in this pass or the views' last is critical, kept
+	with HUD_HEAP_RESERVE; the rest with HUD_HEAP_RESERVE_REST. The bytes
+	each sprite loaded into, or wants (a critical sprite this pass left out
+	for want of room: wanted); a swap under way (swap_critical), and
+	hud.views at the last that failed (+1; 0 none) */
+	int critical_pass;
+	unsigned short pass;
+	unsigned short asked[MAXIMUM_SPRITES];
+	unsigned short held[MAXIMUM_SPRITES]; /* in 16 bytes */
+	int wanted_count;
+	int swapping;
+	unsigned short swap_failed_at;
+	/* each sprite's SPRITE_ flags: wanted (above), loaded into the arena
+	(arena_load), decoration (the critical pass found it an outline or a
+	meter's frame: the owner's tiers, the first given back for a critical
+	one); and the sprite whose room in the arena the pass found taken by
+	sprites no longer critical (+1: a refill at the pass's end,
+	arena_refill) */
+	unsigned char flags[MAXIMUM_SPRITES];
+	int arena_refill;
+	/* the critical pass each sprite was last marked in as a sprite of a
+	weapon some player carries, held or not (+1; 0 never): never given back
+	for another critical sprite */
+	unsigned short carried[MAXIMUM_SPRITES];
 	/* rom:/hud/<map>.subs (tools/n64/hud.py pack): sprites cropped to one
 	sprite rectangle of a large image (in its half-size texels), and whether
 	an image has any */
-#if HUD_PACKING
 	struct { short image, sprite, s0, t0, s1, t1; } packed[MAXIMUM_PACKED_SPRITES];
 	int packed_count;
 	unsigned char has_packed[MAXIMUM_SPRITES];
 	/* the packed sprite an image is drawn from whole (the digits', the
 	motion sensor's: its box of what is not clear), +1; 0 none */
 	unsigned char whole[MAXIMUM_SPRITES];
-#endif
+} hud = {.inset = -1, .recording = -1};
+
+#define SPRITE_WANTED 1
+#define SPRITE_IN_ARENA 2
+#define SPRITE_DECORATION 4
+static inline int sprite_flag(int number, int flag) { return hud.flags[number] & flag; }
+static inline void sprite_set(int number, int flag) { hud.flags[number] |= (unsigned char)flag; }
+static inline void sprite_clear(int number, int flag) { hud.flags[number] &= (unsigned char)~flag; }
+/* the bytes a sprite holds or wants (hud.held, in 16 bytes) */
+static inline unsigned long held_bytes(int number) { return (unsigned long)hud.held[number] << 4; }
+static inline void set_held(int number, unsigned long bytes) { hud.held[number] = (unsigned short)((bytes + 15) >> 4); }
+/* a view whose recording left a sprite out: drawn live the next time */
+static inline int live_next_pending(int view) { return hud.live_next[view]; }
+static inline int live_next_take(int view)
+{
+	if (!hud.live_next[view])
+		return 0;
+	hud.live_next[view] = 0;
+	return 1;
+}
+#else
 } hud = {.inset = -1};
+
+#define live_next_pending(view) 0
+#define live_next_take(view) 0
+#endif
 
 /* A quad's texture upload was rdpq_tex_upload_sub's work on the CPU every
 time the HUD was recorded: the texture loader's plans and a dozen commands.
@@ -178,6 +252,18 @@ static unsigned long meter_bytes;
 /* a meter texture too large for the places by size: the 8 KB places for the
 rest of the map */
 static int meter_too_large;
+/* The arena: the meter block past the meter places with one, two or three
+players on a map whose large HUD images are packed (the PC maps) and the
+half-size sprites, where the HUD's critical sprites load (arena_load) --
+memory no game allocation takes, and none of the heap. With one player
+the places leave 55296 bytes, with two 49152, with three 24576 (a fourth
+player's places); the most the critical sprites need at once on the PC
+maps is 51074 bytes with one player (the sniper rifle zoomed: its reticle
+is 12 sprites), at most 40754 with two and 49674 with three (the players'
+own unit HUDs and weapons, shared sprites once): with three the arena
+holds what fits, the rest is drawn from the heap. Its
+start and end (cached addresses), and the top of what is loaded */
+static uint8_t *arena_start, *arena_end, *arena_top;
 
 /* The places by size: the most meter textures one player's HUD draws at
 once, over every weapon and every vehicle seat with every weapon it may
@@ -196,9 +282,11 @@ screen each is at most 4096 bytes, at most 3 of a player's are over
 the 12 places of 8 KB. 0: those; 1-4: the player count's */
 static int meter_layout(void)
 {
+	int arena = hud.packed_count > 0 && hud.view_count <= 3;
+
 	if (hud.wide || meter_too_large || hud.view_count < 1 || hud.view_count > 4)
 		return 0;
-	return hud.view_count;
+	return hud.view_count + (arena ? 8 : 0);
 }
 
 static void place_meters(int layout)
@@ -212,11 +300,12 @@ static void place_meters(int layout)
 		{2048, {0, 0, 12, 18, 24}},
 	};
 	uint8_t *at = meter_block;
+	int places = layout & 7;
 
 	meter_places = 0;
 	for (unsigned k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++)
 	{
-		for (int i = 0; i < kinds[k].count[layout] && meter_places < MAXIMUM_METER_PLACES; i++)
+		for (int i = 0; i < kinds[k].count[places] && meter_places < MAXIMUM_METER_PLACES; i++)
 		{
 			memset(&meters[meter_places], 0, sizeof(meters[0]));
 			meters[meter_places].sprite = -1;
@@ -228,6 +317,8 @@ static void place_meters(int layout)
 	}
 	meter_bytes = at - meter_block;
 	meter_layout_in_use = layout;
+	arena_start = arena_top = CachedAddr(meter_block + meter_bytes);
+	arena_end = layout & 8 ? CachedAddr(meter_block + METER_BLOCK) : arena_start;
 }
 #else
 static struct meter_entry
@@ -293,6 +384,8 @@ above the memory the next map's image wants in one piece, and before a new
 map's. The RSP and the RDP done with them first, their recordings freed
 before it returns */
 static void drop_made(void);
+static void check_layout(void);
+static int is_critical(int number);
 
 static void release_sprites(void)
 {
@@ -303,8 +396,17 @@ static void release_sprites(void)
 			sprite_free(hud.sprites[i]);
 		hud.sprites[i] = NULL;
 		hud.missing[i] = 0;
+		hud.refused_at[i] = 0;
 		hud.sprite_wide[i] = 0;
+		hud.asked[i] = 0;
+		hud.held[i] = 0;
+		hud.flags[i] = 0;
+		hud.carried[i] = 0;
 	}
+	memset(hud.live_next, 0, sizeof(hud.live_next));
+	hud.swap_failed_at = 0;
+	arena_top = arena_start;
+	hud.arena_refill = 0;
 	drop_made();
 }
 
@@ -335,6 +437,125 @@ static void drop_made(void)
 	rspq_wait();
 }
 
+/* drop_made in play -- a swap, an arena refill, a new meter layout: the
+RDP's output parked first (n64_render_park_rdp_output), so that no
+recording freed is still where the RSP writes (the map change's
+release_sprites frees them as v0.6.6 did) */
+static void drop_made_in_play(void)
+{
+	n64_render_park_rdp_output();
+	drop_made();
+}
+
+/* the arena's sprites from at up forgotten (they own no memory of the
+heap: sprite_load_buf), the top back to at; what was made from them given
+back first (drop_made). Laid out as meter places again, the arena's
+cache lines are written back and dropped (the places are written
+uncached) */
+static void forget_arena(uint8_t *at)
+{
+	for (int i = 0; i < MAXIMUM_SPRITES; i++)
+	{
+		if (!sprite_flag(i, SPRITE_IN_ARENA) || (uint8_t *)hud.sprites[i] < at)
+			continue;
+		hud.sprites[i] = NULL;
+		hud.sprite_wide[i] = 0;
+		hud.held[i] = 0;
+		sprite_clear(i, SPRITE_IN_ARENA);
+	}
+	if (arena_end > arena_start)
+		data_cache_hit_writeback_invalidate(at, arena_top - at);
+	arena_top = at;
+}
+
+/* a critical sprite of the half-size set loaded into the arena, where it
+fits: the asset's in-place buffer (asset_loadf_into: the compressed data
+read in at its end and unpacked over it), then sprite_load_buf over the
+same memory, which writes the data cache back for the RDP. 1 if loaded */
+static int arena_load(int number)
+{
+	char path[64];
+	int sz, size;
+	FILE *file;
+
+	if (arena_end <= arena_start || !hud.names || number >= hud.name_count || hud.wide)
+		return 0;
+	snprintf(path, sizeof(path), "rom:/hud/%.16s.sprite", hud.names + number * 16);
+	file = fopen(path, "rb");
+	if (!file)
+		return 0;
+	/* (sz in: the file's size, which the asset header is checked against) */
+	{
+		struct stat st;
+
+		sz = fstat(fileno(file), &st) == 0 ? (int)st.st_size : -1;
+	}
+	size = (int)(arena_end - arena_top);
+	if (sz <= 0 || !asset_loadf_into(file, &sz, arena_top, &size))
+	{
+		fclose(file);
+		return 0;
+	}
+	fclose(file);
+	/* (the sprite keeps its unpacked bytes, sz: the in-place margin past
+	them is free again) */
+	hud.sprites[number] = sprite_load_buf(arena_top, sz);
+	hud.sprite_wide[number] = 0;
+	sprite_set(number, SPRITE_IN_ARENA);
+	size = (sz + 15) & ~15;
+	set_held(number, (unsigned long)size);
+	arena_top += size;
+	return 1;
+}
+
+/* whether the arena holds a sprite no view's last pass asked for */
+static int arena_stale(void)
+{
+	for (int i = 0; i < MAXIMUM_SPRITES; i++)
+	{
+		if (sprite_flag(i, SPRITE_IN_ARENA) && !is_critical(i))
+			return 1;
+	}
+	return 0;
+}
+
+/* The arena refilled at the critical pass's end, where a critical sprite
+found no room in it while it held sprites no view's last pass asked for
+(a weapon's that was replaced): those from the lowest of them up are
+forgotten -- with the critical sprites above it -- and every critical
+sprite not loaded is loaded again, in number order. One that still does
+not fit is drawn from the heap (hud_sprite). The RSP and the RDP are done
+with what was made from them first (drop_made) */
+static void arena_refill(void)
+{
+	uint8_t *lowest = arena_top;
+	unsigned long start = TICKS_READ(), bytes = 0;
+	int forgotten = 0, loaded = 0, cause = hud.arena_refill - 1;
+
+	hud.arena_refill = 0;
+	for (int i = 0; i < MAXIMUM_SPRITES; i++)
+	{
+		if (sprite_flag(i, SPRITE_IN_ARENA) && !is_critical(i) && (uint8_t *)hud.sprites[i] < lowest)
+			lowest = (uint8_t *)hud.sprites[i];
+	}
+	if (lowest == arena_top)
+		return;
+	drop_made_in_play();
+	for (int i = 0; i < MAXIMUM_SPRITES; i++)
+		forgotten += sprite_flag(i, SPRITE_IN_ARENA) && (uint8_t *)hud.sprites[i] >= lowest;
+	forget_arena(lowest);
+	for (int i = 0; i < MAXIMUM_SPRITES; i++)
+	{
+		if (hud.sprites[i] || hud.missing[i] || !is_critical(i))
+			continue;
+		if (arena_load(i))
+			loaded++, bytes += held_bytes(i);
+	}
+	debugf("n64: HUD arena refill (s%d found no room): %d sprites forgotten, %d loaded (%lu B), %lu us\n", cause,
+		forgotten, loaded, bytes, (unsigned long)TICKS_TO_US(TICKS_READ() - start));
+}
+
+
 /* the meter places laid out again where the player count or the sprite set
 changed them (meter_layout): what was made from the old ones given back
 first, the RSP and the RDP done with it */
@@ -344,8 +565,205 @@ static void check_layout(void)
 
 	if (!meter_block || layout == meter_layout_in_use)
 		return;
-	drop_made();
+	drop_made_in_play();
+	forget_arena(arena_start);
 	place_meters(layout);
+}
+
+/* the passes since a mark was made (hud.pass + 1 then: 1 to 65535; the
+pass wraps at 65535, so that no mark is 0, "never") */
+static unsigned pass_age(unsigned short mark)
+{
+	unsigned now = hud.pass + 1u;
+
+	return now >= mark ? now - mark : now + 65535u - mark;
+}
+
+/* a sprite asked for in this critical pass or in one of the views' last
+(a pass a view) */
+static int is_critical(int number)
+{
+	return hud.asked[number] && pass_age(hud.asked[number]) <= (unsigned)(hud.view_count > 1 ? hud.view_count : 1);
+}
+
+/* a sprite of a weapon a player carries, marked in this critical pass or
+one of the views' last */
+static int is_carried(int number)
+{
+	return hud.carried[number] && pass_age(hud.carried[number]) <= (unsigned)(hud.view_count > 1 ? hud.view_count : 1);
+}
+
+static sprite_t *hud_sprite(int number);
+
+/* Critical sprites the heap has no room for (too few bytes over
+HUD_HEAP_RESERVE, or no piece large enough), while the HUD holds sprites
+of the heap that are not critical, take their memory: first those of
+weapons no player carries any more (critical once, asked for in none of
+the views' last passes, carried by none), then decoration, then the rest
+of the HUD (the owner's tiers), each tier in sprite number order, until
+they give the bytes wanted; never a
+sprite of a weapon a player carries, held or not. Those are given back and the new ones loaded in
+their place with no reserve -- the HUD then holds no more than it did,
+or no more than the heap has over HUD_HEAP_RESERVE. In a swap a sprite
+is loaded by swap_load, with no 1 KB margin, and no retry window holds
+it back (hud_sprite). If any new one does not load, the new ones are given
+back and the old ones loaded again, the largest first, and no swap is
+tried again for HUD_RETRY_VIEWS views. An old one loads again only where
+its piece and about 40 bytes beside it are free (memalign(16) asks malloc
+for the sprite + 32 bytes): where small allocations took the slack beside
+it, it stays out until it is asked for again (it is not critical). The RSP and the RDP are done
+with what was made from them first (drop_made_in_play) */
+static void swap_critical(void)
+{
+	unsigned char old[MAXIMUM_SPRITES];
+	unsigned long freed = 0, wanted = 0, free_bytes = n64_heap_free(), need;
+	int count = 0, loaded = 0, reloaded = 0, failed = 0;
+
+	for (int i = 0; i < MAXIMUM_SPRITES; i++)
+	{
+		old[i] = 0;
+		wanted += sprite_flag(i, SPRITE_WANTED) ? held_bytes(i) : 0;
+	}
+	need = wanted > (free_bytes > HUD_HEAP_RESERVE ? free_bytes - HUD_HEAP_RESERVE : 0) ?
+		wanted - (free_bytes > HUD_HEAP_RESERVE ? free_bytes - HUD_HEAP_RESERVE : 0) : 0;
+	/* (the heap's total has room, but a wanted sprite finds no piece of
+	it large enough: the need is all the bytes wanted) */
+	for (int i = 0; i < MAXIMUM_SPRITES && need < wanted; i++)
+	{
+		if (sprite_flag(i, SPRITE_WANTED) && !n64_heap_has(held_bytes(i)))
+			need = wanted;
+	}
+	for (int tier = 0; tier < 3 && freed < need; tier++)
+	{
+		for (int i = 0; i < MAXIMUM_SPRITES && freed < need; i++)
+		{
+			if (!hud.sprites[i] || sprite_flag(i, SPRITE_IN_ARENA | SPRITE_WANTED) || is_critical(i) || is_carried(i) ||
+				old[i] || (tier == 0 && !hud.asked[i]) ||
+				(tier == 1 && (hud.asked[i] || !sprite_flag(i, SPRITE_DECORATION))))
+				continue;
+			old[i] = 1;
+			freed += held_bytes(i);
+			count++;
+		}
+	}
+	if (!count || freed < need ||
+		(hud.swap_failed_at && (unsigned short)(hud.views + 1 - hud.swap_failed_at) < HUD_RETRY_VIEWS))
+		return;
+	rspq_wait();
+	drop_made_in_play();
+	for (int i = 0; i < MAXIMUM_SPRITES; i++)
+	{
+		if (!old[i])
+			continue;
+		sprite_free(hud.sprites[i]);
+		hud.sprites[i] = NULL;
+		hud.sprite_wide[i] = 0;
+	}
+	hud.swapping = 1;
+	for (int i = 0; i < MAXIMUM_SPRITES; i++)
+	{
+		if (!sprite_flag(i, SPRITE_WANTED))
+			continue;
+		hud.refused_at[i] = 0;
+		/* (a new one that loads is no longer wanted: old[i] = 3 marks it,
+		for the rollback) */
+		if (hud_sprite(i))
+		{
+			loaded++;
+			old[i] = 3;
+		}
+		else
+			failed = 1;
+	}
+	if (failed)
+	{
+		for (int i = 0; i < MAXIMUM_SPRITES; i++)
+		{
+			if (old[i] != 3 || !hud.sprites[i])
+				continue;
+			sprite_free(hud.sprites[i]);
+			hud.sprites[i] = NULL;
+			hud.sprite_wide[i] = 0;
+			hud.held[i] = 0;
+			hud.refused_at[i] = (unsigned short)(hud.views + 1);
+		}
+		/* the old ones loaded again (each keeps its bytes in hud.held until
+		then), the largest first, so that a smaller one does not take the
+		piece a larger one left; one that finds no room is left out */
+		for (int left = count; left > 0; left--)
+		{
+			int best = -1;
+
+			for (int i = 0; i < MAXIMUM_SPRITES; i++)
+			{
+				if (old[i] == 1 && (best < 0 || hud.held[i] > hud.held[best]))
+					best = i;
+			}
+			old[best] = 2;
+			if (hud_sprite(best))
+				reloaded++;
+			else
+				hud.held[best] = 0;
+		}
+		hud.swap_failed_at = (unsigned short)(hud.views + 1);
+	}
+	else
+	{
+		for (int i = 0; i < MAXIMUM_SPRITES; i++)
+		{
+			if (old[i] == 1)
+				hud.held[i] = 0;
+		}
+	}
+	hud.swapping = 0;
+	if (failed)
+		debugf("n64: HUD swap: %d sprites (%lu B) given back for %d (%lu B), %d loaded: %d of the %d old ones loaded again\n",
+			count, freed, hud.wanted_count, wanted, loaded, reloaded, count);
+	else
+		debugf("n64: HUD swap: %d sprites (%lu B) given back for %d (%lu B), %d loaded\n", count, freed, hud.wanted_count,
+			wanted, loaded);
+}
+
+/* (the critical pass, hud.c) the sprites asked for meanwhile are critical;
+at its end, those it left out for want of room swapped in for a replaced
+weapon's (swap_critical) */
+void n64_hud_critical_pass(int on)
+{
+	hud.critical_pass = on;
+	if (on)
+	{
+		check_layout();
+		if (++hud.pass == 65535)
+			hud.pass = 0;
+		return;
+	}
+	if (hud.arena_refill)
+		arena_refill();
+	if (hud.wanted_count)
+		swap_critical();
+	for (int i = 0; hud.wanted_count && i < MAXIMUM_SPRITES; i++)
+	{
+		if (sprite_flag(i, SPRITE_WANTED) && !hud.sprites[i])
+			hud.held[i] = 0;
+		sprite_clear(i, SPRITE_WANTED);
+	}
+	hud.wanted_count = 0;
+}
+
+void n64_hud_release(void)
+{
+	release_sprites();
+	free(hud.names);
+	hud.names = NULL;
+	hud.name_count = 0;
+	free(hud.wide_names);
+	hud.wide_names = NULL;
+	hud.wide_name_count = 0;
+	hud.wide_bytes = 0;
+	hud.wide = 0;
+	hud.packed_count = 0;
+	memset(hud.has_packed, 0, sizeof(hud.has_packed));
+	memset(hud.whole, 0, sizeof(hud.whole));
 }
 #else
 /* what the HUD keeps from its first map on -- the meters' texture slots
@@ -411,12 +829,6 @@ static void release_sprites(void)
 	rspq_wait();
 }
 
-/* (the meter places by size: the PC maps' cartridges only) */
-static inline void check_layout(void)
-{
-}
-#endif
-
 void n64_hud_release(void)
 {
 	release_sprites();
@@ -428,12 +840,13 @@ void n64_hud_release(void)
 	hud.wide_name_count = 0;
 	hud.wide_bytes = 0;
 	hud.wide = 0;
-#if HUD_PACKING
-	hud.packed_count = 0;
-	memset(hud.has_packed, 0, sizeof(hud.has_packed));
-	memset(hud.whole, 0, sizeof(hud.whole));
-#endif
 }
+
+/* (the meter places by size: the PC maps' cartridges only) */
+static inline void check_layout(void)
+{
+}
+#endif
 
 /* a list of sprite names (16 characters a line) read into names; the
 count. A first line "#<bytes>" (the full-width set's) into bytes */
@@ -504,6 +917,7 @@ static int packed_sprite(int number, float s0, float t0, float s1, float t1)
 	}
 	return -1;
 }
+
 void n64_hud_set_map(const char *map_name)
 {
 	n64_hud_release();
@@ -607,6 +1021,244 @@ static unsigned long sprite_bytes(FILE *file)
 	return (unsigned long)ftell(file);
 }
 
+#if HUD_PACKING
+/* a sprite loaded in a swap (swap_critical), or in the critical pass where
+only the 1 KB margin keeps it out (hud_sprite): its buffer allocated first,
+of the size the asset says it needs (asset_loadf_into with no buffer),
+then the file read into it, as the arena's (arena_load); the sprite owns
+the buffer, as sprite_load's. memalign answers NULL where the heap has no
+piece for it -- asset_load would stop the game -- so no margin is kept
+for it; memalign(16) itself asks malloc for the sprite + 32 bytes. No
+stdio buffer: the file is not read through it. NULL where there is no
+room */
+static sprite_t *swap_load(const char *path)
+{
+	FILE *file = fopen(path, "rb");
+	struct stat st;
+	int sz, size = 0;
+	void *buf = NULL;
+	sprite_t *sprite = NULL;
+
+	if (!file)
+		return NULL;
+	sz = fstat(fileno(file), &st) == 0 ? (int)st.st_size : -1;
+	if (sz > 0 && !asset_loadf_into(file, &sz, NULL, &size) && size > 0 && (buf = memalign(16, size)) &&
+		lseek(fileno(file), 0, SEEK_SET) == 0 && asset_loadf_into(file, &sz, buf, &size))
+	{
+		sprite = sprite_load_buf(buf, sz);
+		if ((void *)sprite != buf)
+			free(buf);
+		else
+			sprite->flags |= SPRITE_FLAGS_OWNEDBUFFER;
+	}
+	else if (buf)
+		free(buf);
+	fclose(file);
+	return sprite;
+}
+
+static sprite_t *hud_sprite(int number)
+{
+	char path[64];
+
+	if (number < 0 || number >= MAXIMUM_SPRITES || hud.missing[number])
+		return NULL;
+	/* (a sprite left out for want of room as the HUD was drawn live is
+	asked for again only HUD_RETRY_VIEWS views later: each ask opens its
+	files and walks the heap's totals; one left out while a recording was
+	made, at its view's next drawing, live) */
+	if (hud.critical_pass)
+		hud.asked[number] = (unsigned short)(hud.pass + 1);
+	if (!hud.sprites[number] && hud.refused_at[number] && !hud.swapping &&
+		(unsigned short)(hud.views + 1 - hud.refused_at[number]) <
+		(hud.critical_pass ? HUD_RETRY_VIEWS_CRITICAL : HUD_RETRY_VIEWS))
+		return NULL;
+	/* (a critical sprite asked for in the critical pass, outside a
+	recording: the arena's, where it fits; where sprites no longer critical
+	hold its room, loaded at the pass's end (arena_refill); else the heap's) */
+	if (!hud.sprites[number] && hud.critical_pass && hud.recording < 0 && arena_end > arena_start)
+	{
+		if (arena_load(number))
+			return hud.sprites[number];
+		if (arena_stale())
+		{
+			if (!hud.arena_refill)
+				hud.arena_refill = number + 1;
+			return NULL;
+		}
+	}
+	if (!hud.sprites[number])
+	{
+		int found = 0, critical = is_critical(number);
+
+		/* the full-width set's sprite where it is in use, else -- or
+		without room for it -- the half-size set's */
+		for (int wide = hud.wide; wide >= 0 && !hud.sprites[number]; wide--)
+		{
+			const char *names = wide ? hud.wide_names : hud.names;
+			FILE *file;
+			unsigned long bytes, reserve;
+			int room, exact;
+
+			if (!names || number >= (wide ? hud.wide_name_count : hud.name_count))
+				continue;
+			snprintf(path, sizeof(path), "rom:/hud/%.16s.sprite", names + number * 16);
+			file = fopen(path, "rb");
+			if (!file)
+				continue;
+			found = 1;
+			/* (asset_load doesn't check its allocation: the sprite's room
+			is looked for first, its quads left out until there is some --
+			and the room a recording began with kept for it: its chunks are
+			made as it goes; and HUD_HEAP_RESERVE left on the heap besides
+			the sprite. In a swap the file is closed first -- its stdio buffer
+			(1 KB, from sprite_bytes' read) can sit in the very piece a sprite
+			given back left -- and the sprite is loaded by swap_load, whose
+			own allocation is the check. So is a critical sprite asked for in
+			the critical pass, outside a recording, that the heap's free bytes
+			have room for over the reserve where no piece of its size + 1 KB
+			is free: the 1 KB is for asset_load's unchecked allocation) */
+			bytes = sprite_bytes(file) + 1024;
+			if (hud.swapping)
+			{
+				fclose(file);
+				file = NULL;
+			}
+			reserve = critical ? HUD_HEAP_RESERVE : HUD_HEAP_RESERVE_REST;
+			room = hud.swapping ? hud.recording < 0 :
+				n64_heap_has(bytes + (hud.recording >= 0 ? RECORDING_ROOM_PIECE * RECORDING_ROOM_PIECES : 0)) &&
+				n64_heap_free() >= bytes + reserve;
+			exact = !room && !hud.swapping && critical && hud.critical_pass && hud.recording < 0 &&
+				n64_heap_free() >= bytes + reserve;
+			if (file)
+				fclose(file);
+			if (exact)
+				room = (hud.sprites[number] = swap_load(path)) != NULL;
+			/* (a critical sprite left out in the critical pass, outside a
+			recording: wanted, for swap_critical at the pass's end) */
+			if (!room && critical && hud.critical_pass && hud.recording < 0 && !sprite_flag(number, SPRITE_WANTED) &&
+				!hud.swapping)
+			{
+				sprite_set(number, SPRITE_WANTED);
+				hud.wanted_count++;
+				set_held(number, bytes);
+			}
+			if (!room)
+				continue;
+			if (!hud.sprites[number])
+				hud.sprites[number] = hud.swapping ? swap_load(path) : sprite_load(path);
+			hud.sprite_wide[number] = wide && hud.sprites[number];
+			set_held(number, hud.sprites[number] ? bytes : 0);
+			if (hud.sprites[number])
+				hud.refused_at[number] = 0;
+		}
+		if (!found)
+		{
+			hud.missing[number] = 1;
+			return NULL;
+		}
+		if (hud.sprites[number] && sprite_flag(number, SPRITE_WANTED))
+		{
+			sprite_clear(number, SPRITE_WANTED);
+			hud.wanted_count--;
+		}
+		if (!hud.sprites[number] && hud.recording >= 0 && hud.recording < MAXIMUM_VIEWS)
+			hud.live_next[hud.recording] = 1;
+		else if (!hud.sprites[number])
+			hud.refused_at[number] = (unsigned short)(hud.views + 1);
+		if (hud.sprites[number] && n64_debug_flag("debug_hud_sprites"))
+			debugf("hud sprite %d: %dx%d format %d%s\n", number, hud.sprites[number]->width,
+				hud.sprites[number]->height, (int)sprite_get_format(hud.sprites[number]),
+				hud.sprite_wide[number] ? " (full width)" : "");
+	}
+	return hud.sprites[number];
+}
+
+/* Acquire through the existing per-map shared cache. A successful
+   preflight and subsequent draw reuse one sprite allocation and owner. */
+int n64_hud_ensure_sprite(int number)
+{
+	/* (an image drawn whole from its packed box: that sprite) */
+	if (number >= 0 && number < MAXIMUM_SPRITES && hud.whole[number])
+		number = hud.packed[hud.whole[number] - 1].sprite;
+	return hud_sprite(number) != NULL;
+}
+
+/* the sprite a quad of image number at its half-size texel (s, t) draws
+from -- the packed sprite holding the point, where there is one -- loaded
+where there is room (the HUD's critical sprites, hud.c) */
+int n64_hud_ensure_sprite_at(int number, float s, float t)
+{
+	int packed = packed_sprite(number, s, t, s, t);
+
+	return packed >= 0 ? hud_sprite(hud.packed[packed].sprite) != NULL : n64_hud_ensure_sprite(number);
+}
+
+/* the sprite a quad of image number at (s, t) draws from marked a carried
+weapon's (the critical pass: swap_critical never gives it back) */
+void n64_hud_mark_carried_at(int number, float s, float t)
+{
+	int packed = packed_sprite(number, s, t, s, t);
+
+	if (packed >= 0)
+		number = hud.packed[packed].sprite;
+	else if (number >= 0 && number < MAXIMUM_SPRITES && hud.whole[number])
+		number = hud.packed[hud.whole[number] - 1].sprite;
+	if (number >= 0 && number < MAXIMUM_SPRITES)
+		hud.carried[number] = (unsigned short)(hud.pass + 1);
+}
+
+/* the sprite a quad of image number at (s, t) draws from marked decoration
+(the critical pass: swap_critical gives it back first) */
+void n64_hud_mark_decoration_at(int number, float s, float t)
+{
+	int packed = packed_sprite(number, s, t, s, t);
+
+	if (packed >= 0)
+		number = hud.packed[packed].sprite;
+	else if (number >= 0 && number < MAXIMUM_SPRITES && hud.whole[number])
+		number = hud.packed[hud.whole[number] - 1].sprite;
+	if (number >= 0 && number < MAXIMUM_SPRITES)
+		sprite_set(number, SPRITE_DECORATION);
+}
+
+/* a quad drawn upright, its texels along its edges (s across, t down) */
+static int axis_aligned(const struct n64_hud_quad *q)
+{
+	return fabsf(q->y[0] - q->y[1]) < 0.5f && fabsf(q->y[2] - q->y[3]) < 0.5f &&
+		fabsf(q->x[0] - q->x[3]) < 0.5f && fabsf(q->x[1] - q->x[2]) < 0.5f &&
+		fabsf(q->s[0] - q->s[3]) < 0.01f && fabsf(q->s[1] - q->s[2]) < 0.01f &&
+		fabsf(q->t[0] - q->t[1]) < 0.01f && fabsf(q->t[2] - q->t[3]) < 0.01f &&
+		fabsf(q->s[1] - q->s[0]) > 0.01f && fabsf(q->t[3] - q->t[0]) > 0.01f;
+}
+
+/* an axis-aligned quad cut to the texels s0..s1, t0..t1 of its image, in
+those texels' own (from s0, t0); 0 where none of it is inside */
+static int cut_quad(const struct n64_hud_quad *in, struct n64_hud_quad *out, float s0, float t0, float s1, float t1)
+{
+	float sa = in->s[0], sb = in->s[1], ta = in->t[0], tb = in->t[3];
+	float slo = max_f(min_f(sa, sb), s0), shi = min_f(max_f(sa, sb), s1);
+	float tlo = max_f(min_f(ta, tb), t0), thi = min_f(max_f(ta, tb), t1);
+	float na, nb, ma, mb;
+
+	if (shi <= slo || thi <= tlo)
+		return 0;
+	na = sa < sb ? slo : shi;
+	nb = sa < sb ? shi : slo;
+	ma = ta < tb ? tlo : thi;
+	mb = ta < tb ? thi : tlo;
+	*out = *in;
+	out->x[0] = out->x[3] = in->x[0] + (na - sa) / (sb - sa) * (in->x[1] - in->x[0]);
+	out->x[1] = out->x[2] = in->x[0] + (nb - sa) / (sb - sa) * (in->x[1] - in->x[0]);
+	out->y[0] = out->y[1] = in->y[0] + (ma - ta) / (tb - ta) * (in->y[3] - in->y[0]);
+	out->y[2] = out->y[3] = in->y[0] + (mb - ta) / (tb - ta) * (in->y[3] - in->y[0]);
+	out->s[0] = out->s[3] = na - s0;
+	out->s[1] = out->s[2] = nb - s0;
+	out->t[0] = out->t[1] = ma - t0;
+	out->t[2] = out->t[3] = mb - t0;
+	return 1;
+}
+#else
 static sprite_t *hud_sprite(int number)
 {
 	char path[64];
@@ -661,66 +1313,7 @@ static sprite_t *hud_sprite(int number)
    preflight and subsequent draw reuse one sprite allocation and owner. */
 int n64_hud_ensure_sprite(int number)
 {
-#if HUD_PACKING
-	/* (an image drawn whole from its packed box: that sprite) */
-	if (number >= 0 && number < MAXIMUM_SPRITES && hud.whole[number])
-		number = hud.packed[hud.whole[number] - 1].sprite;
-#endif
 	return hud_sprite(number) != NULL;
-}
-
-/* the sprite a quad of image number at its half-size texel (s, t) draws
-from -- the packed sprite holding the point, where there is one -- loaded
-where there is room (the HUD's critical sprites, hud.c) */
-int n64_hud_ensure_sprite_at(int number, float s, float t)
-{
-#if HUD_PACKING
-	int packed = packed_sprite(number, s, t, s, t);
-
-	return packed >= 0 ? hud_sprite(hud.packed[packed].sprite) != NULL : n64_hud_ensure_sprite(number);
-#else
-	(void)s;
-	(void)t;
-	return n64_hud_ensure_sprite(number);
-#endif
-}
-
-#if HUD_PACKING
-/* a quad drawn upright, its texels along its edges (s across, t down) */
-static int axis_aligned(const struct n64_hud_quad *q)
-{
-	return fabsf(q->y[0] - q->y[1]) < 0.5f && fabsf(q->y[2] - q->y[3]) < 0.5f &&
-		fabsf(q->x[0] - q->x[3]) < 0.5f && fabsf(q->x[1] - q->x[2]) < 0.5f &&
-		fabsf(q->s[0] - q->s[3]) < 0.01f && fabsf(q->s[1] - q->s[2]) < 0.01f &&
-		fabsf(q->t[0] - q->t[1]) < 0.01f && fabsf(q->t[2] - q->t[3]) < 0.01f &&
-		fabsf(q->s[1] - q->s[0]) > 0.01f && fabsf(q->t[3] - q->t[0]) > 0.01f;
-}
-
-/* an axis-aligned quad cut to the texels s0..s1, t0..t1 of its image, in
-those texels' own (from s0, t0); 0 where none of it is inside */
-static int cut_quad(const struct n64_hud_quad *in, struct n64_hud_quad *out, float s0, float t0, float s1, float t1)
-{
-	float sa = in->s[0], sb = in->s[1], ta = in->t[0], tb = in->t[3];
-	float slo = max_f(min_f(sa, sb), s0), shi = min_f(max_f(sa, sb), s1);
-	float tlo = max_f(min_f(ta, tb), t0), thi = min_f(max_f(ta, tb), t1);
-	float na, nb, ma, mb;
-
-	if (shi <= slo || thi <= tlo)
-		return 0;
-	na = sa < sb ? slo : shi;
-	nb = sa < sb ? shi : slo;
-	ma = ta < tb ? tlo : thi;
-	mb = ta < tb ? thi : tlo;
-	*out = *in;
-	out->x[0] = out->x[3] = in->x[0] + (na - sa) / (sb - sa) * (in->x[1] - in->x[0]);
-	out->x[1] = out->x[2] = in->x[0] + (nb - sa) / (sb - sa) * (in->x[1] - in->x[0]);
-	out->y[0] = out->y[1] = in->y[0] + (ma - ta) / (tb - ta) * (in->y[3] - in->y[0]);
-	out->y[2] = out->y[3] = in->y[0] + (mb - ta) / (tb - ta) * (in->y[3] - in->y[0]);
-	out->s[0] = out->s[3] = na - s0;
-	out->s[1] = out->s[2] = nb - s0;
-	out->t[0] = out->t[1] = ma - t0;
-	out->t[2] = out->t[3] = mb - t0;
-	return 1;
 }
 #endif
 
@@ -798,7 +1391,10 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 		int interval = n64_golden_selected(view) ? 1 : hud.view_count > 2 ? 6 : hud.view_count == 2 ? 3 : HUD_INTERVAL;
 		int turn = hud.view_count > 0 ? view * interval / hud.view_count : view;
 
-		if (hud.recordings[view] && (hud.view_frames[view]++ + turn) % interval)
+		/* (a view drawn live for live_next keeps its turn) */
+		if (hud.recordings[view] && live_next_pending(view))
+			hud.view_frames[view]++;
+		if (hud.recordings[view] && !live_next_pending(view) && (hud.view_frames[view]++ + turn) % interval)
 			return 0;
 	}
 	/* the view's last recording let go first (its memory back once the RSP
@@ -815,7 +1411,9 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 	}
 	hud.dump = hud.views == 600 || hud.views == 601;
 	n64_profile_zone = 1;
-	if (n64_render_make_room(RECORDING_ROOM_PIECE, RECORDING_ROOM_PIECES))
+	if (live_next_take(view))
+		hud.live = 1;
+	else if (n64_render_make_room(RECORDING_ROOM_PIECE, RECORDING_ROOM_PIECES))
 	{
 		hud.recording = view;
 		rspq_block_begin();
