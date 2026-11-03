@@ -33,15 +33,19 @@ is drawn as it goes, unrecorded, that frame.
 #include "n64.h"
 
 #define MAXIMUM_SPRITES 256
-/* The PC maps' HUD: the meters' places by size -- on the cartridges whose
-maps are the PC's (the PC Expansion's and the Custom Edition's), which
-draw the PC's meters. The Xbox maps -- the main, online and campaign
-cartridges' -- keep v0.6.6's 12 slots */
+/* The PC maps' HUD: the meters' places by size and packed sprites
+(rom:/hud/<map>.subs) -- on the cartridges whose maps are the PC's (the
+PC Expansion's and the Custom Edition's), which draw the PC's meters and
+have HUD images larger than 256x256 for the converter to pack
+(tools/n64/hud.py). The Xbox maps -- the main, online and campaign
+cartridges' -- have none, and keep v0.6.6's HUD */
 #if defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS)
 #define HUD_PACKING 1
 #else
 #define HUD_PACKING 0
 #endif
+/* packed sprites a map may have (rom:/hud/<map>.subs) */
+#define MAXIMUM_PACKED_SPRITES 64
 #define MAXIMUM_VIEWS 4
 #define HUD_INTERVAL 2
 /* the meters' textures: RGBA16, at most 128x32 (the part of a meter
@@ -124,6 +128,17 @@ static struct
 	int point;
 	/* n64_hud_inset; -1 before it is first asked for */
 	int inset;
+	/* rom:/hud/<map>.subs (tools/n64/hud.py pack): sprites cropped to one
+	sprite rectangle of a large image (in its half-size texels), and whether
+	an image has any */
+#if HUD_PACKING
+	struct { short image, sprite, s0, t0, s1, t1; } packed[MAXIMUM_PACKED_SPRITES];
+	int packed_count;
+	unsigned char has_packed[MAXIMUM_SPRITES];
+	/* the packed sprite an image is drawn from whole (the digits', the
+	motion sensor's: its box of what is not clear), +1; 0 none */
+	unsigned char whole[MAXIMUM_SPRITES];
+#endif
 } hud = {.inset = -1};
 
 /* A quad's texture upload was rdpq_tex_upload_sub's work on the CPU every
@@ -413,6 +428,11 @@ void n64_hud_release(void)
 	hud.wide_name_count = 0;
 	hud.wide_bytes = 0;
 	hud.wide = 0;
+#if HUD_PACKING
+	hud.packed_count = 0;
+	memset(hud.has_packed, 0, sizeof(hud.has_packed));
+	memset(hud.whole, 0, sizeof(hud.whole));
+#endif
 }
 
 /* a list of sprite names (16 characters a line) read into names; the
@@ -439,6 +459,51 @@ static int read_list(const char *path, char **names, unsigned long *bytes)
 }
 
 #if HUD_PACKING
+/* the packed sprites (hud.packed), a line "<image> <sprite> <s0> <t0> <s1>
+<t1> [<whole>]" each, where the map has them */
+static void read_packed(const char *path)
+{
+	char line[64];
+	FILE *file = fopen(path, "r");
+
+	while (file && hud.packed_count < MAXIMUM_PACKED_SPRITES && fgets(line, sizeof(line), file))
+	{
+		int image, sprite, s0, t0, s1, t1, whole = 0;
+
+		if (sscanf(line, "%d %d %d %d %d %d %d", &image, &sprite, &s0, &t0, &s1, &t1, &whole) < 6 ||
+			image < 0 || image >= hud.name_count || sprite < 0 || sprite >= hud.name_count ||
+			s1 <= s0 || t1 <= t0)
+			continue;
+		hud.packed[hud.packed_count].image = image;
+		hud.packed[hud.packed_count].sprite = sprite;
+		hud.packed[hud.packed_count].s0 = s0;
+		hud.packed[hud.packed_count].t0 = t0;
+		hud.packed[hud.packed_count].s1 = s1;
+		hud.packed[hud.packed_count].t1 = t1;
+		hud.packed_count++;
+		hud.has_packed[image] = 1;
+		if (whole)
+			hud.whole[image] = (unsigned char)hud.packed_count;
+	}
+	if (file)
+		fclose(file);
+}
+
+/* the packed sprite of image number holding its half-size texels s0..s1,
+t0..t1, or -1 */
+static int packed_sprite(int number, float s0, float t0, float s1, float t1)
+{
+	if (number < 0 || number >= MAXIMUM_SPRITES || !hud.has_packed[number])
+		return -1;
+	for (int i = 0; i < hud.packed_count; i++)
+	{
+		if (hud.packed[i].image == number &&
+			s0 >= hud.packed[i].s0 - 0.01f && s1 <= hud.packed[i].s1 + 0.01f &&
+			t0 >= hud.packed[i].t0 - 0.01f && t1 <= hud.packed[i].t1 + 0.01f)
+			return i;
+	}
+	return -1;
+}
 void n64_hud_set_map(const char *map_name)
 {
 	n64_hud_release();
@@ -458,6 +523,8 @@ void n64_hud_set_map(const char *map_name)
 
 		snprintf(path, sizeof(path), "rom:/hud/%s.list", map_name);
 		hud.name_count = read_list(path, &hud.names, NULL);
+		snprintf(path, sizeof(path), "rom:/hud/%s.subs", map_name);
+		read_packed(path);
 	}
 }
 #else
@@ -594,8 +661,68 @@ static sprite_t *hud_sprite(int number)
    preflight and subsequent draw reuse one sprite allocation and owner. */
 int n64_hud_ensure_sprite(int number)
 {
+#if HUD_PACKING
+	/* (an image drawn whole from its packed box: that sprite) */
+	if (number >= 0 && number < MAXIMUM_SPRITES && hud.whole[number])
+		number = hud.packed[hud.whole[number] - 1].sprite;
+#endif
 	return hud_sprite(number) != NULL;
 }
+
+/* the sprite a quad of image number at its half-size texel (s, t) draws
+from -- the packed sprite holding the point, where there is one -- loaded
+where there is room (the HUD's critical sprites, hud.c) */
+int n64_hud_ensure_sprite_at(int number, float s, float t)
+{
+#if HUD_PACKING
+	int packed = packed_sprite(number, s, t, s, t);
+
+	return packed >= 0 ? hud_sprite(hud.packed[packed].sprite) != NULL : n64_hud_ensure_sprite(number);
+#else
+	(void)s;
+	(void)t;
+	return n64_hud_ensure_sprite(number);
+#endif
+}
+
+#if HUD_PACKING
+/* a quad drawn upright, its texels along its edges (s across, t down) */
+static int axis_aligned(const struct n64_hud_quad *q)
+{
+	return fabsf(q->y[0] - q->y[1]) < 0.5f && fabsf(q->y[2] - q->y[3]) < 0.5f &&
+		fabsf(q->x[0] - q->x[3]) < 0.5f && fabsf(q->x[1] - q->x[2]) < 0.5f &&
+		fabsf(q->s[0] - q->s[3]) < 0.01f && fabsf(q->s[1] - q->s[2]) < 0.01f &&
+		fabsf(q->t[0] - q->t[1]) < 0.01f && fabsf(q->t[2] - q->t[3]) < 0.01f &&
+		fabsf(q->s[1] - q->s[0]) > 0.01f && fabsf(q->t[3] - q->t[0]) > 0.01f;
+}
+
+/* an axis-aligned quad cut to the texels s0..s1, t0..t1 of its image, in
+those texels' own (from s0, t0); 0 where none of it is inside */
+static int cut_quad(const struct n64_hud_quad *in, struct n64_hud_quad *out, float s0, float t0, float s1, float t1)
+{
+	float sa = in->s[0], sb = in->s[1], ta = in->t[0], tb = in->t[3];
+	float slo = max_f(min_f(sa, sb), s0), shi = min_f(max_f(sa, sb), s1);
+	float tlo = max_f(min_f(ta, tb), t0), thi = min_f(max_f(ta, tb), t1);
+	float na, nb, ma, mb;
+
+	if (shi <= slo || thi <= tlo)
+		return 0;
+	na = sa < sb ? slo : shi;
+	nb = sa < sb ? shi : slo;
+	ma = ta < tb ? tlo : thi;
+	mb = ta < tb ? thi : tlo;
+	*out = *in;
+	out->x[0] = out->x[3] = in->x[0] + (na - sa) / (sb - sa) * (in->x[1] - in->x[0]);
+	out->x[1] = out->x[2] = in->x[0] + (nb - sa) / (sb - sa) * (in->x[1] - in->x[0]);
+	out->y[0] = out->y[1] = in->y[0] + (ma - ta) / (tb - ta) * (in->y[3] - in->y[0]);
+	out->y[2] = out->y[3] = in->y[0] + (mb - ta) / (tb - ta) * (in->y[3] - in->y[0]);
+	out->s[0] = out->s[3] = na - s0;
+	out->s[1] = out->s[2] = nb - s0;
+	out->t[0] = out->t[1] = ma - t0;
+	out->t[2] = out->t[3] = mb - t0;
+	return 1;
+}
+#endif
 
 void n64_render_hud_phase(void);
 
@@ -1105,6 +1232,40 @@ static void draw_rotated(const struct n64_hud_quad *quad, const surface_t *surfa
 
 void n64_hud_quad(const struct n64_hud_quad *in)
 {
+#if HUD_PACKING
+	struct n64_hud_quad cropped;
+	int packed = in->sprite >= 0 && in->sprite < MAXIMUM_SPRITES && hud.has_packed[in->sprite] ?
+		packed_sprite(in->sprite,
+			min_f(min_f(in->s[0], in->s[1]), min_f(in->s[2], in->s[3])),
+			min_f(min_f(in->t[0], in->t[1]), min_f(in->t[2], in->t[3])),
+			max_f(max_f(in->s[0], in->s[1]), max_f(in->s[2], in->s[3])),
+			max_f(max_f(in->t[0], in->t[1]), max_f(in->t[2], in->t[3]))) : -1;
+
+	/* (a quad inside a packed sprite's rectangle drawn from it, in its own
+	texels) */
+	if (packed >= 0)
+	{
+		cropped = *in;
+		cropped.sprite = hud.packed[packed].sprite;
+		for (int i = 0; i < 4; i++)
+		{
+			cropped.s[i] -= hud.packed[packed].s0;
+			cropped.t[i] -= hud.packed[packed].t0;
+		}
+		in = &cropped;
+	}
+	/* (an image drawn whole from its packed box: an upright quad cut to the
+	box, the rest of it clear; a turned one from the image's own sprite) */
+	else if (in->sprite >= 0 && in->sprite < MAXIMUM_SPRITES && hud.whole[in->sprite] && axis_aligned(in))
+	{
+		int box = hud.whole[in->sprite] - 1;
+
+		if (!cut_quad(in, &cropped, hud.packed[box].s0, hud.packed[box].t0, hud.packed[box].s1, hud.packed[box].t1))
+			return;
+		cropped.sprite = hud.packed[box].sprite;
+		in = &cropped;
+	}
+#endif
 	sprite_t *sprite = hud_sprite(in->sprite);
 	unsigned long start = TICKS_READ();
 	const struct n64_hud_quad *quad = in;
