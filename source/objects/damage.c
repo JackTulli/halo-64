@@ -2092,13 +2092,20 @@ static long get_player_index_from_object_or_parents(
 
 	while (object_index != NONE)
 	{
+		/* (an owner -- a projectile's, kept after the object that fired it
+		is gone -- or its parent that is no longer an object: no player. On
+		the N64, object_get of such an index reads through NULL) */
+		struct object_datum *object = object_try_and_get(object_index);
+
+		if (!object)
+			break;
 		if (unit_try_and_get(object_index))
 		{
 			player_index = player_index_from_unit_index(object_index);
 			break;
 		}
 
-		object_index = object_get(object_index)->object.parent_object_index;
+		object_index = object->object.parent_object_index;
 	}
 
 	return player_index;
