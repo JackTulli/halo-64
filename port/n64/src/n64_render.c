@@ -14,6 +14,8 @@ units" everything here is drawn in), already lit.
 #include <malloc.h>
 #include <math.h>
 #include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <rspq_constants.h>
 #include <stdio.h>
 #include <string.h>
@@ -423,6 +425,9 @@ struct loaded_model
 	unsigned long last_drawn;
 	/* the frame it was last drawn in a first-person view (0: never) */
 	unsigned long first_person_drawn;
+	/* the frame + 1 in which one of its textures found no room (0: none):
+	load_model does not try it again in that frame */
+	unsigned long texture_refused;
 };
 
 static struct
@@ -451,6 +456,8 @@ static struct
 	struct model_record **by_tag;
 	int tag_count;
 	unsigned long reads, texture_reads;
+	/* model loads refused for want of room for a texture (load_model) */
+	unsigned long texture_refusals;
 	/* by batch: the batches alike from it on (RUN_LENGTH) and whether a run
 	starts there (RUN_HEAD) -- see mark_batch_runs */
 	uint8_t *runs;
@@ -1775,6 +1782,48 @@ void n64_render_initialize(void)
 	}
 }
 
+/* a model texture's sprite, its buffer allocated first, of the size the
+asset needs (asset_loadf_into with no buffer): memalign answers NULL where
+the heap has no piece for it, where sprite_load (asset_load) would stop the
+game. The buffer is aligned to 32 bytes, as asset_load aligns it, so the
+heap is laid out as with sprite_load. The sprite owns the buffer, as
+sprite_load's. NULL: no room for the buffer. A file that is missing or
+cannot be read stops the game, as with sprite_load */
+static sprite_t *load_texture_checked(const char *path)
+{
+	FILE *file = fopen(path, "rb");
+	struct stat st;
+	int sz, size = 0;
+	void *buf;
+	sprite_t *sprite;
+	int ok;
+
+	/* (the calls outside assertf, which is empty under NDEBUG) */
+	assertf(file, "File not found: %s", path);
+	ok = fstat(fileno(file), &st) == 0 && st.st_size > 0;
+	assertf(ok, "Cannot read %s", path);
+	sz = (int)st.st_size;
+	asset_loadf_into(file, &sz, NULL, &size);
+	assertf(size > 0, "Not an asset: %s", path);
+	buf = memalign(32, size);
+	if (!buf)
+	{
+		fclose(file);
+		return NULL;
+	}
+	ok = lseek(fileno(file), 0, SEEK_SET) == 0;
+	ok = ok && asset_loadf_into(file, &sz, buf, &size);
+	assertf(ok, "Cannot read %s", path);
+	(void)ok;
+	fclose(file);
+	sprite = sprite_load_buf(buf, sz);
+	if ((void *)sprite != buf)
+		free(buf);
+	else
+		sprite->flags |= SPRITE_FLAGS_OWNEDBUFFER;
+	return sprite;
+}
+
 /* a model texture: read when a model that uses it is loaded, freed (once
 the RSP is done with it) when the last such model is dropped */
 static sprite_t *acquire_texture(int texture)
@@ -1786,7 +1835,7 @@ static sprite_t *acquire_texture(int texture)
 	if (!models.sprites[texture])
 	{
 		snprintf(path, sizeof(path), "rom:/tex/%.24s.sprite", models.textures[texture].name);
-		models.sprites[texture] = sprite_load(path);
+		models.sprites[texture] = load_texture_checked(path);
 		if (!models.sprites[texture])
 			return NULL;
 		surface_t pixels = sprite_get_pixels(models.sprites[texture]);
@@ -2217,6 +2266,37 @@ static int first_person_model(int index)
 #endif
 }
 
+/* a model load given up at batch "failed": its data and the blocks recorded
+so far freed, the textures its batches took given back (none of it was
+drawn yet), and the model not tried again in this frame */
+static void refuse_model_load(int index, int failed)
+{
+	struct model_record *model = &models.models[index];
+	struct loaded_model *loaded = &models.loaded[index];
+
+	/* (the data and recordings first: giving a texture back takes heap for
+	the deferred call's record, as in drop_model) */
+	for (int b = 0; b <= failed; b++)
+	{
+		if (loaded->setups[b])
+			rspq_block_free(loaded->setups[b]);
+		if (loaded->blocks[b])
+			rspq_block_free(loaded->blocks[b]);
+	}
+	free(loaded->data);
+	free(loaded->setups);
+	free(loaded->blocks);
+	loaded->data = NULL;
+	loaded->setups = NULL;
+	loaded->blocks = NULL;
+	for (int b = 0; b < failed; b++)
+		release_texture(models.batches[model->first_batch + b].texture);
+	loaded->texture_refused = renderer.frame_index + 1;
+	models.loaded_bytes -= model->vertex_bytes + model->index_bytes;
+	models.missing++;
+	models.texture_refusals++;
+}
+
 static int load_model(int index)
 {
 	struct model_record *model = &models.models[index];
@@ -2228,6 +2308,14 @@ static int load_model(int index)
 	loaded->last_drawn = renderer.frame_index;
 	if (loaded->data)
 		return 1;
+	/* (a model one of whose textures found no room in this frame is not
+	tried again until the next: each try reads the model and its earlier
+	textures, and what a try gives back comes free only once the RSP is done) */
+	if (loaded->texture_refused == renderer.frame_index + 1)
+	{
+		models.missing++;
+		return 0;
+	}
 	/* room: drop the models drawn longest ago, none drawn in the frames
 	still in flight (their textures go with the last model using them),
 	past the cache's size or while the heap is short: the model, its
@@ -2302,6 +2390,14 @@ static int load_model(int index)
 		struct model_batch *batch = &models.batches[model->first_batch + b];
 		sprite_t *sprite = acquire_texture(batch->texture);
 		int run = models.runs ? models.runs[model->first_batch + b] : RUN_HEAD | 1;
+
+		/* (a texture the heap had no piece for: the model refused, as one
+		that found no room -- asset_load would have stopped the game) */
+		if (!sprite && batch->texture >= 0 && batch->texture < models.header->texture_count)
+		{
+			refuse_model_load(index, b);
+			return 0;
+		}
 
 		/* (a run's batches all in its first's block: the rest have none,
 		mark_batch_runs) */
@@ -4934,11 +5030,11 @@ void n64_render_frame_end(void)
 
 			sys_get_heap_stats(&heap);
 			debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles; heap %d KB free, stack %lu KB used; "
-				"models %lu KB (%lu reads), textures %lu KB (%lu reads); %lu exceptions emulated\n",
+				"models %lu KB (%lu reads), textures %lu KB (%lu reads), %lu refused for a texture; %lu exceptions emulated\n",
 				renderer.frame_index, renderer.clusters / 120, renderer.batches / 120, renderer.objects / 120,
 				renderer.triangles / 120, heap.free / 1024, n64_stack_used() / 1024,
 				models.loaded_bytes / 1024, models.reads, models.texture_bytes / 1024, models.texture_reads,
-				n64_exceptions_emulated - exceptions_before);
+				models.texture_refusals, n64_exceptions_emulated - exceptions_before);
 			if (level.stream)
 				debugf("render: level clusters %lu KB in memory, %lu read\n", level.resident_bytes / 1024,
 					level.stream_reads);
