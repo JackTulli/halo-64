@@ -1,14 +1,15 @@
 # Halo 64 Online
 
-Online play for the Nintendo 64, with the players of ChupathingyCE
-(v0.7.5d: network version 29, wire `chupa-29a`) on the computers: their
-game list (halo.milenko.org), their games and their dedicated servers. The
+Online play for the Nintendo 64, with the players of ChupathingyCE and
+OpenCE on the computers (the Link follows ChupathingyCE's main,
+0.9.0-nightly.48: wire `chupa-41a`, and OpenCE's protocol where a host
+speaks it): their game lists, their games and their dedicated servers. The
 N64 runs a cartridge of its own, `halo-online.z64`; a computer beside it
 runs **Halo 64 Link**, which plays the real game for it; a flashcart's USB
 cable joins the two.
 
-    N64 (halo-online.z64)  --USB-->  Halo 64 Link (computer)  --UDP-->  ChupathingyCE games
-      plays its own player,           the game itself, headless            halo.milenko.org
+    N64 (halo-online.z64)  --USB-->  Halo 64 Link (computer)  --UDP-->  ChupathingyCE and OpenCE games
+      plays its own player,           the game itself, headless            their game lists
       draws the rest
 
 **State (October 2026).** In ares with an emulated cart USB port it lists
@@ -173,7 +174,8 @@ its flashcart's USB port, as buu342's
 [N64-NetLib](https://github.com/buu342/N64-NetLib) does (UNFLoader's USB
 library on the N64, a program on the computer at the other end of the
 cable). So the computer is the machine: **Halo 64 Link** is ChupathingyCE
-v0.7.5d (CC0) built without a window or sound, as its dedicated server is
+(its main, 0.9.0-nightly.48; GPL-3.0, as ChupathingyCE is from 0.8.0)
+built without a window or sound, as its dedicated server is
 (`HALO_SERVER`, `server/platform/sdl_headless.c`), with the N64's
 controllers for its players. It lists and joins games exactly as
 ChupathingyCE does, so it is compatible by construction. After each tick it
@@ -228,7 +230,8 @@ the same tree as the others, with the multiplayer cartridge's maps.
 ### Halo 64 Link (the computer)
 
 Its source is [JackTulli/halo64-link](https://github.com/JackTulli/halo64-link)
-(how to build and run it: its `link/README.md`). ChupathingyCE v0.7.5d with:
+(how to build and run it: its `link/README.md`). ChupathingyCE (main,
+0.9.0-nightly.48) with:
 
 - the dedicated server's headless platform (no window, no sound);
 - `link_input.c` in place of the server's input: the N64's controllers as
@@ -263,7 +266,9 @@ LEAVE, CONTROL (each tick: the control the local unit played, for the
 Link's to play), NAME (the player's name).
 
 Link to N64: WELCOME, STATUS (the menu's line), GAMES (id, players, most,
-name, map, game type), LOAD (map, game type, teams, the player's team),
+name, map, game type; then each game's kind, one byte each: 0 the local
+network's, 1 ChupathingyCE's, 2 OpenCE's, 3 either -- the ONLINE screen
+shows LAN, CHUPA, OPENCE or CH-OCE; an older Link sends none), LOAD (map, game type, teams, the player's team),
 FRAME (the tick; per local player its camera, HUD and own unit: the N64
 tick last played, alive, in a vehicle, position, velocity, facing, the
 respawn's ticks, team, weapons and rounds), OBJECTS (everything else to
@@ -281,15 +286,16 @@ targets are the Link's).
 ## Stages
 
 1. ares with the emulated USB port; an echo ROM to prove it: done.
-2. The Link: ChupathingyCE v0.7.5d headless, joining a local dedicated
-   server: done.
+2. The Link: ChupathingyCE headless (from v0.7.5d; ChupathingyCE's main
+   since November 2026), joining a local dedicated server: done.
 3. The online cartridge: the menu, the game list, drawing frame packets,
    sending input: done.
 4. The player's own unit played on the N64 (its first-person weapon,
    HUD, sounds and effects), corrected by the Link's; other players'
    effects and sounds, the scoreboard, the lobby, the HUD's view: done.
    Vehicles, looping sounds, the pickup prompt, the final scoreboard: next.
-5. Internet games: halo.milenko.org's list and its invites: done; hosting
-   from the N64: later.
+5. Internet games: ChupathingyCE's game list and invites, and the lobby
+   listings OpenCE's hosts are on too (each game marked whose it is): done;
+   hosting from the N64: later.
 6. A real flashcart: the SummerCart64 bridge and the Windows kit: made, not
    yet tried on a cart.

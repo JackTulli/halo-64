@@ -224,8 +224,9 @@ def main():
             shutil.copytree(args.online_kit / "link" / "licenses", notices / "online-kit-licenses")
             with (notices / "README.txt").open("a", encoding="utf-8") as readme:
                 readme.write("\nHalo 64 Online: the builder writes the Halo64Online folder with Halo 64 Link "
-                             "(ChupathingyCE v0.7.5d built as the N64's computer side, CC0, statically linked with "
-                             "musl; https://github.com/JackTulli/halo64-link), its test server, the SummerCart64 "
+                             "(ChupathingyCE's main, 0.9.0-nightly.48, built as the N64's computer side, GPL-3.0, "
+                             "statically linked with musl; source: https://github.com/JackTulli/halo64-link), its "
+                             "test server, the SummerCart64 "
                              "bridge (Python, packaged with PyInstaller) and their launchers; online-kit-licenses/ "
                              "has the notices their parts' licences ask for (link/licenses/ in that folder too).\n")
         libdragon_license = args.tools / "libdragon-LICENSE.md"

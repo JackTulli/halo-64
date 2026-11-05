@@ -77,8 +77,9 @@ working notebook.
   yet, and the level's second half (its other structure BSP) is not on it
   yet.
 - **Online play** (an online cartridge, `halo-online.z64`; in progress):
-  join ChupathingyCE v0.7.5d's games -- the internet's (halo.milenko.org's
-  list) and the local network's -- through a computer beside the N64
+  join ChupathingyCE's and OpenCE's games (the Link follows ChupathingyCE's
+  main: 0.9.0-nightly.48; the list says whose each game is) -- the
+  internet's and the local network's -- through a computer beside the N64
   running [Halo 64 Link](https://github.com/JackTulli/halo64-link), wired
   by a SummerCart64's USB port (or, with no flashcart, a patched ares'
   emulated one). The N64 plays its own player at once and the Link, which
