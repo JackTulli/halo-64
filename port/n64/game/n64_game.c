@@ -295,6 +295,10 @@ void n64_game_setup(
 	/* (port.json flag "debug_hud_detail": HUD RESOLUTION high detail, the HUD
 	at 640x240) */
 	n64_render_set_hud_detail(n64_debug_flag("debug_hud_detail"));
+	/* (port.json flag "debug_no_counter": no frames-a-second counter, as
+	the menu's setting off leaves it: for pictures) */
+	if (n64_debug_flag("debug_no_counter"))
+		n64_render_show_counter(0);
 	for (i = 0; i < 4; i++)
 	{
 		static short const colors[4] = {2, 3, 6, 5};

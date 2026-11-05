@@ -213,11 +213,21 @@ static void handle(const uint8_t *packet, int size)
 			game.id = read_u32(&r);
 			game.players = (uint8_t)read_u8(&r);
 			game.most = (uint8_t)read_u8(&r);
+			game.kind = N64_LINK_GAME_UNKNOWN;
 			read_string(&r, game.name, sizeof(game.name));
 			read_string(&r, game.map, sizeof(game.map));
 			read_string(&r, game.game_type, sizeof(game.game_type));
 			if (!r.bad && kept < N64_LINK_GAMES_MAXIMUM)
 				cable.games[kept++] = game;
+		}
+		/* the kinds after them, one a game, from a Link that sends them
+		(an older one stops at the games: each stays unknown) */
+		for (int i = 0; i < count && !r.bad && r.at < r.end; i++)
+		{
+			unsigned kind = read_u8(&r);
+
+			if (i < kept)
+				cable.games[i].kind = (uint8_t)(kind <= N64_LINK_GAME_EITHER ? kind : N64_LINK_GAME_UNKNOWN);
 		}
 		cable.game_count = kept;
 		cable.games_serial++;
@@ -396,6 +406,19 @@ int n64_link_games(const struct n64_link_game **games)
 {
 	*games = cable.games;
 	return cable.state == N64_LINK_CONNECTED ? cable.game_count : 0;
+}
+
+/* (the labels halo-dos's game list gives the same kinds) */
+const char *n64_link_game_kind_label(int kind)
+{
+	switch (kind)
+	{
+	case N64_LINK_GAME_LAN: return "LAN";
+	case N64_LINK_GAME_CHUPATHINGY: return "CHUPA";
+	case N64_LINK_GAME_OPENCE: return "OPENCE";
+	case N64_LINK_GAME_EITHER: return "CH-OCE";
+	default: return "";
+	}
 }
 
 unsigned long n64_link_games_serial(void)

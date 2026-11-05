@@ -50,7 +50,10 @@ enum n64_link_type
 	/* the Link's */
 	N64_LINK_WELCOME = 64, /* version (1), the Link's build (string) */
 	N64_LINK_STATUS = 65,  /* a line for the menu (string) */
-	N64_LINK_GAMES = 66,   /* count (1), each: id (4), players (1), most (1), name, map, game type (strings) */
+	/* count (1), each: id (4), players (1), most (1), name, map, game type
+	(strings); then, from a Link that knows them, each game's kind (1 each,
+	in the same order: enum n64_link_game_kind) */
+	N64_LINK_GAMES = 66,
 	N64_LINK_LOAD = 67,    /* map (string), game type (string), teams (1), the player's team (1): the game begins */
 	N64_LINK_FRAME = 68,   /* the tick's views and the players' own units (n64_online.c) */
 	N64_LINK_ENDED = 69,   /* the game is over, or left */
@@ -89,12 +92,28 @@ enum n64_link_state
 
 #define N64_LINK_GAMES_MAXIMUM 32
 
+/* whose game a listed one is (GAMES' kinds): the local network's, a
+ChupathingyCE host's, an OpenCE host's, or one of the two (their listings
+can't always be told apart); unknown from a Link that doesn't say */
+enum n64_link_game_kind
+{
+	N64_LINK_GAME_LAN = 0,
+	N64_LINK_GAME_CHUPATHINGY = 1,
+	N64_LINK_GAME_OPENCE = 2,
+	N64_LINK_GAME_EITHER = 3,
+	N64_LINK_GAME_UNKNOWN = 255
+};
+
 struct n64_link_game
 {
 	uint32_t id;
 	uint8_t players, most;
+	uint8_t kind; /* enum n64_link_game_kind */
 	char name[32], map[32], game_type[24];
 };
+
+/* the short label of a game's kind for the list ("" when unknown) */
+const char *n64_link_game_kind_label(int kind);
 
 /* the USB port found (once) and the link's state; call each frame */
 void n64_link_update(void);

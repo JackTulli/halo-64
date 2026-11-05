@@ -5,6 +5,60 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+5 November: version 0.6.7, six pull requests by jz-k (details and
+measurements in each pull request's description), the ROM Builder's
+window, and the online list's kinds.
+
+- Models on a cut-up heap (pull request 26): `load_model` counted the heap
+  as short only when the total free was less than the model needs, but a
+  model's data is one `memalign` block; with the total there and no piece
+  that large, the model was drawn as nothing frame after frame (the PC
+  cartridge's rocket launcher, 38-43 KB). It now also needs
+  `n64_heap_has(size + 40)` (the chunk `memalign(16, size)` takes) and
+  drops models by age until it has it.
+- High and ultra detail on a map without room (pull request 27): where no
+  high mode fits, `try_high_detail` makes the 320x240 display again in
+  two steps: first the same allocations as before, held and lent to
+  libdragon (`game_room_trial`, `n64_display_lend_room`); where that fails,
+  the room the closed display left (`game_room_take`: the heap's free
+  chunks of a surface or more, the room above the heap's top, or the top
+  chunk and that room as one block). A high mode without a z-buffer gives
+  way to the next one down. The "NOT ENOUGH MEMORY" notice moves off the
+  crosshair. Infinity (PC) and Yoyorast Island (Custom Edition) stopped
+  at their first frame; they now play at 320x240.
+- A projectile whose owner is gone (pull request 28):
+  `get_player_index_from_object_or_parents` walks with
+  `object_try_and_get` and stops at an index that is no longer an object
+  (the N64's `object_get` read through NULL: a dead flamethrower user's
+  flames).
+- The PC maps' meters (pull request 29): their bitmaps keep the fill
+  order in alpha and the shape in colour, the reverse of the Xbox maps';
+  `tools/n64/hud.py` `meter_channels` swaps them for formats other than
+  A8Y8/AY8/Y8. The Xbox maps' HUD files are unchanged.
+- The PC maps' large HUD images (pull request 30, on 29): the converter
+  packs the sprite rectangles of images over 256x256 into sprites of
+  their own (`rom:/hud/<map>.subs`), and on those maps the HUD loads its
+  critical sprites first (the meters, the motion sensor, the damage
+  arrows, the counts, the held weapon's crosshairs and meters) with a
+  reserve, a meter block arena and a swap for sprites no longer needed.
+  Compiled only for the PC and Custom Edition cartridges
+  (`HUD_PACKING`), and acting only on maps the converter packed.
+- The maps' home (pull request 31): the RDP output's park block and the
+  models' render modes (recorded again in their own blocks when
+  ANTI-ALIASING changes) are made at the renderer's start, so that no
+  block made in a game sits in the home's tail the menu gives back
+  ("no memory to resize map arena" on the PC cartridge's bigger maps).
+- The ROM Builder's window: with every cartridge and its inputs shown,
+  the window was taller than many screens (1,134 pixels against an 864
+  pixel screen here) and cut off the Build button and the progress bar.
+  Sections 1-3 now scroll; the buttons, the progress bar and the status
+  line stay under them, and the status line shows the share done and
+  roughly the time left.
+- The online list: the Link may send each game's kind after the list
+  (`N64_LINK_GAMES`: LAN, ChupathingyCE, OpenCE, or either); the ONLINE
+  screen shows it first in each row (LAN, CHUPA, OPENCE, CH-OCE, as
+  halo-dos's list does), and an older Link's list shows as before.
+
 29 October: version 0.6.6, four pull requests by jz-k (details and
 measurements in each pull request's description).
 

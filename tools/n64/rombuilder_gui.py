@@ -116,9 +116,12 @@ class App:
         self.started = None
         self.outputs = []
 
+        self.fraction = 0.0
+
         root.title(TITLE)
-        root.minsize(720, 640)
+        root.minsize(720, 480)
         root.geometry(self.settings.get("geometry", "760x700"))
+        self.fit_to_screen()
         try:
             import sv_ttk
             sv_ttk.set_theme("dark")
@@ -142,9 +145,32 @@ class App:
                        "Halo: Combat Evolved for the original Xbox, and Halo Custom Edition maps you add."
                   ).grid(row=1, column=0, sticky="w", pady=(0, 12))
 
+        # sections 1 to 3 in a part that scrolls (with every cartridge and
+        # its inputs shown they are taller than many screens, and the window
+        # cut off the build button and the progress bar), the build and its
+        # progress under it, always in sight
+        outer.rowconfigure(2, weight=1)
+        body = ttk.Frame(outer)
+        body.grid(row=2, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        self.canvas = tk.Canvas(body, highlightthickness=0, bd=0, yscrollincrement=24,
+                                bg=self.style.lookup("TFrame", "background") or "#1c1c1c")
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=self.canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns", padx=(6, 0))
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        section = ttk.Frame(self.canvas)
+        section.columnconfigure(0, weight=1)
+        sections = self.canvas.create_window(0, 0, window=section, anchor="nw")
+        section.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(sections, width=e.width))
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            root.bind_all(sequence, self.wheel, add="+")
+
         # 1. Halo
-        ttk.Label(outer, text="1   Your Halo", style="Section.TLabel").grid(row=2, column=0, sticky="w")
-        drop = tk.Frame(outer, highlightthickness=2, highlightbackground="#5a5a5a", bd=0, height=110,
+        ttk.Label(section, text="1   Your Halo", style="Section.TLabel").grid(row=2, column=0, sticky="w")
+        drop = tk.Frame(section, highlightthickness=2, highlightbackground="#5a5a5a", bd=0, height=110,
                         cursor="hand2")
         drop.grid(row=3, column=0, sticky="ew", pady=(6, 4))
         drop.columnconfigure(0, weight=1)
@@ -157,14 +183,14 @@ class App:
         ttk.Button(buttons, text="Choose disc image…", command=self.choose_image).pack(side="left", padx=6)
         ttk.Button(buttons, text="Choose maps folder…", command=self.choose_folder).pack(side="left", padx=6)
         # (a plain label: the theme keeps a ttk label's colour its own)
-        self.source_label = tk.Label(outer, text="", font=("Segoe UI", 10), wraplength=700, justify="left",
+        self.source_label = tk.Label(section, text="", font=("Segoe UI", 10), wraplength=680, justify="left",
                                      anchor="w")
         self.source_label.grid(row=4, column=0, sticky="w", pady=(0, 10))
         self.match_drop_colours()
 
         # 2. the cartridges
-        ttk.Label(outer, text="2   Cartridges", style="Section.TLabel").grid(row=5, column=0, sticky="w")
-        choices = ttk.Frame(outer)
+        ttk.Label(section, text="2   Cartridges", style="Section.TLabel").grid(row=5, column=0, sticky="w")
+        choices = ttk.Frame(section)
         choices.grid(row=6, column=0, sticky="ew", pady=(6, 10))
         self.choice = {}
         pc_included = pc_expansion_included()
@@ -181,7 +207,7 @@ class App:
                 description += (" (not in this download: it carries no PC conversion tools)" if key == "pc_expansion"
                                 else " (not in this download)" if key == "online"
                                 else " (not in this download: it carries no Custom Edition conversion tools)")
-            ttk.Label(choices, text=description, style="Small.TLabel", wraplength=670).grid(row=row + 1, column=0, sticky="w",
+            ttk.Label(choices, text=description, style="Small.TLabel", wraplength=640).grid(row=row + 1, column=0, sticky="w",
                                                                             padx=(28, 0), pady=(0, 6))
             # (each optional cartridge's own inputs under it)
             rows[key] = row + 2
@@ -194,12 +220,12 @@ class App:
             row=0, column=0, sticky="w")
         ttk.Label(self.pc_panel, text="Choose a PC retail ISO with loose maps, or the installed game's maps folder. "
                   "Installer-only discs: install your copy first, then choose its maps folder.",
-                  style="Small.TLabel", wraplength=660).grid(row=1, column=0, sticky="w", pady=(2, 6))
+                  style="Small.TLabel", wraplength=630).grid(row=1, column=0, sticky="w", pady=(2, 6))
         pc_buttons = ttk.Frame(self.pc_panel)
         pc_buttons.grid(row=2, column=0, sticky="w")
         ttk.Button(pc_buttons, text="Choose PC disc image…", command=self.choose_pc_image).pack(side="left", padx=(0, 12))
         ttk.Button(pc_buttons, text="Choose PC maps folder…", command=self.choose_pc_folder).pack(side="left")
-        self.pc_source_label = ttk.Label(self.pc_panel, text="No PC source selected", style="Small.TLabel", wraplength=660)
+        self.pc_source_label = ttk.Label(self.pc_panel, text="No PC source selected", style="Small.TLabel", wraplength=630)
         self.pc_source_label.grid(row=3, column=0, sticky="w", pady=(6, 0))
         if payload_root() is None:
             tools_row = ttk.Frame(self.pc_panel)
@@ -235,7 +261,7 @@ class App:
         ttk.Button(custom_buttons, text="Add maps…", command=self.choose_custom_maps).pack(fill="x")
         ttk.Button(custom_buttons, text="Remove", command=self.remove_custom_maps).pack(fill="x", pady=(4, 0))
         ttk.Button(custom_buttons, text="Clear", command=self.clear_custom_maps).pack(fill="x", pady=(4, 0))
-        self.custom_label = ttk.Label(self.custom_panel, text="", style="Small.TLabel", wraplength=660)
+        self.custom_label = ttk.Label(self.custom_panel, text="", style="Small.TLabel", wraplength=630)
         self.custom_label.grid(row=3, column=0, sticky="w", pady=(6, 0))
         if payload_root() is None:
             ce_row = ttk.Frame(self.custom_panel)
@@ -247,17 +273,23 @@ class App:
         self.toggle_pc_inputs()
 
         # 3. where they go
-        ttk.Label(outer, text="3   Save the ROMs in", style="Section.TLabel").grid(row=7, column=0, sticky="w")
-        where = ttk.Frame(outer)
+        ttk.Label(section, text="3   Save the ROMs in", style="Section.TLabel").grid(row=7, column=0, sticky="w")
+        where = ttk.Frame(section)
         where.grid(row=8, column=0, sticky="ew", pady=(6, 12))
         where.columnconfigure(0, weight=1)
         self.output = tk.StringVar(value=self.settings.get("output", default_output()))
         ttk.Entry(where, textvariable=self.output).grid(row=0, column=0, sticky="ew")
         ttk.Button(where, text="Browse…", command=self.choose_output).grid(row=0, column=1, padx=(8, 0))
+        ttk.Label(section, style="Small.TLabel", wraplength=680, justify="left",
+                  text="No Halo files come with this program: it converts your own copy.").grid(
+            row=9, column=0, sticky="w", pady=(0, 4))
 
-        # build, progress, details
-        actions = ttk.Frame(outer)
-        actions.grid(row=9, column=0, sticky="ew")
+        # build, progress, details: under the sections, always in sight
+        bottom = ttk.Frame(outer)
+        bottom.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        bottom.columnconfigure(0, weight=1)
+        actions = ttk.Frame(bottom)
+        actions.grid(row=0, column=0, sticky="ew")
         actions.columnconfigure(2, weight=1)
         self.build_button = ttk.Button(actions, text="Build ROMs", style="Build.TButton", command=self.build)
         try:
@@ -270,20 +302,20 @@ class App:
         self.open_button = ttk.Button(actions, text="Open folder", command=self.open_output)
         self.open_button.grid(row=0, column=3, sticky="e")
         self.open_button.grid_remove()
-        self.progress = ttk.Progressbar(outer, mode="determinate", maximum=1000)
-        self.progress.grid(row=10, column=0, sticky="ew", pady=(12, 4))
-        status = ttk.Frame(outer)
-        status.grid(row=11, column=0, sticky="ew")
+        self.progress = ttk.Progressbar(bottom, mode="determinate", maximum=1000)
+        self.progress.grid(row=1, column=0, sticky="ew", pady=(12, 4))
+        status = ttk.Frame(bottom)
+        status.grid(row=2, column=0, sticky="ew")
         status.columnconfigure(0, weight=1)
         self.step = ttk.Label(status, text="Choose your cartridges and source files, then build.", style="Small.TLabel")
         self.step.grid(row=0, column=0, sticky="w")
         self.clock = ttk.Label(status, text="", style="Small.TLabel")
         self.clock.grid(row=0, column=1, sticky="e")
         self.details_shown = tk.BooleanVar(value=False)
-        ttk.Checkbutton(outer, text="Show details", variable=self.details_shown,
-                        command=self.toggle_details).grid(row=12, column=0, sticky="w", pady=(6, 0))
-        logs = ttk.Frame(outer)
-        logs.grid(row=13, column=0, sticky="nsew", pady=(4, 0))
+        ttk.Checkbutton(bottom, text="Show details", variable=self.details_shown,
+                        command=self.toggle_details).grid(row=3, column=0, sticky="w", pady=(6, 0))
+        logs = ttk.Frame(bottom)
+        logs.grid(row=4, column=0, sticky="nsew", pady=(4, 0))
         logs.columnconfigure(0, weight=1)
         logs.rowconfigure(0, weight=1)
         self.log_frame = logs
@@ -293,10 +325,6 @@ class App:
         self.log.grid(row=0, column=0, sticky="nsew")
         scroll.grid(row=0, column=1, sticky="ns")
         logs.grid_remove()
-        outer.rowconfigure(13, weight=1)
-        ttk.Label(outer, style="Small.TLabel", wraplength=700, justify="left",
-                  text="No Halo files come with this program: it converts your own copy.").grid(
-            row=14, column=0, sticky="w", pady=(10, 0))
 
         # drag and drop: on the drop box and anywhere on the window
         if TkinterDnD is not None:
@@ -397,9 +425,43 @@ class App:
             else:
                 panel.grid_remove()
         if shown:
-            # Keep the optional source controls and Build button visible.
+            # (room for the optional inputs, as the screen allows: the
+            # sections scroll, the build button and progress stay in sight)
             height = min(760 + 170 * shown, self.root.winfo_screenheight() - 80)
-            self.root.geometry(f"{max(760, self.root.winfo_width())}x{height}")
+            self.root.geometry(f"{max(760, self.root.winfo_width())}x{max(height, self.root.winfo_height())}")
+            self.fit_to_screen()
+
+    # ---------- the window
+
+    def fit_to_screen(self):
+        """the window no taller or wider than the screen (less the taskbar's
+        room), and on it: a saved size from a bigger screen, or the
+        optional inputs' growth"""
+        self.root.update_idletasks()
+        width, height = self.root.winfo_width(), self.root.winfo_height()
+        if width <= 1 or height <= 1:
+            # (not yet shown: the size asked for)
+            size = self.root.geometry().split("+")[0]
+            width, height = (int(n) for n in size.split("x"))
+        most_width, most_height = self.root.winfo_screenwidth() - 40, self.root.winfo_screenheight() - 80
+        if width > most_width or height > most_height:
+            self.root.geometry(f"{min(width, most_width)}x{min(height, most_height)}+20+20")
+
+    def wheel(self, event):
+        """the mouse wheel scrolls the sections when the pointer is over them
+        (the Custom Edition list and the log scroll themselves)"""
+        widget = event.widget
+        if not isinstance(widget, tk.Misc) or isinstance(widget, (tk.Listbox, tk.Text)):
+            return
+        if not str(widget).startswith(str(self.canvas)):
+            return
+        first, last = self.canvas.yview()
+        if first <= 0.0 and last >= 1.0:
+            return
+        if event.num == 4 or event.delta > 0:
+            self.canvas.yview_scroll(-1, "units")
+        elif event.num == 5 or event.delta < 0:
+            self.canvas.yview_scroll(1, "units")
 
     # ---------- the Custom Edition maps
 
@@ -550,6 +612,7 @@ class App:
         self.cancel.clear()
         self.outputs = []
         self.clear_log()
+        self.fraction = 0.0
         self.progress.configure(value=0)
         self.open_button.grid_remove()
         self.build_button.configure(state="disabled")
@@ -597,6 +660,7 @@ class App:
                     self.append_log(value)
                 elif kind == "progress":
                     fraction, step = value
+                    self.fraction = fraction
                     self.progress.configure(value=int(fraction * 1000))
                     if not self.cancel.is_set():
                         self.step.configure(text=step)
@@ -619,13 +683,22 @@ class App:
             pass
         if self.busy() and self.started:
             elapsed = int(time.time() - self.started)
-            self.clock.configure(text=f"{elapsed // 60}:{elapsed % 60:02d}")
+            text = f"{int(self.fraction * 100)}%    {elapsed // 60}:{elapsed % 60:02d}"
+            # (the time left from the share done so far: rough, as the
+            # shares are, so only once a twentieth is done)
+            if self.fraction >= 0.05 and elapsed >= 60 and self.fraction < 1.0:
+                left = elapsed * (1.0 - self.fraction) / self.fraction
+                text += f"    about {int(left / 60 + 0.5)} min left" if left >= 90 else "    about a minute left"
+            self.clock.configure(text=text)
         self.root.after(150, self.poll)
 
     def finished(self, success, text):
         self.build_button.configure(state="normal")
         self.cancel_button.configure(state="disabled")
         self.step.configure(text=text)
+        if self.started:
+            elapsed = int(time.time() - self.started)
+            self.clock.configure(text=f"{elapsed // 60}:{elapsed % 60:02d}")
         if success:
             self.progress.configure(value=1000)
 

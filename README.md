@@ -515,7 +515,8 @@ Cartridge flags are files on the ROM's file system, listed in `port.json`
   menu), `debug_high_detail`, `debug_ultra_detail` (3D RESOLUTION high or
   ultra detail without the menu), `debug_hud_detail` (HUD RESOLUTION high
   detail in the games `debug_map` and `debug_cycle` start),
-  `debug_view_model=<0-3>`.
+  `debug_view_model=<0-3>`, `debug_no_counter` (no frames-a-second counter
+  in a game `debug_map` starts).
 - Drawing: `debug_chase` (view 1 follows its player), `debug_overview`,
   `debug_untextured`, `debug_no_level`, `debug_no_objects`,
   `debug_no_first_person`, `debug_no_hud` (a plain crosshair instead),

@@ -1183,7 +1183,7 @@ when chosen) */
 static void setting_row(int x0, int x1, int y, int selected, struct n64_font *font, const char *label,
 	const char *value)
 {
-	char arrows[48];
+	char arrows[96];
 
 	if (selected)
 	{
@@ -1336,6 +1336,15 @@ static void draw_naming(void)
 the one chosen joined */
 #define ONLINE_ROWS 8
 
+/* text no wider than width, cut with "..." where it is (into out) */
+static const char *fit_text(struct n64_font *font, const char *text, int width, char *out, int size)
+{
+	snprintf(out, size, "%s", text);
+	for (int keep = (int)strlen(out) - 1; keep > 0 && n64_text_width(font, out) > width; keep--)
+		snprintf(out, size, "%.*s...", keep, text);
+	return out;
+}
+
 static void draw_online(int chosen)
 {
 	const struct n64_link_game *games;
@@ -1405,11 +1414,19 @@ static void draw_online(int chosen)
 
 		for (int i = first; i < count && i < first + ONLINE_ROWS; i++)
 		{
-			char value[48];
+			const char *kind = n64_link_game_kind_label(games[i].kind);
+			char value[80], shown[40], drawn[96];
+			int room;
 
-			snprintf(value, sizeof(value), "%s  %s  %d/%d", games[i].map, games[i].game_type, games[i].players,
-				games[i].most);
-			setting_row(48, 592, 104 + (i - first) * 36, i == chosen, menu.small, games[i].name, value);
+			/* (whose game it is first: ChupathingyCE's, OpenCE's or the
+			local network's, as the Link tells; the name cut to the room
+			the value leaves it) */
+			snprintf(value, sizeof(value), "%s%s%s  %s  %d/%d", kind, kind[0] ? "  " : "", games[i].map,
+				games[i].game_type, games[i].players, games[i].most);
+			snprintf(drawn, sizeof(drawn), i == chosen ? "<  %s  >" : "%s", value);
+			room = (592 - 14) - (48 + 14) - n64_text_width(menu.small, drawn) - 16;
+			setting_row(48, 592, 104 + (i - first) * 36, i == chosen, menu.small,
+				fit_text(menu.small, games[i].name, room, shown, sizeof(shown)), value);
 		}
 		if (status[0])
 			text_centered(menu.small, SCREEN_W / 2, 412, TEXT_DIM, status);
