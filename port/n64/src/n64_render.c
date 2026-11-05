@@ -33,7 +33,9 @@ static int display_mode = DISPLAY_GAME;
 /* the detail asked for (N64_DETAIL_HIGH, N64_DETAIL_ULTRA, 0), tried for
 this game yet, the frames left to say it didn't fit; the anamorphic picture
 (Settings: WIDESCREEN) */
-static int want_high_detail, tried_high_detail, notice_high_detail_frames;
+static int want_high_detail, tried_high_detail;
+/* the notice that the map left no room for high detail: shown until then */
+static uint64_t notice_high_detail_until;
 static int anamorphic;
 /* Settings: ANTI-ALIASING (the RDP's coverage on opaque surfaces, which the
 VI's filter smooths the edges with) and DEDITHER (the VI rebuilding colour
@@ -904,6 +906,208 @@ static surface_t game_zbuf_made_room(void)
 	return zbuf;
 }
 
+/* The room the 320x240 display is made in when try_high_detail makes it
+again: blocks the renderer holds, its buffers and z-buffer (each 320x240x2
+bytes, at a multiple of 64: surface_alloc's alignment) lent from them to
+display_init and surface_alloc (n64_display_lend_room). A block that is one
+surface is freed with it, in libdragon's order; the others are freed (or,
+from sbrk_top, given back) after the display closes */
+#define GAME_SURFACE (320UL * 240 * 2)
+#define GAME_ROOM_BLOCKS 4
+#define GAME_ROOM_SPARES 32
+
+void *sbrk_top(int incr);
+
+static void *game_room[GAME_ROOM_BLOCKS];
+static unsigned long game_room_sizes[GAME_ROOM_BLOCKS];
+static char game_room_from_top[GAME_ROOM_BLOCKS], game_room_whole[GAME_ROOM_BLOCKS];
+static int game_room_count;
+
+static void game_room_give_back(void)
+{
+	n64_display_set_room(NULL, NULL, NULL, 0);
+	/* (the last first: sbrk_top's blocks go back in the order they came; a
+	block freed with its surface is NULL) */
+	while (game_room_count > 0)
+	{
+		int i = --game_room_count;
+
+		if (!game_room[i])
+			continue;
+		if (game_room_from_top[i])
+			sbrk_top(-(int)game_room_sizes[i]);
+		else
+			free(game_room[i]);
+	}
+}
+
+static void game_room_hold(void *block, unsigned long size, int from_top, int whole)
+{
+	game_room[game_room_count] = block;
+	game_room_sizes[game_room_count] = size;
+	game_room_whole[game_room_count] = whole;
+	game_room_from_top[game_room_count++] = from_top;
+}
+
+/* The blocks game_display_init gets -- the buffers, then the z-buffer --
+made first, in the same order and the same way, and held: the same calls on
+the same heap get the same blocks, and the display is made from them.
+(display_init's own list of buffers, a small block, is left to it: it comes
+from the small free chunks either way.) 2 when all succeed; 1 when only the
+z-buffer fails (the buffers kept: game_display_init's own routes for the
+z-buffer then run on their own); 0 when a buffer fails (none kept). The
+z-buffer is tried without the uncached reserve: game_display_init's own
+call gives the reserve back if it must, after display_init's list is made */
+static int game_room_trial(int buffers)
+{
+	for (int i = 0; i <= buffers; i++)
+	{
+		void *block = n64_uncached_block(64, GAME_SURFACE, i < buffers);
+
+		if (!block)
+		{
+			if (i == buffers)
+				return 1;
+			game_room_give_back();
+			return 0;
+		}
+		game_room_hold(CachedAddr(block), GAME_SURFACE, 0, 1);
+	}
+	return 2;
+}
+
+/* Missing surfaces as one block from malloc's top chunk and the room above
+it together. newlib keeps up to a page of a trimmed top in its top chunk,
+out of sbrk_top's reach, and growing the top asks sbrk for a whole request
+again: so a first block is asked for that the top must give -- the surfaces
+themselves if the top holds them, else more than the top less 16 bytes,
+which grows the top by what it lacks -- and, being the top's first block,
+it is then grown over the top in place (realloc). malloc gives a free chunk
+as big from elsewhere first: each one is kept as a spare (game_room_take
+frees them at its end) and the block asked for again. NULL (no block) if a
+step does not go so */
+static void *game_room_top_block(int missing, unsigned long *size, void **spare, int *spares)
+{
+	char *top, *block, *grown;
+	unsigned long top_size = n64_heap_top(&top), pad, want, chunk, first;
+	uintptr_t at;
+
+	if (!top)
+		return NULL;
+	pad = (unsigned long)(-(uintptr_t)(top + 8) & 63);
+	want = pad + missing * GAME_SURFACE;
+	/* (malloc's chunk for want; the first block: that chunk if the top holds
+	it, else more than the top less 16 bytes, and enough that the grown top
+	then holds the chunk and 16 bytes) */
+	chunk = (want + 11) & ~7UL;
+	if (top_size >= chunk + 16)
+		first = chunk;
+	else
+		first = chunk > 2 * top_size - 8 ? chunk - top_size : top_size - 8;
+	if (first < 16)
+		first = 16;
+	while ((block = malloc(first - 8)) && block != top + 8)
+	{
+		if (*spares == GAME_ROOM_SPARES)
+		{
+			free(block);
+			return NULL;
+		}
+		spare[(*spares)++] = block;
+	}
+	if (!block)
+		return NULL;
+	at = (uintptr_t)block;
+	grown = realloc(block, want);
+	if (grown && (uintptr_t)grown == at)
+	{
+		*size = want;
+		return grown;
+	}
+	/* (not grown in place: freed) */
+	if (!grown)
+		free(block);
+	else
+		free(grown);
+	return NULL;
+}
+
+/* Room for count surfaces: the heap's free chunks, the smallest first, each
+taken whole (n64_heap_pieces) and cut down to the surfaces it holds at
+64-byte places, then the room above the heap's top with sbrk_top (exact:
+memory malloc gave back to sbrk when a free left its top chunk large) or,
+failing that, with malloc's top chunk (game_room_top_block). The
+chunks a closed display left hold as many surfaces as it had blocks in
+them. What is taken is kept even if it is less than count: display_init
+takes its buffers from it first, and a z-buffer still missing has
+game_display_init's other routes (the maps' home). Nothing is taken when
+the heap's chunks do not add up (n64_heap_pieces -1) */
+static void game_room_take(int count)
+{
+	unsigned long sizes[16];
+	void *spare[GAME_ROOM_SPARES];
+	int pieces = n64_heap_pieces(sizes, 16, GAME_SURFACE + 8), spares = 0, have = 0;
+
+	for (int i = 0; i < pieces && have < count && game_room_count < GAME_ROOM_BLOCKS; i++)
+	{
+		unsigned long size = sizes[i] - 8, pad, want;
+		void *block, *cut;
+		int fit;
+
+		if (!(block = malloc(size)))
+			continue;
+		pad = (unsigned long)(-(uintptr_t)block & 63);
+		fit = size >= pad + GAME_SURFACE ? (int)((size - pad) / GAME_SURFACE) : 0;
+		if (fit > count - have)
+			fit = count - have;
+		/* (too small once a surface is at a 64-byte place: held until the
+		end, so that a piece as big asked for next is another) */
+		if (!fit)
+		{
+			spare[spares++] = block;
+			continue;
+		}
+		/* (cut down, the rest free again; what it holds counted from where
+		the block is after) */
+		want = pad + fit * GAME_SURFACE;
+		if ((cut = realloc(block, want)))
+		{
+			block = cut;
+			size = want;
+			pad = (unsigned long)(-(uintptr_t)block & 63);
+			fit = size >= pad + GAME_SURFACE ? (int)((size - pad) / GAME_SURFACE) : 0;
+		}
+		game_room_hold(block, size, 0, 0);
+		have += fit;
+	}
+	for (int missing = count - have; pieces >= 0 && missing > 0 && game_room_count < GAME_ROOM_BLOCKS; missing--)
+	{
+		unsigned long size = missing * GAME_SURFACE;
+		void *block = sbrk_top((int)size);
+
+		/* (the heap's top is at a 64-byte place; if not, 64 bytes more) */
+		if (block != (void *)-1 && ((uintptr_t)block & 63))
+		{
+			sbrk_top(-(int)size);
+			size += 64;
+			block = sbrk_top((int)size);
+		}
+		if (block != (void *)-1)
+		{
+			game_room_hold(block, size, 1, 0);
+			break;
+		}
+		if ((block = game_room_top_block(missing, &size, spare, &spares)))
+		{
+			game_room_hold(block, size, 0, 0);
+			break;
+		}
+	}
+	/* (the spares last: free, malloc would give them for the top's block) */
+	while (spares)
+		free(spare[--spares]);
+}
+
 /* The game's display, and its z-buffer made right after its three buffers,
 in the same place (the menu keeps that place for them: GAME_DISPLAY_BYTES).
 libdragon's display_get_zbuf took it from the heap's top or, failing that,
@@ -918,7 +1122,12 @@ static void game_display_init(void)
 	unsigned long available;
 	void *home = n64_map_home_free_part(&available);
 	int buffers = available == 0 ? 2 : 3;
-	if (first && home && available >= GAME_DISPLAY_BYTES)
+	if (game_room_count)
+	{
+		n64_display_set_room(game_room, game_room_sizes, game_room_whole, game_room_count);
+		n64_display_lend_room(1);
+	}
+	else if (first && home && available >= GAME_DISPLAY_BYTES)
 	{
 		n64_display_lend(home, available);
 		home_in_use = 1;
@@ -928,6 +1137,7 @@ static void game_display_init(void)
 		surface_free(&game_zbuf);
 	game_zbuf = surface_alloc(FMT_RGBA16, 320, 240);
 	n64_display_lend(NULL, 0);
+	n64_display_lend_room(0);
 	if (!game_zbuf.buffer)
 		game_zbuf = game_zbuf_made_room();
 	first = 0;
@@ -947,6 +1157,9 @@ static void game_display_close(void)
 	if (hud3d.buffer)
 		surface_free(&hud3d);
 	hud3d = (surface_t){0};
+	/* (the blocks the display was made in: freeing its buffers was
+	nothing) */
+	game_room_give_back();
 }
 
 /* while the menu runs, the place the game's buffers had, kept for them (so
@@ -994,6 +1207,8 @@ void n64_render_set_menu_display(int on)
 		surface_free(&menu_zbuf);
 	menu_zbuf = (surface_t){0};
 	home_in_use = 0;
+	/* (the notice is the map's: not on the menu, not on the next map) */
+	notice_high_detail_until = 0;
 	if (on)
 	{
 		unsigned long home_size;
@@ -1302,16 +1517,51 @@ static void try_high_detail(void)
 			/* (a HUD 640 across, at 240 lines or 480: the full-width
 			sprites, where there is room) */
 			n64_hud_set_wide(modes[i].width == 640, hud_sprite_room());
-			sys_get_heap_stats(&heap);
-			debugf("n64: %s detail %dx%d%s, %d buffers (%d in the maps' home), heap %d KB free\n",
-				want_high_detail == N64_DETAIL_ULTRA ? "ultra" : "high", screen_width, screen_height,
-				modes[i].interlaced ? " interlaced" : "", modes[i].buffers, in_home, heap.free / 1024);
-			return;
+			/* the z-buffer made now, as the frame's start would
+			(display_get_zbuf): without one, the next mode down */
+			if (display_get_zbuf()->buffer)
+			{
+				sys_get_heap_stats(&heap);
+				debugf("n64: %s detail %dx%d%s, %d buffers (%d in the maps' home), heap %d KB free\n",
+					want_high_detail == N64_DETAIL_ULTRA ? "ultra" : "high", screen_width, screen_height,
+					modes[i].interlaced ? " interlaced" : "", modes[i].buffers, in_home, heap.free / 1024);
+				return;
+			}
+			n64_hud_set_wide(0, 0);
+			game_display_close();
+			home_in_use = 0;
+			display_mode = DISPLAY_GAME;
 		}
 	}
+	/* None fits: the 320x240 display again, by game_display_init's own calls
+	(their blocks made first: game_room_trial); where they fail, in the room
+	the closed display left, taken from the heap. Since the close nothing
+	has kept memory it took (the probes, the models' releases are freed), so
+	the chunks the closed display left are free. */
+	unsigned long available;
+	n64_map_home_free_part(&available);
+	int buffers = available == 0 ? 2 : 3, trial = game_room_trial(buffers), taken = !trial;
+	if (taken)
+		game_room_take(buffers + 1);
 	game_display_init();
+	/* (the buffers where game_display_init's calls put them, no z-buffer from
+	game_display_init's routes nor from libdragon's, asked for now as the
+	frame's start would: the display again, in the room taken) */
+	if (trial == 1 && !game_zbuf.buffer && !display_get_zbuf()->buffer)
+	{
+		game_display_close();
+		home_in_use = 0;
+		game_room_take(buffers + 1);
+		game_display_init();
+		taken = 1;
+	}
+	/* (where the room was taken -- where the game stopped before -- the
+	uncached reserve a failed request gave back is taken again now, before
+	the frame's loads spend its room; if it fails, the frame's start tries) */
+	if (taken && n64_uncached_reserve_missing())
+		n64_uncached_reserve_take();
 	if (want_high_detail)
-		notice_high_detail_frames = 150;
+		notice_high_detail_until = get_ticks() + TICKS_FROM_MS(6000);
 	{
 		/* (what the heap had: its free pieces) */
 		char pieces[200];
@@ -4430,15 +4680,30 @@ static void draw_counter(void)
 		renderer.fps_frames = 0;
 		renderer.fps_window_start = now;
 	}
-	if (notice_high_detail_frames)
+	if (notice_high_detail_until && get_ticks() < notice_high_detail_until)
 	{
-		/* (high or ultra detail asked for, but the map left no room for it) */
-		notice_high_detail_frames--;
+		/* (high or ultra detail asked for, but the map left no room for it:
+		6 seconds, centred and away from the crosshairs -- with one view in the
+		upper fifth, with more on the line between them; the debug font's
+		letters are 6 pixels wide) */
+		const char *detail = want_high_detail == N64_DETAIL_ULTRA ? "ULTRA" : "HIGH";
+		int width = 6 * (29 + (int)strlen(detail));
+
 		rdpq_sync_pipe();
 		rdpq_set_scissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-		rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, 24, SCREEN_HEIGHT / 2,
-			"NOT ENOUGH MEMORY FOR %s DETAIL ON THIS MAP", want_high_detail == N64_DETAIL_ULTRA ? "ULTRA" : "HIGH");
+		if (renderer.view_count > 1)
+			rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, (SCREEN_WIDTH - width) / 2, SCREEN_HEIGHT / 2,
+				"NOT ENOUGH MEMORY FOR %s DETAIL", detail);
+		else
+		{
+			rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, (SCREEN_WIDTH - width) / 2, SCREEN_HEIGHT / 5,
+				"NOT ENOUGH MEMORY FOR %s DETAIL", detail);
+			rdpq_text_printf(NULL, FONT_BUILTIN_DEBUG_MONO, (SCREEN_WIDTH - 6 * 11) / 2, SCREEN_HEIGHT / 5 + 10,
+				"ON THIS MAP");
+		}
 	}
+	else
+		notice_high_detail_until = 0;
 	if (renderer.hide_counter)
 		return;
 	rdpq_sync_pipe();
