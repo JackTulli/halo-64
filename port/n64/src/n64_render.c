@@ -1846,13 +1846,21 @@ static int load_model(int index)
 	/* room: drop the models drawn longest ago, none drawn in the frames
 	still in flight (their textures go with the last model using them),
 	past the cache's size or while the heap is short: the model, its
-	recordings (~1 KB a batch), its textures (~2 KB each) and a margin */
+	recordings (~1 KB a batch), its textures (~2 KB each) and a margin, and
+	the model's data in one piece */
 	for (;;)
 	{
 		/* Count each shared texture once, using its actual asset buffer size.
 		Painted-panel subdivisions reuse textures across many batches. */
 		unsigned long needed = model_allocation(model);
-		int short_of_heap = n64_heap_free() < needed;
+		/* (the total alone passed on a heap cut up by models loaded and
+		dropped: memalign then found no piece the model's size, nothing was
+		dropped for it, and the model was drawn as nothing frame after
+		frame -- the PC cartridge's rocket launcher, 38-43 KB. The piece
+		memalign(16, size) needs: newlib's dlmalloc asks malloc for
+		request2size(size) + 16 + MINSIZE (16) bytes, a chunk of
+		(size + 51) & ~7 -- what malloc(size + 40) takes too) */
+		int short_of_heap = n64_heap_free() < needed || !n64_heap_has(size + 40);
 
 		if (models.loaded_bytes + models.texture_bytes + size <= MODEL_CACHE_BYTES && !short_of_heap)
 			break;
