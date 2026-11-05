@@ -47,6 +47,26 @@ def unpremultiply(img):
     return Image.merge("RGBA", (divide(r), divide(g), divide(b), a))
 
 
+# the source formats of a meter bitmap that keep the meter's fill order in
+# intensity and its shape in alpha (the Xbox maps' meters): what
+# n64_hud.c's meter_surface reads from the IA16 sprite
+METER_INTENSITY_FORMATS = ("a8y8", "ay8", "y8")
+
+
+def meter_channels(img, source_format):
+    """a meter image with the fill order in intensity and the shape in
+    alpha. The PC version's meter bitmaps (DXT5, A8R8G8B8) keep the fill
+    order in alpha and the shape in colour, the reverse of the Xbox
+    bitmaps': for those, alpha becomes the intensity and the colour's
+    luminance the alpha"""
+    if source_format in METER_INTENSITY_FORMATS:
+        return img
+    rgba = img.convert("RGBA")
+    order = rgba.getchannel("A")
+    shape = rgba.convert("L")
+    return Image.merge("RGBA", (order, order, order, shape))
+
+
 def sprite_bytes(path):
     """the memory a sprite loads into, as the game counts it
     (n64_hud.c sprite_bytes): a compressed asset's original size and
@@ -150,6 +170,8 @@ class HudExporter:
                     img = decode(self.map, image, max(image.width, image.height))
                 except ValueError:
                     continue
+                if "meter" in tag.name:
+                    img = meter_channels(img, image.format)
                 number = self.count
                 self.write(img, out / f"{number}.png", "meter" in tag.name)
                 self.names.append(share_file(out / f"{number}.sprite", self.out_dir / "hud", ".sprite"))
