@@ -1117,7 +1117,8 @@ static float display_pixel_aspect(void)
 }
 
 static void drop_all_models(void);
-static void record_model_modes(void);
+static void record_model_modes(int again);
+static void record_rdp_output_park(void);
 
 /* room for count blocks of the display (its buffers and z-buffer, 16 bits
 a pixel) and the models the game draws (the cache is emptied first: it
@@ -1382,8 +1383,19 @@ void n64_render_initialize(void)
 	/* the models' render modes, recorded now (the debug flags read): made
 	with the first model a game loaded they stayed for good wherever the
 	heap had room then, in the middle of what the next map and the menu
-	wanted */
-	record_model_modes();
+	wanted. With ANTI-ALIASING first, then again as it is set: a mode keeps
+	the room its blocks once took, and some take more with it, so that the
+	setting's change at a menu's end makes nothing new (n64_render_set_antialias) */
+	{
+		int antialias = want_antialias;
+
+		want_antialias = 1;
+		record_model_modes(0);
+		want_antialias = antialias;
+		record_model_modes(1);
+	}
+	/* and the RDP output's park, for the same reason (n64_render_park_rdp_output) */
+	record_rdp_output_park();
 	{
 		FILE *flag;
 
@@ -1476,17 +1488,25 @@ RDP crashes and garbage executed; a freed block still in use is one way to
 them) */
 static rspq_block_t *rdp_output_park;
 
+/* Recorded at the renderer's start (n64_render_initialize), not at its first
+use. Recorded at its first use -- in the first game -- it stayed for good
+wherever the heap had room then, and that can be the maps' home's tail,
+which the menu gives back between games (n64_map_boot_complete): a later
+map whose image needs more than 3 MB could not grow the home back past it
+("no memory to resize map arena: 3072 -> 4199 KB" in ares: PC Expansion,
+high detail, Danger Canyon then Death Island) */
+static void record_rdp_output_park(void)
+{
+	rspq_block_begin();
+	rdpq_sync_pipe();
+	rdp_output_park = rspq_block_end();
+}
+
 void n64_render_park_rdp_output(void)
 {
 	/* (port.json flag "debug_no_park": not parked, as before, for tests) */
 	if (n64_debug_flag("debug_no_park"))
 		return;
-	if (!rdp_output_park)
-	{
-		rspq_block_begin();
-		rdpq_sync_pipe();
-		rdp_output_park = rspq_block_end();
-	}
 	rspq_block_run(rdp_output_park);
 }
 
@@ -1629,18 +1649,20 @@ static int model_mode(sprite_t *sprite, int flags, unsigned char opacity)
 	return renderer.fog ? mode + NUMBER_OF_MODEL_MODES : mode;
 }
 
-static void record_model_modes(void)
+/* each mode not yet recorded; again: every mode recorded again, in its own
+block (n64_render_set_antialias) */
+static void record_model_modes(int again)
 {
 	for (int mode = 0; mode < MODEL_MODE_COUNT; mode++)
 	{
-		if (model_modes[mode])
+		if (model_modes[mode] && !again)
 			continue;
 		int kind = mode % MODEL_MODES_WITH_DEPTH;
 		int depth = mode % NUMBER_OF_MODEL_MODES < MODEL_MODES_WITH_DEPTH;
 		int cloak = mode >= MODEL_CLOAK_FIRST;
 		int cloak_kind = (mode - MODEL_CLOAK_FIRST) % MODEL_CLOAK_KINDS;
 
-		rspq_block_begin();
+		rspq_block_begin_reuse(model_modes[mode]);
 		rdpq_mode_begin();
 		rdpq_set_mode_standard();
 		rdpq_mode_zbuf((cloak || depth) && debug_fog_test != 4, cloak ? false : depth);
@@ -1696,8 +1718,13 @@ static void record_model_modes(void)
 	}
 }
 
-/* Settings: ANTI-ALIASING. The render modes recorded with the other setting
-are dropped, recorded again when next used (record_model_modes, set_material) */
+/* Settings: ANTI-ALIASING. The models' render modes are recorded again with
+the new setting, each in its own blocks, which have the room for either
+setting (n64_render_initialize): new blocks, made here at a menu's end,
+would stay for good wherever the heap had room then -- in the maps' home's
+tail, which a later, bigger map then could not grow the home back past
+(record_rdp_output_park). The level's are dropped, recorded again when next
+used (set_material) */
 void n64_render_set_antialias(int on)
 {
 	on = on != 0;
@@ -1705,13 +1732,7 @@ void n64_render_set_antialias(int on)
 		return;
 	want_antialias = on;
 	rspq_wait();
-	for (int mode = 0; mode < MODEL_MODE_COUNT; mode++)
-	{
-		if (model_modes[mode])
-			rspq_block_free(model_modes[mode]);
-		model_modes[mode] = NULL;
-	}
-	record_model_modes();
+	record_model_modes(1);
 	for (int fog = 0; level.data && fog < 2; fog++)
 	{
 		for (int m = 0; level.material_blocks[fog] && m < level.header->material_count; m++)
@@ -1922,7 +1943,7 @@ static int load_model(int index)
 		mark_batch_runs) */
 		if (!(run & RUN_HEAD))
 			continue;
-		record_model_modes();
+		record_model_modes(0);
 		loaded->setups[b] = record_setup(debug_untextured ? NULL : sprite, batch->flags);
 		rspq_block_begin();
 		/* Each segment's vertices are loaded under its node's matrix times
