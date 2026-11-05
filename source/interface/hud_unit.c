@@ -75,6 +75,9 @@ symbols in this file:
 #include "cache/texture_cache.h"
 #include "interface/hud_definitions.h"
 #include "bitmaps/bitmap_color_conversion.h"
+#ifdef HALO_N64
+#include "bitmaps/bitmap_group.h"
+#endif
 #include "interface/hud_draw.h"
 #include "interface/hud.h"
 #include "interface/motion_sensor.h"
@@ -756,6 +759,68 @@ void hud_update_unit(
 }
 
 /* ---------- public code */
+
+#if defined(HALO_N64) && (defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS))
+/* (the PC maps' cartridges: n64_hud.c HUD_PACKING) */
+/* (N64) The shield and health meters' sprite and the motion sensor's asked
+for before the rest of the HUD: the HUD's sprites load in the order they
+are first asked for, hud_draw_screen draws the weapon's interface first,
+and the motion sensor after the unit's frame. Where the heap has room for
+only some of them, these have it. */
+static void n64_load_first(
+	long bitmap_index,
+	short sequence_index)
+{
+	hud_draw_n64_load_sequence_first(bitmap_index, sequence_index);
+}
+
+void hud_unit_n64_load_meters_first(
+	struct player_datum const *player)
+{
+	struct unit_hud_interface_definition const *definition;
+	struct unit_datum *unit;
+	long hud_index, player_index;
+
+	if (player->unit_index == NONE)
+		return;
+	unit = unit_get(player->unit_index);
+	hud_index = unit_definition_get_active_hud_index(
+		unit_definition_get(unit->definition_index),
+		local_player_count() > 1);
+	if (hud_index == NONE)
+		return;
+	definition = unit_hud_interface_definition_get(hud_index);
+	player_index = local_player_get_player_index(player->local_player_index);
+	/* (each where hud_render_unit_interface draws it) */
+	/* (the HUD's frame and the meters' panels: decoration, given back first
+	for a critical sprite) */
+	hud_draw_n64_mark_sequence_decoration(definition->background.interface_bitmap.index,
+		definition->background.sequence_index);
+	hud_draw_n64_mark_sequence_decoration(definition->shield_meter.background.interface_bitmap.index,
+		definition->shield_meter.background.sequence_index);
+	hud_draw_n64_mark_sequence_decoration(definition->health_meter.background.interface_bitmap.index,
+		definition->health_meter.background.sequence_index);
+	if (game_engine_has_shield(player_index) &&
+		!TEST_FLAG(unit_hud_globals->script_flags, _hud_panel_shield_dont_show_bit))
+		n64_load_first(definition->shield_meter.meter.meter_bitmap.index, definition->shield_meter.meter.sequence_index);
+	if (!TEST_FLAG(unit_hud_globals->script_flags, _hud_panel_health_dont_show_bit))
+		n64_load_first(definition->health_meter.meter.meter_bitmap.index, definition->health_meter.meter.sequence_index);
+	if (!TEST_FLAG(unit_hud_globals->script_flags, _hud_panel_motion_sensor_dont_show_bit) &&
+		game_engine_hud_draw_motion_sensor(player_index))
+	{
+		n64_load_first(definition->motion_sensor.background.interface_bitmap.index,
+			definition->motion_sensor.background.sequence_index);
+		n64_load_first(definition->motion_sensor.foreground.interface_bitmap.index,
+			definition->motion_sensor.foreground.sequence_index);
+	}
+	/* (the damage arrows -- the side the player is hit from -- as
+	hud_render_damage_indicators draws them: information, with the critical
+	sprites; the PC maps' arrows are packed to the sequence's crop, 1.6 KB
+	with more than one player, 2.6 KB with one) */
+	n64_load_first(hud_globals->damage_indicators.indicator_bitmap.index, local_player_count() > 1 ?
+		hud_globals->damage_indicators.multiplayer_sequence_index : hud_globals->damage_indicators.sequence_index);
+}
+#endif
 
 void hud_render_unit_interface(
 	struct player_datum *player)

@@ -661,6 +661,12 @@ void n64_hud_text(int x, int y, unsigned long color, const char *text);
 float n64_hud_text_width(const char *text);
 int n64_hud_text_height(void);
 int n64_hud_ensure_sprite(int number);
+int n64_hud_ensure_sprite_at(int number, float s, float t);
+void n64_hud_mark_decoration_at(int number, float s, float t);
+void n64_hud_mark_carried_at(int number, float s, float t);
+void n64_hud_critical_pass(int on);
+/* whether this map's HUD is packed (rom:/hud/<map>.subs): its HUD runs the critical pass */
+int n64_hud_packed(void);
 /* a motion sensor blip: centre in pixels, position and size in pixels */
 void n64_hud_blip(float x, float y, float width, float height, unsigned long color);
 

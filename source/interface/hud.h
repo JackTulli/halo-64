@@ -73,6 +73,10 @@ void temporary_hud_draw(
 	void);
 void hud_draw_screen(
 	void);
+#ifdef HALO_N64
+void hud_n64_load_critical_first(
+	short local_player_index);
+#endif
 
 /* ---------- prototypes/HUD_SOUNDS.C */
 

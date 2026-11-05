@@ -158,4 +158,21 @@ __inline short check_stack_buffer(
 	return NONE;
 }
 
+#ifdef HALO_N64
+void hud_draw_n64_load_digits_first(
+	void);
+void hud_draw_n64_load_sequence_first(
+	long bitmap_group_index,
+	short sequence_index);
+void hud_draw_n64_mark_sequence_decoration(
+	long bitmap_group_index,
+	short sequence_index);
+void hud_draw_n64_mark_sequence_carried(
+	long bitmap_group_index,
+	short sequence_index);
+void hud_draw_n64_load_overlays_first(
+	struct weapon_hud_overlay_definition const *overlays,
+	boolean mark);
+#endif
+
 #endif /* __HUD_DRAW_H */

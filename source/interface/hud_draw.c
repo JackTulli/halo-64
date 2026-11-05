@@ -1838,6 +1838,112 @@ void hud_draw_meter(
 	return;
 }
 
+#if defined(HALO_N64) && (defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS))
+/* (the PC maps' cartridges: n64_hud.c HUD_PACKING) */
+/* (N64) the HUD's digits (ammo and grenade counts) asked for with the HUD's
+critical sprites, before the rest (hud_n64_load_critical_first) */
+extern int n64_hud_ensure_sprite(int number);
+extern int n64_hud_ensure_sprite_at(int number, float s, float t);
+
+void hud_draw_n64_load_digits_first(
+	void)
+{
+	long hud_number_index = interface_get_tag_index(_interface_hud_digits);
+	struct bitmap_data *bitmap;
+
+	if (hud_number_index == NONE || hud_number_definition_get(hud_number_index)->number_bitmap.index == NONE)
+		return;
+	bitmap = bitmap_group_get_bitmap_from_sequence(hud_number_definition_get(hud_number_index)->number_bitmap.index, 0, 0);
+	if (bitmap && bitmap->pixels_offset > 0)
+		n64_hud_ensure_sprite(bitmap->pixels_offset - 1);
+}
+
+/* (N64) the sprite a bitmap's sequence is drawn from -- where the converter
+packed its image, the packed sprite of the sequence's first sprite
+rectangle (its centre, in the half-size texels the HUD's quads use) --
+asked for with the HUD's critical sprites */
+/* (N64) the sprite a bitmap's sequence is drawn from marked decoration
+(given back first for a critical sprite, n64_hud.c) or a carried weapon's
+(never given back for one) */
+extern void n64_hud_mark_decoration_at(int number, float s, float t);
+extern void n64_hud_mark_carried_at(int number, float s, float t);
+
+void hud_draw_n64_mark_sequence_carried(
+	long bitmap_group_index,
+	short sequence_index)
+{
+	struct bitmap_data const *bitmap = NULL;
+	real_rectangle2d const *clip = NULL;
+
+	if (bitmap_group_index == NONE)
+		return;
+	hud_retrieve_bitmap_and_bounding_rect(bitmap_group_index, sequence_index, 0, &bitmap, &clip);
+	if (!bitmap || bitmap->pixels_offset <= 0)
+		return;
+	n64_hud_mark_carried_at(bitmap->pixels_offset - 1,
+		clip ? (clip->x0 + clip->x1) * 0.25f * bitmap->width : 0.f,
+		clip ? (clip->y0 + clip->y1) * 0.25f * bitmap->height : 0.f);
+}
+
+/* (N64) an overlay's items -- the ammo and grenade type icons -- asked for
+with the critical sprites, or marked a carried weapon's */
+void hud_draw_n64_load_overlays_first(
+	struct weapon_hud_overlay_definition const *overlays,
+	boolean mark)
+{
+	long item_index;
+
+	for (item_index = 0; overlays->bitmap.index != NONE && item_index < overlays->items.count; item_index++)
+	{
+		struct weapon_hud_overlay_item const *item =
+			TAG_BLOCK_GET_ELEMENT(&overlays->items, item_index, struct weapon_hud_overlay_item);
+
+		if (TEST_FLAG(item->flags, _hud_overlay_runtime_invalid_bit) || item->sequence_index < 0)
+			continue;
+		if (mark)
+			hud_draw_n64_mark_sequence_carried(overlays->bitmap.index, item->sequence_index);
+		else
+			hud_draw_n64_load_sequence_first(overlays->bitmap.index, item->sequence_index);
+	}
+}
+
+void hud_draw_n64_mark_sequence_decoration(
+	long bitmap_group_index,
+	short sequence_index)
+{
+	struct bitmap_data const *bitmap = NULL;
+	real_rectangle2d const *clip = NULL;
+
+	if (bitmap_group_index == NONE)
+		return;
+	hud_retrieve_bitmap_and_bounding_rect(bitmap_group_index, sequence_index, 0, &bitmap, &clip);
+	if (!bitmap || bitmap->pixels_offset <= 0)
+		return;
+	n64_hud_mark_decoration_at(bitmap->pixels_offset - 1,
+		clip ? (clip->x0 + clip->x1) * 0.25f * bitmap->width : 0.f,
+		clip ? (clip->y0 + clip->y1) * 0.25f * bitmap->height : 0.f);
+}
+
+void hud_draw_n64_load_sequence_first(
+	long bitmap_group_index,
+	short sequence_index)
+{
+	struct bitmap_data const *bitmap = NULL;
+	real_rectangle2d const *clip = NULL;
+
+	if (bitmap_group_index == NONE)
+		return;
+	hud_retrieve_bitmap_and_bounding_rect(bitmap_group_index, sequence_index, 0, &bitmap, &clip);
+	if (!bitmap || bitmap->pixels_offset <= 0)
+		return;
+	if (clip)
+		n64_hud_ensure_sprite_at(bitmap->pixels_offset - 1,
+			(clip->x0 + clip->x1) * 0.25f * bitmap->width, (clip->y0 + clip->y1) * 0.25f * bitmap->height);
+	else
+		n64_hud_ensure_sprite(bitmap->pixels_offset - 1);
+}
+#endif
+
 void hud_draw_numbers(
 	short local_player_index,
 	struct hud_absolute_placement_definition const *absolute_placement,

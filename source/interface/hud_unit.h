@@ -22,6 +22,10 @@ void hud_update_unit(
 	void);
 void hud_render_unit_interface(
 	struct player_datum *player);
+#ifdef HALO_N64
+void hud_unit_n64_load_meters_first(
+	struct player_datum const *player);
+#endif
 void hud_render_damage_indicators(
 	short local_player_index);
 void hud_play_unit_sounds(
