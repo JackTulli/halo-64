@@ -1235,6 +1235,11 @@ void n64_render_set_menu_display(int on)
 	if (on)
 	{
 		unsigned long home_size;
+
+		/* (what the map gave to the heap taken back into the home, the
+		game's display closed: before the title gets the map's tail and
+		before the menu's first block) */
+		n64_map_take_back(1);
 		/* All borrowed display buffers have closed. Give the title the
 		unused tail of a large map back before its transient allocations. */
 		n64_map_boot_complete();
@@ -1360,6 +1365,14 @@ static void record_rdp_output_park(void);
 
 static unsigned long hud_detail_models_room(void);
 
+/* the heap blocks of this branch that v0.6.7's program does not have (the
+stand-ins' block): counted back as free for the display's choices, which
+decide on the heap's totals -- the HUD's width, the high and ultra detail
+modes, the room for the HUD's full-width sprites -- so that the display is
+made as v0.6.7 with the base commit makes it. (The program's own larger
+code and data are not counted: they are not known here) */
+static unsigned long display_own_blocks(void);
+
 /* (high and ultra detail, the models' cache emptied: the heap's free total
 less the blocks must hold the models' room as the HUD's width counts it,
 hud_detail_models_room; then the blocks are looked for in the pieces there
@@ -1384,7 +1397,7 @@ static int display_fits(int width, int height, int count)
 	int fits = 1;
 
 	count = count < 4 ? count : 4;
-	if (n64_heap_free() < (unsigned long)count * (size + 8) + hud_detail_models_room() +
+	if (n64_heap_free() + display_own_blocks() < (unsigned long)count * (size + 8) + hud_detail_models_room() +
 		(height > 240 ? INTERLACED_HEADROOM : 0))
 		return 0;
 	for (int i = 0; i < count && fits; i++)
@@ -1406,7 +1419,7 @@ interlaced it cost some on both (Beaver Creek, 36 KB short; Hang 'Em High,
 are drawn, each with its own room test. 0 where it may not */
 static unsigned long hud_sprite_room(int lines)
 {
-	unsigned long free_bytes = n64_heap_free(), need = hud_detail_models_room();
+	unsigned long free_bytes = n64_heap_free() + display_own_blocks(), need = hud_detail_models_room();
 
 	return lines <= 240 && free_bytes >= need ? free_bytes - need + 1 : 0;
 }
@@ -1489,7 +1502,8 @@ static int try_hud_detail(void)
 	{
 		/* (the models' room first, on the totals: what the surfaces that
 		the home cannot hold take from the heap, and malloc's 8 bytes each) */
-		unsigned long on_heap = 0, left = room, free_bytes = n64_heap_free(), need = hud_detail_models_room();
+		unsigned long on_heap = 0, left = room, free_bytes = n64_heap_free() + display_own_blocks(),
+			need = hud_detail_models_room();
 
 		for (int i = 0; i < 4; i++)
 		{
@@ -1562,7 +1576,7 @@ static int hud_detail_may_fit(void)
 	unsigned long needed = 2 * (640UL * 240 * 2 + 256) + 2 * (320UL * 240 * 2 + 256) + hud_detail_models_room();
 
 	n64_map_home_free_part(&home_size);
-	return n64_heap_free() + models.loaded_bytes + models.texture_bytes + (home_in_use ? 0 : GAME_DISPLAY_BYTES) +
+	return n64_heap_free() + display_own_blocks() + models.loaded_bytes + models.texture_bytes + (home_in_use ? 0 : GAME_DISPLAY_BYTES) +
 		home_size >= needed;
 }
 
@@ -3216,6 +3230,11 @@ void n64_render_frame_begin(void)
 			n64_heap_free() / 1024, largest / 1024, pieces);
 		n64_fatal(message);
 	}
+	/* (the map's display and level made, and the frame's z-buffer -- made
+	when first asked for: the bytes the converter left out of its image
+	are the heap's) */
+	if (level.data && display_mode != DISPLAY_MENU && (tried_high_detail || !(want_high_detail || want_hud_detail)))
+		n64_map_give_back();
 	if (debug_rdpq_log_frame)
 	{
 		/* (rdpq_debug_log counts: on once, off once) */
@@ -4650,6 +4669,7 @@ static struct
 	const T3DVertPacked *pairs;
 	const uint8_t *triangles;
 	void *block;
+	unsigned long block_bytes;
 } standins;
 static struct
 {
@@ -4661,6 +4681,11 @@ static int standin_queued_count;
 /* (flush_draws is drawing: a full queue is drawn as it is) */
 static int standin_flushing;
 static void standin_flush(void);
+
+static unsigned long display_own_blocks(void)
+{
+	return standins.block_bytes;
+}
 
 static void standin_unload(void)
 {
@@ -4830,6 +4855,7 @@ static void standin_load(const char *map_name)
 	data_cache_hit_writeback(block, bytes);
 	free(raw);
 	standins.block = block;
+	standins.block_bytes = bytes;
 	standins.types = type;
 	standins.parts = part;
 	standins.pairs = pair;

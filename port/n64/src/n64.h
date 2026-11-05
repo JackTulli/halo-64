@@ -57,11 +57,20 @@ int n64_heap_pieces(unsigned long *sizes, int max, unsigned long least);
 unsigned long n64_heap_top(char **start);
 void *n64_uncached_block(int align, unsigned long size, int reserve);
 int n64_heap_has(unsigned long size);
+/* n64_heap_has and n64_heap_free without the bytes the map gave the heap
+(n64_map_given) */
+int n64_heap_has_held(unsigned long size);
+unsigned long n64_heap_free_held(void);
+/* whether realloc(block, size) grows block where it is */
+int n64_heap_grows_in_place(void *block, unsigned long size);
 void n64_heap_dump(const char *tag, const void *start);
 /* the maps' home (n64_game.c) and the display buffers lent from it
 (n64_main.c, n64_render.c) */
 void n64_map_home_reserve(void);
 void *n64_map_home_free_part(unsigned long *size);
+void n64_map_give_back(void);
+void n64_map_take_back(int last);
+void *n64_map_given(unsigned long *size);
 void n64_display_set_home(void *start, unsigned long size);
 void n64_display_lend(void *start, unsigned long size);
 void n64_display_set_room(void **starts, const unsigned long *sizes, const char *whole, int count);

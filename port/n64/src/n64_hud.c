@@ -73,6 +73,18 @@ commands come in pieces that double in size (rdpq's up to ~16 KB), and the
 sprites and uploads it loads come out of it too */
 #define RECORDING_ROOM_PIECE (18 * 1024)
 #define RECORDING_ROOM_PIECES 3
+/* the largest image (the room asset_load takes for it, and 1 KB) that
+decides on the whole heap's room: a 128x128 image at 2 bytes a texel -- its
+texels, its sprite headers and the room left for decompressing it where it
+lies, within 1 KB -- and 1 KB. A larger one, a 256x256 image of 64 or
+128 KB, decides on the room the map had before the converter's savings
+(n64_heap_has_held, n64_heap_free_held): those bytes are not counted for
+it, as for the display's other choices. Smaller images keep the whole
+heap's room: where the model cache has filled the bytes given back, the
+free total less them leaves a small image no room that it has before
+the savings (in a test match on a Custom Edition map, four of its 1 to
+5 KB images) */
+#define HUD_LARGE_IMAGE (128 * 128 * 2 + 1024 + 1024)
 /* the heap a HUD sprite leaves free for the game besides its own bytes: for
 the HUD's critical sprites (hud_n64_load_critical_first) the most the game
 itself took in play with no HUD sprites at all, 27088 bytes (Death Island,
@@ -1128,7 +1140,11 @@ static sprite_t *hud_sprite(int number)
 			own allocation is the check. So is a critical sprite asked for in
 			the critical pass, outside a recording, that the heap's free bytes
 			have room for over the reserve where no piece of its size + 1 KB
-			is free: the 1 KB is for asset_load's unchecked allocation) */
+			is free: the 1 KB is for asset_load's unchecked allocation. For an
+			image larger than HUD_LARGE_IMAGE the room is the map's before the
+			converter's savings: the bytes its image left out, the heap's once
+			the map's display is made, are not counted (n64_heap_has_held,
+			n64_heap_free_held): the HUD is part of the display) */
 			bytes = sprite_bytes(file) + 1024;
 			if (hud.swapping)
 			{
@@ -1136,11 +1152,13 @@ static sprite_t *hud_sprite(int number)
 				file = NULL;
 			}
 			reserve = !hud.packed_count ? 0 : critical ? HUD_HEAP_RESERVE : HUD_HEAP_RESERVE_REST;
-			room = hud.swapping ? hud.recording < 0 :
+			room = hud.swapping ? hud.recording < 0 : bytes > HUD_LARGE_IMAGE ?
+				n64_heap_has_held(bytes + (hud.recording >= 0 ? RECORDING_ROOM_PIECE * RECORDING_ROOM_PIECES : 0)) &&
+				n64_heap_free_held() >= bytes + reserve :
 				n64_heap_has(bytes + (hud.recording >= 0 ? RECORDING_ROOM_PIECE * RECORDING_ROOM_PIECES : 0)) &&
 				n64_heap_free() >= bytes + reserve;
 			exact = !room && !hud.swapping && critical && hud.critical_pass && hud.recording < 0 &&
-				n64_heap_free() >= bytes + reserve;
+				(bytes > HUD_LARGE_IMAGE ? n64_heap_free_held() : n64_heap_free()) >= bytes + reserve;
 			if (file)
 				fclose(file);
 			if (exact)
@@ -1279,6 +1297,7 @@ static sprite_t *hud_sprite(int number)
 	if (!hud.sprites[number])
 	{
 		int found = 0;
+		unsigned long need = 0, image = 0;
 
 		/* the full-width set's sprite where it is in use, else -- or
 		without room for it -- the half-size set's */
@@ -1298,9 +1317,13 @@ static sprite_t *hud_sprite(int number)
 			/* (asset_load doesn't check its allocation: the sprite's room
 			is looked for first, its quads left out until there is some --
 			and the room a recording began with kept for it: its chunks are
-			made as it goes) */
-			room = n64_heap_has(sprite_bytes(file) + 1024 +
-				(hud.recording >= 0 ? RECORDING_ROOM_PIECE * RECORDING_ROOM_PIECES : 0));
+			made as it goes. For an image larger than HUD_LARGE_IMAGE the
+			room is the map's before the converter's savings: the bytes its
+			image left out, the heap's once the map's display is made, are not
+			counted (n64_heap_has_held)) */
+			image = sprite_bytes(file) + 1024;
+			need = image + (hud.recording >= 0 ? RECORDING_ROOM_PIECE * RECORDING_ROOM_PIECES : 0);
+			room = image > HUD_LARGE_IMAGE ? n64_heap_has_held(need) : n64_heap_has(need);
 			fclose(file);
 			if (!room)
 				continue;

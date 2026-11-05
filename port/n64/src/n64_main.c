@@ -205,6 +205,100 @@ unsigned long n64_heap_top(char **start)
 	return *start ? *(unsigned long *)(top + 4) & ~3UL : 0;
 }
 
+/* the heap's free total less the bytes the map's image left out, the heap's
+since the map's display was made (n64_map_given): as if they were still
+held */
+unsigned long n64_heap_free_held(void)
+{
+	unsigned long given, free = n64_heap_free();
+
+	n64_map_given(&given);
+	return free > given ? free - given : 0;
+}
+
+/* whether size bytes can be had in one piece without the bytes the map's image
+left out, the heap's since the map's display was made (n64_map_given,
+n64_map_give_back): n64_heap_has as if they were still held, the room the
+map had before the converter's savings (n64_hud.c). Held, they would not be
+free, and what the heap put in them since would lie elsewhere: so the free
+total less those bytes must cover size, and a free piece outside them must
+hold it. malloc(size) takes a chunk of request2size(size) bytes (size + 4
+rounded up to a multiple of 8, at least MINSIZE, 16): a free chunk at least
+that long, the top chunk where it is that and MINSIZE longer, or libdragon's
+sbrk room above the top chunk where that room alone holds it and MINSIZE
+rounded up to its 4 KB page (malloc_extend_top asks sbrk for all of it). Of
+each free chunk only its part before or after the given bytes counts */
+int n64_heap_has_held(unsigned long size)
+{
+	unsigned long given, need = (size + 11) & ~7UL;
+	char *start = n64_map_given(&given), *end = start + given;
+	char *base = __malloc_sbrk_base, *top = __malloc_av_[2], *chunk;
+
+	if (!n64_heap_has(size))
+		return 0;
+	if (!given || base == (char *)-1 || !top)
+		return 1;
+	if (n64_heap_free_held() < size)
+		return 0;
+	if (need < 16)
+		need = 16;
+	if ((unsigned long)(__heap_top - __heap_end) >= ((need + 16 + 4095) & ~4095UL))
+		return 1;
+	chunk = base + ((8 - ((unsigned long)base & 7)) & 7);
+	while (chunk <= top)
+	{
+		unsigned long chunk_size = *(unsigned long *)(chunk + 4) & ~3UL;
+		char *to = chunk + chunk_size;
+		int unused = 1;
+
+		if (chunk == top)
+			to = chunk_size > 16 ? to - 16 : chunk;
+		else
+		{
+			if (chunk_size < 16 || to > top)
+				break;
+			unused = !(*(unsigned long *)(to + 4) & 1);
+		}
+		if (unused && ((to < start ? to : start) >= chunk + need || to >= (chunk > end ? chunk : end) + need))
+			return 1;
+		if (chunk == top)
+			break;
+		chunk += chunk_size;
+	}
+	return 0;
+}
+
+/* whether realloc(block, size) grows the block where it is: newlib's
+realloc first tries the chunk after it ("Try expanding forward", _mallocr.c),
+which must be free and, with the block's chunk, hold request2size(size) bytes
+(size + 4 rounded up to a multiple of 8, at least MINSIZE, 16) -- the top
+chunk MINSIZE more, as realloc leaves that much of it (it asks sbrk for no
+more there). Otherwise realloc would move the block: into the free chunk
+before it with the one after, or into a new one, copied (the maps' home,
+n64_map_take_back) */
+int n64_heap_grows_in_place(void *block, unsigned long size)
+{
+	char *top = __malloc_av_[2], *chunk = (char *)block - 8, *next;
+	unsigned long chunk_size, next_size, need = (size + 11) & ~7UL;
+
+	if (!block || __malloc_sbrk_base == (char *)-1 || !top)
+		return 0;
+	if (need < 16)
+		need = 16;
+	chunk_size = *(unsigned long *)(chunk + 4) & ~3UL;
+	if (chunk_size >= need)
+		return 1;
+	next = chunk + chunk_size;
+	if (next > top)
+		return 0;
+	next_size = *(unsigned long *)(next + 4) & ~3UL;
+	if (next == top)
+		return chunk_size + next_size >= need + 16;
+	if (next_size < 16 || next + next_size > top || (*(unsigned long *)(next + next_size + 4) & 1))
+		return 0;
+	return chunk_size + next_size >= need;
+}
+
 /* testing (port.json flag "debug_heap_dump"): every block in use from
 start on, its offset from the heap's start, size and first two words, in
 the log -- what a game or the menu left behind */

@@ -28,6 +28,24 @@ MAGIC = b"H64M"
 VERSION = 2
 MAP_KIND_MULTIPLAYER = 0x4D503332  # MP32: original collision, native cluster-only leaves
 MAP_KIND_CAMPAIGN = 0x43503136     # CP16: upstream campaign's compact collision
+# The map image is loaded whole into the heap, so every byte of it the game
+# never reads is heap the model cache could use. Left out of the image:
+# - the blocks of bitmap tags that only shaders, or tags of a group the
+#   image leaves out (DROPPED_GROUPS: particles, contrails, ...), refer to,
+#   and that no HUD tag reaches: the N64 draws its own converted textures.
+#   The instance, the tag index and the tag body stay. A group taken out of
+#   DROPPED_GROUPS keeps its bitmaps again (bitmap_stubs).
+# - the scenario's script data and blocks: Halo's scripts (source/hs) are
+#   not built on the N64.
+# - the names of tags the image leaves out (group NONE): one shared empty
+#   name.
+# The bytes left out go in the map's header (image_left_out): the game
+# sizes the maps' home and the map's arena, and makes the map's display and
+# level, for the image as it was, and gives the bytes to the heap after
+# (n64_game.c n64_map_give_back) -- the display's buffers and the HUD's
+# width stay as they were on every map, and the heap gains the bytes.
+SHADER_GROUPS = {"soso", "senv", "schi", "scex", "swat", "sgla", "smet", "spla", "sotr", "shdr"}
+SCRIPT_BLOCKS = {"Scenario.scripts[]", "Scenario.globals[]", "Scenario.references[]", "Scenario.source files[]"}
 PC_MAPS = {"dangercanyon", "deathisland", "gephyrophobia", "icefields", "infinity", "timberland"}
 
 
@@ -143,7 +161,15 @@ class N64Policy(Policy):
                      # tags, and their simulation)
                      "Effect.events[].particles[]")
 
+    # the bitmap tags whose blocks are left out (bitmap_stubs), and whether
+    # the savings above are made (not when the image is measured without
+    # them: convert)
+    stub_bitmaps = frozenset()
+    savings = True
+
     def keep_block(self, tag, path, count):
+        if self.savings and (tag.index in self.stub_bitmaps or path in SCRIPT_BLOCKS):
+            return 0
         return 0 if path in self.RENDER_BLOCKS else count
 
     def override(self, tag, struct_name, field_name, address):
@@ -178,7 +204,8 @@ class N64Policy(Policy):
             return self.stream(tag, swap_array(raw, 4))
         if path.endswith("UnicodeStringList.strings[].string") or path.endswith("HUDMessageText.text data"):
             return swap_array(raw, 2)
-        if path.endswith("StringList.strings[].string") or path.endswith("Scenario.script string data"):
+        if path.endswith("StringList.strings[].string") or (
+                not self.savings and path.endswith("Scenario.script string data")):
             return raw
         if path.endswith("Meter.encoded stencil") or path.endswith("permutations[].mouth data"):
             return raw
@@ -361,15 +388,55 @@ def open_map(path, *, campaign=False, pc_expansion=False, pc_maps=None, custom=F
     return xmap
 
 
-def map_header(name, image_size, relocation_count, tag_header, bsp_header, campaign=False):
+def map_header(name, image_size, relocation_count, tag_header, bsp_header, campaign=False, left_out=0):
     """The byte56 kind binds the payload to its collision/leaf compile ABI."""
     name = name.encode()[:31]
     kind = MAP_KIND_CAMPAIGN if campaign else MAP_KIND_MULTIPLAYER
     return (MAGIC + struct.pack(">I", VERSION) + name + b"\0" * (32 - len(name)) +
-            struct.pack(">IIIIII", image_size, relocation_count, tag_header, bsp_header, kind, 0))
+            struct.pack(">IIIIII", image_size, relocation_count, tag_header, bsp_header, kind, left_out))
 
 
-def convert(path, output, filesystem=None, campaign=False, pc_expansion=False, pc_maps=None, custom=False):
+def bitmap_stubs(xmap, defs, hud_reached):
+    """the bitmap tags that only shaders or tags the image leaves out refer
+    to (or nothing), and that no HUD tag reaches: their blocks are left out"""
+    from .walk import Walker
+    walker = Walker(xmap, defs)
+    bitmaps = {t.index for t in xmap.tags if t.group_name == "bitm"}
+    other = set()
+    allowed = SHADER_GROUPS | {g.decode("latin-1") for g in DROPPED_GROUPS}
+
+    def on_dependency(tag, address, f, path, group, datum):
+        t = xmap.tag(datum)
+        if t is not None and t.index in bitmaps and tag.group_name not in allowed:
+            other.add(t.index)
+
+    for tag in xmap.tags:
+        if tag.group_name == "bitm" or defs.fourcc_struct(tag.group) is None:
+            continue
+        walker.walk(tag, on_dependency=on_dependency)
+    return frozenset(bitmaps - other - set(hud_reached))
+
+
+def convert(path, output, filesystem=None, campaign=False, pc_expansion=False, pc_maps=None, custom=False,
+            savings=True, measure=False):
+    """(measure: only the image's size, returned; nothing written but the
+    HUD's and sounds' files in filesystem)"""
+    before = None
+    if savings and not measure:
+        # the image without the savings, measured (with a file system, in a
+        # scratch folder, thrown away; the sound cache shared): the header's
+        # image_left_out. Without the measure, no savings are made
+        if filesystem is not None:
+            import shutil
+            scratch = Path(filesystem).parent / f".measure-{Path(output).stem}"
+            try:
+                before = convert(path, scratch / "maps" / Path(output).name, scratch, campaign, pc_expansion,
+                                 pc_maps, custom, savings=False, measure=True)
+            finally:
+                shutil.rmtree(scratch, ignore_errors=True)
+        else:
+            before = convert(path, output, None, campaign, pc_expansion, pc_maps, custom, savings=False,
+                             measure=True)
     xmap = open_map(path, campaign=campaign, pc_expansion=pc_expansion, pc_maps=pc_maps, custom=custom)
     bsp_tag, bsp_base, bsp_size = xmap.bsps[0]
     repacker = Repacker(xmap, None)
@@ -399,10 +466,14 @@ def convert(path, output, filesystem=None, campaign=False, pc_expansion=False, p
         repacker.policy.model_collision = models
     else:
         repacker.policy = N64Policy(xmap, repacker.defs)
+    repacker.policy.savings = savings
     if filesystem is not None:
         from .hud import HudExporter
         repacker.policy.hud = HudExporter(xmap, repacker.defs, xmap.name, filesystem)
         print(f"{xmap.name} hud: {repacker.policy.hud.collect()} images")
+        if savings:
+            repacker.policy.stub_bitmaps = bitmap_stubs(xmap, repacker.defs, repacker.policy.hud.reached)
+            print(f"{xmap.name}: {len(repacker.policy.stub_bitmaps)} bitmap tags left out of the image")
         from .sounds import SoundConverter
         repacker.policy.sounds = SoundConverter(xmap, repacker.defs, Path(filesystem).parent / "sound-cache")
     image = repacker.image
@@ -418,7 +489,7 @@ def convert(path, output, filesystem=None, campaign=False, pc_expansion=False, p
         kept = t.index in roots
         group = t.group if kept else NONE
         image.put(o, struct.pack(">IIII", group, t.parents[0], t.parents[1], t.datum & 0xFFFFFFFF))
-        image.put_pointer(o + 16, repacker.name_offset(t.name))
+        image.put_pointer(o + 16, repacker.name_offset(t.name if kept or not savings else ""))
         # the BSP's instance has no address until the game loads the BSP
         # (cache_files.c scenario_structure_bsp_load asserts it)
         image.put_pointer(o + 20, None if t.index == bsp_tag.index else roots.get(t.index))
@@ -439,8 +510,15 @@ def convert(path, output, filesystem=None, campaign=False, pc_expansion=False, p
         image.put_pointer(refs + 8, bsp_header)
 
     relocs = sorted(set(image.relocs))
+    if measure:
+        return len(image.data)
+    if savings and before is None:
+        raise RuntimeError(f"{xmap.name}: the savings made but the image without them not measured")
+    left_out = max(0, before - len(image.data)) if before is not None else 0
+    if left_out:
+        print(f"{xmap.name}: {left_out} bytes left out of the image ({before} without the savings)")
     out = bytearray()
-    out += map_header(xmap.name, len(image.data), len(relocs), header, bsp_header, campaign)
+    out += map_header(xmap.name, len(image.data), len(relocs), header, bsp_header, campaign, left_out)
     out += image.data
     out += b"\0" * ((-len(out)) % 8)
     out += struct.pack(f">{len(relocs)}I", *relocs)
