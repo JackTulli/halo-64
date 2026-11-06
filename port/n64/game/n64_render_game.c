@@ -413,6 +413,9 @@ static void gather_frame_objects(
 		n64->model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(definition->object.model.index);
 		n64->node_count = (short)model_definition_get(definition->object.model.index)->nodes.count;
 		n64->node_matrices = (const float *)object_get_node_matrices(iterator.index);
+		n64->obstacle_definition = TEST_FLAG(_object_mask_scenery | _object_mask_device, object->object.type) &&
+			definition->object.collision_model.index != NONE ?
+			(unsigned short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(object->definition_index) + 1) : 0;
 		n64->head_node = -1;
 		n64->head_mask[0] = n64->head_mask[1] = 0;
 		if (n64_big_head_enabled() && object->object.type == _object_type_biped)
@@ -558,6 +561,7 @@ void n64_first_person_model_draw(
 	n64.head_node = -1;
 	n64.head_mask[0] = n64.head_mask[1] = 0;
 	n64.key = 0;
+	n64.obstacle_definition = 0;
 	n64.region_permutations = no_permutations;
 	n64.region_count = 0;
 	n64.center[0] = render.camera.position.x;

@@ -568,6 +568,8 @@ void n64_render_set_clear_color(unsigned long rgb)
 
 static void load_models(const char *map_name);
 static void flush_draws(void);
+static void standin_load(const char *map_name);
+static void standin_unload(void);
 
 static int view_model_quality;
 /* Settings: VIEW MODEL "OFF IN SPLIT": the low models, not drawn with three
@@ -2621,6 +2623,7 @@ static void load_models(const char *map_name)
 
 void n64_render_unload_level(void)
 {
+	standin_unload();
 	if (level.data)
 	{
 		rspq_wait();
@@ -3092,6 +3095,7 @@ int n64_render_load_level(const char *map_name, int low)
 		if (!models.data)
 			load_models(map_name);
 	}
+	standin_load(map_name);
 	debugf("n64: level %s: %d clusters, %d batches, %lu KB, %lu KB of heap left\n", map_name,
 		level.header->cluster_count, level.header->batch_count, (unsigned long)size / 1024,
 		n64_heap_free() / 1024);
@@ -4615,12 +4619,390 @@ static void sort_draws(void)
 		memcpy(queued_order, from, n * sizeof(queued_order[0]));
 }
 
+/* Obstacle stand-ins (tools/n64/standins.py): an obstacle -- scenery, a
+machine, a control or a light fixture with a collision model -- whose model
+has no room in the cache is drawn as hulls of its collision, in its
+model's average colour, so that nothing a player runs into is unseen. A
+hull per collision node and BSP (one per permutation of the node's region:
+a boulder's five shapes), the one the object collides as; a tree's canopy
+("leaves" surfaces) see-through, as it stops players, vehicles and shots
+but not sight. Read with the level (levels/<map>.sti), freed with it. */
+#define STANDIN_ALPHA 112
+#define STANDIN_QUEUE 64
+/* (the most parts a type has: a queued stand-in's parts are a 32-bit mask; tools/n64/standins.py writes no more) */
+#define STANDIN_TYPE_PARTS 32
+struct standin_type
+{
+	uint16_t definition, first_part, part_count, unused;
+};
+struct standin_part
+{
+	uint16_t first_pair, first_triangle;
+	uint8_t node;
+	int8_t region;
+	uint8_t bsp, bsp_count, flags, vertex_count, triangle_count, unused;
+};
+static struct
+{
+	int type_count;
+	const struct standin_type *types;
+	const struct standin_part *parts;
+	const T3DVertPacked *pairs;
+	const uint8_t *triangles;
+	void *block;
+} standins;
+static struct
+{
+	short type, node_count;
+	uint32_t parts;
+	T3DMat4FP *matrices;
+} standin_queued[STANDIN_QUEUE];
+static int standin_queued_count;
+/* (flush_draws is drawing: a full queue is drawn as it is) */
+static int standin_flushing;
+static void standin_flush(void);
+
+static void standin_unload(void)
+{
+	if (standins.block)
+		rspq_wait(); /* (the RSP done with its vertices) */
+	free(standins.block);
+	memset(&standins, 0, sizeof(standins));
+	standin_queued_count = 0;
+}
+
+static unsigned standin_u16(const uint8_t *p)
+{
+	return (p[0] << 8) | p[1];
+}
+
+/* (each type's parts, each part's vertices and triangles, and each
+triangle's vertex numbers within the file's tables and tiny3d's vertex
+cache) */
+static int standin_valid(const uint8_t *type_table, const uint8_t *part_table, const uint8_t *triangle_table,
+	int types, int parts, int vertices, int triangles)
+{
+	for (int t = 0; t < types; t++)
+	{
+		if (standin_u16(type_table + 8 * t + 4) > STANDIN_TYPE_PARTS ||
+			standin_u16(type_table + 8 * t + 2) + standin_u16(type_table + 8 * t + 4) > parts)
+			return 0;
+	}
+	for (int p = 0; p < parts; p++)
+	{
+		const uint8_t *e = part_table + 16 * p;
+		int count = e[5], first_triangle = standin_u16(e + 10);
+
+		if (count > T3D_VERTEX_CACHE_SIZE || standin_u16(e + 8) + count > vertices || first_triangle + e[6] > triangles)
+			return 0;
+		for (int k = 0; k < 3 * e[6]; k++)
+		{
+			if (triangle_table[3 * first_triangle + k] >= count)
+				return 0;
+		}
+	}
+	return 1;
+}
+
+/* OBSTACLE STAND-INS (SETTINGS, default on): off, standin_load reads no
+map's stand-ins, so none is drawn and none takes the heap */
+static int standins_on = 1;
+
+void n64_render_set_standins(int on)
+{
+	standins_on = on != 0;
+}
+
+static void standin_load(const char *map_name)
+{
+	char path[64];
+	FILE *file;
+	long size;
+	uint8_t *raw;
+
+	standin_unload();
+	if (!standins_on)
+	{
+		debugf("n64: stand-ins off (OBSTACLE STAND-INS)\n");
+		return;
+	}
+	snprintf(path, sizeof(path), "rom:/levels/%s.sti", map_name);
+	file = open_direct(path);
+	if (!file)
+		return;
+	fseek(file, 0, SEEK_END);
+	size = ftell(file);
+	fseek(file, 0, SEEK_SET);
+	raw = size >= 16 ? malloc(size) : NULL;
+	if (!raw || fread(raw, 1, size, file) != (size_t)size || memcmp(raw, "H64S", 4) || standin_u16(raw + 4) != 1)
+	{
+		debugf("n64: %s left out: not this build's stand-ins (tools/n64/standins.py)\n", path);
+		free(raw);
+		fclose(file);
+		return;
+	}
+	fclose(file);
+	int types = standin_u16(raw + 6), parts = standin_u16(raw + 8), triangles = standin_u16(raw + 12);
+	const uint8_t *type_table = raw + 16, *part_table = type_table + 8 * types;
+	const uint8_t *vertex_table = part_table + 16 * parts, *triangle_table = vertex_table + 8 * standin_u16(raw + 10);
+	int pairs = 0;
+
+	/* (the tables within the file and consistent before any is read) */
+	if ((long)(triangle_table + triangles * 3 - raw) > size ||
+		!standin_valid(type_table, part_table, triangle_table, types, parts, standin_u16(raw + 10), triangles))
+	{
+		debugf("n64: %s left out: damaged\n", path);
+		free(raw);
+		return;
+	}
+	for (int p = 0; p < parts; p++)
+		pairs += (part_table[16 * p + 5] + 1) / 2;
+	/* one block: the types, the parts, the vertices as tiny3d loads them
+	(16-byte aligned: a table that was not cost an emulated exception for
+	each of its pointers), the triangles */
+	unsigned long parts_at = (types * sizeof(struct standin_type) + 15) & ~15UL;
+	unsigned long pairs_at = (parts_at + parts * sizeof(struct standin_part) + 15) & ~15UL;
+	unsigned long bytes = pairs_at + pairs * sizeof(T3DVertPacked) + triangles * 3;
+	uint8_t *block = memalign(16, bytes);
+
+	if (!block)
+	{
+		free(block);
+		free(raw);
+		return;
+	}
+	struct standin_type *type = (struct standin_type *)block;
+	struct standin_part *part = (struct standin_part *)(block + parts_at);
+	T3DVertPacked *pair = (T3DVertPacked *)(block + pairs_at);
+	uint8_t *triangle = block + pairs_at + pairs * sizeof(T3DVertPacked);
+	int next_pair = 0;
+
+	for (int t = 0; t < types; t++)
+	{
+		type[t].definition = standin_u16(type_table + 8 * t);
+		type[t].first_part = standin_u16(type_table + 8 * t + 2);
+		type[t].part_count = standin_u16(type_table + 8 * t + 4);
+		type[t].unused = 0;
+	}
+	/* (in the order of their definitions: standin_type_of) */
+	for (int t = 1; t < types; t++)
+	{
+		struct standin_type moved = type[t];
+		int u = t;
+
+		for (; u > 0 && type[u - 1].definition > moved.definition; u--)
+			type[u] = type[u - 1];
+		type[u] = moved;
+	}
+	for (int p = 0; p < parts; p++)
+	{
+		const uint8_t *e = part_table + 16 * p;
+		const uint8_t *v = vertex_table + 8 * standin_u16(e + 8);
+		int count = e[5];
+
+		part[p] = (struct standin_part){
+			.first_pair = (uint16_t)next_pair, .first_triangle = (uint16_t)standin_u16(e + 10), .node = e[0],
+			.region = (int8_t)e[1], .bsp = e[2], .bsp_count = e[3], .flags = e[4], .vertex_count = (uint8_t)count,
+			.triangle_count = e[6],
+		};
+		/* (vertices in 8 bytes, x y z and a shade, made tiny3d's 16 in
+		pairs, coloured with the part's colour) */
+		for (int k = 0; k < count; k++, v += 8)
+		{
+			T3DVertPacked *q = &pair[next_pair + k / 2];
+			int16_t x = (int16_t)standin_u16(v), y = (int16_t)standin_u16(v + 2), z = (int16_t)standin_u16(v + 4);
+			uint32_t rgba = ((uint32_t)(e[12] * v[6] / 255) << 24) | ((uint32_t)(e[13] * v[6] / 255) << 16) |
+				((uint32_t)(e[14] * v[6] / 255) << 8) | 0xFF;
+
+			if (k % 2 == 0)
+			{
+				*q = (T3DVertPacked){.posA = {x, y, z}, .rgbaA = rgba, .posB = {x, y, z}, .rgbaB = rgba};
+			}
+			else
+			{
+				q->posB[0] = x, q->posB[1] = y, q->posB[2] = z;
+				q->rgbaB = rgba;
+			}
+		}
+		next_pair += (count + 1) / 2;
+	}
+	memcpy(triangle, triangle_table, triangles * 3);
+	data_cache_hit_writeback(block, bytes);
+	free(raw);
+	standins.block = block;
+	standins.types = type;
+	standins.parts = part;
+	standins.pairs = pair;
+	standins.triangles = triangle;
+	standins.type_count = types;
+	debugf("n64: stand-ins for %d obstacle kinds: %d parts, %d triangles, %lu bytes\n", types, parts, triangles, bytes);
+}
+
+/* an obstacle kind's stand-in (n64_object's obstacle_definition); NULL: none
+(no stand-ins for this map, or none for this kind) */
+static const struct standin_type *standin_type_of(unsigned obstacle_definition)
+{
+	int low = 0, high = standins.type_count - 1;
+
+	while (low <= high)
+	{
+		int middle = (low + high) / 2;
+		unsigned definition = standins.types[middle].definition + 1u;
+
+		if (definition == obstacle_definition)
+			return standins.types[middle].part_count ? &standins.types[middle] : NULL;
+		if (definition < obstacle_definition)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	return NULL;
+}
+
+/* an obstacle whose model was not drawn: its parts the object collides as
+(each part's region's permutation pinned to the node's BSPs, as
+collision_models.c does) queued with its nodes' matrices; 0: none */
+static int standin_queue(const struct n64_object *object)
+{
+	const struct standin_type *type = standin_type_of(object->obstacle_definition);
+	uint32_t chosen = 0;
+	int nodes = 0;
+
+	if (!type)
+		return 0;
+	for (int p = 0; p < type->part_count && p < STANDIN_TYPE_PARTS; p++)
+	{
+		const struct standin_part *part = &standins.parts[type->first_part + p];
+
+		if (part->node >= object->node_count)
+			continue;
+		if (part->region >= 0)
+		{
+			int permutation = part->region < object->region_count ? object->region_permutations[part->region] : 0;
+
+			if (permutation == 0xFF)
+				continue;
+			if (permutation >= part->bsp_count)
+				permutation = part->bsp_count - 1;
+			if (permutation != part->bsp)
+				continue;
+		}
+		chosen |= 1UL << p;
+		if (part->node + 1 > nodes)
+			nodes = part->node + 1;
+	}
+	if (!chosen || renderer.matrix_count + nodes > MATRICES_PER_FRAME)
+		return 0;
+	/* (a full queue drawn first, with the models queued before it: in a
+	flush, the models are drawn already) */
+	if (standin_queued_count == STANDIN_QUEUE)
+	{
+		if (standin_flushing)
+			standin_flush();
+		else
+			flush_draws();
+	}
+	T3DMat4FP *matrices = renderer.matrices[renderer.frame_index % FRAMES_IN_FLIGHT] + renderer.matrix_count;
+
+	renderer.matrix_count += nodes;
+	for (int n = 0; n < nodes; n++)
+	{
+		/* (as render_object converts a node's matrix) */
+		const float *m = object->node_matrices + n * 13;
+		float axes = m[0] * (WORLD_SCALE / MODEL_SCALE * 65536.0f);
+		float rows[4][3] = {
+			{m[1] * axes, m[2] * axes, m[3] * axes},
+			{m[4] * axes, m[5] * axes, m[6] * axes},
+			{m[7] * axes, m[8] * axes, m[9] * axes},
+			{m[10] * (WORLD_SCALE * 65536.0f), m[11] * (WORLD_SCALE * 65536.0f), m[12] * (WORLD_SCALE * 65536.0f)},
+		};
+
+		for (int y = 0; y < 4; y++)
+		{
+			typedef uint64_t __attribute__((may_alias)) fixed_words;
+			uint32_t fixed0 = (uint32_t)(int32_t)rows[y][0];
+			uint32_t fixed1 = (uint32_t)(int32_t)rows[y][1];
+			uint32_t fixed2 = (uint32_t)(int32_t)rows[y][2];
+			uint64_t integers = (fixed0 & 0xFFFF0000) | (fixed1 >> 16);
+			uint64_t fractions = (fixed0 << 16) | (fixed1 & 0xFFFF);
+
+			integers <<= 32;
+			integers |= (fixed2 & 0xFFFF0000) | (y == 3);
+			fractions <<= 32;
+			fractions |= fixed2 << 16;
+			*(fixed_words *)matrices[n].m[y].i = integers;
+			*(fixed_words *)matrices[n].m[y].f = fractions;
+		}
+	}
+	standin_queued[standin_queued_count].type = (short)(type - standins.types);
+	standin_queued[standin_queued_count].node_count = (short)nodes;
+	standin_queued[standin_queued_count].parts = chosen;
+	standin_queued[standin_queued_count].matrices = matrices;
+	standin_queued_count++;
+	return 1;
+}
+
+/* the queued stand-ins after the view's models: the solid parts, then the
+see-through ones (depth tested, not written); the models' mode and texture
+set again after them */
+static void standin_flush(void)
+{
+	if (!standin_queued_count)
+		return;
+	record_model_modes(0);
+	for (int see_through = 0; see_through < 2; see_through++)
+	{
+		int begun = 0;
+
+		for (int i = 0; i < standin_queued_count; i++)
+		{
+			const struct standin_type *type = &standins.types[standin_queued[i].type];
+
+			for (int p = 0; p < type->part_count && p < STANDIN_TYPE_PARTS; p++)
+			{
+				const struct standin_part *part = &standins.parts[type->first_part + p];
+
+				if (!(standin_queued[i].parts & (1UL << p)) || (part->flags & 1) != see_through)
+					continue;
+				if (!begun)
+				{
+					rspq_block_run(model_modes[model_mode(NULL, 0, see_through ? STANDIN_ALPHA : 255)]);
+					if (see_through)
+						rdpq_set_prim_color(RGBA32(255, 255, 255, STANDIN_ALPHA));
+					t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH);
+					t3d_matrix_push_pos(1);
+					begun = 1;
+				}
+				t3d_matrix_set(&standin_queued[i].matrices[part->node], true);
+				t3d_vert_load(standins.pairs + part->first_pair, 0, part->vertex_count);
+				for (int k = 0; k < part->triangle_count; k++)
+				{
+					const uint8_t *t = standins.triangles + 3 * (part->first_triangle + k);
+
+					t3d_tri_draw(t[0], t[1], t[2]);
+				}
+				t3d_tri_sync();
+				renderer.triangles += part->triangle_count;
+			}
+		}
+		if (begun)
+			t3d_matrix_pop(1);
+	}
+	standin_queued_count = 0;
+	current_model_mode = -1;
+	renderer.current_texture = -2;
+	current_color = 0xFFFFFFFF;
+}
+
 static void flush_draws(void)
 {
 	T3DMat4FP *current_matrices = NULL;
 
 	if (!queued_count)
+	{
+		standin_flush();
 		return;
+	}
 	sort_draws();
 	for (int i = 0; i < queued_count; i++)
 	{
@@ -4654,6 +5036,7 @@ static void flush_draws(void)
 	if (current_matrices)
 		t3d_matrix_pop(1);
 	queued_count = 0;
+	standin_flush();
 }
 
 static void render_object(const struct n64_object *object)
@@ -4717,7 +5100,11 @@ static void render_object(const struct n64_object *object)
 	if (renderer.first_person)
 		models.loaded[model - models.models].first_person_drawn = renderer.frame_index;
 	if (!load_model(model - models.models))
+	{
+		if (object->obstacle_definition)
+			standin_queue(object);
 		return;
+	}
 	/* an object seen in an earlier view of this frame has its matrices */
 	matrices = NULL;
 	if (object->key)

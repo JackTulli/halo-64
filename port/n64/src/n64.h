@@ -274,6 +274,10 @@ struct n64_object
 	/* the object (non-zero, the same in every view of a frame: its node
 	matrices are converted once a frame), or 0 */
 	unsigned long key;
+	/* an obstacle -- scenery, a machine, a control or a light fixture with
+	a collision model: its definition's absolute tag index + 1, its stand-in
+	drawn where its model is not (levels/<map>.sti); 0: none */
+	unsigned short obstacle_definition;
 };
 
 void n64_render_initialize(void);
@@ -657,6 +661,9 @@ void n64_render_wait_sync_full(void);
 /* TERRAIN DETAIL (SETTINGS): 0 full, 1 no overlays, 2 nearest mipmaps, 3
 none (n64_render.c) */
 void n64_render_set_terrain_detail(int mode);
+/* OBSTACLE STAND-INS (SETTINGS): off, no map's stand-ins are read; from the
+next map's load (n64_render.c) */
+void n64_render_set_standins(int on);
 /* the HUD's inset from each view's edges in pixels, for a television's
 overscan (Settings: HUD INSET; port.json flag "debug_hud_inset=<pixels>") */
 void n64_hud_set_inset(int pixels);

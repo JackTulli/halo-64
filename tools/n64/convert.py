@@ -515,6 +515,10 @@ def write_campaign_assets(xmap, repacker, filesystem):
         stats = models.write(filesystem / "levels" / f"{xmap.name}{suffix}.mdl")
         print(f"{xmap.name}{suffix} models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         model_sets.append(models)
+    # the obstacles' stand-ins (standins.py), coloured from the models as written
+    from . import standins
+    stats = standins.write(xmap, repacker.defs, filesystem, xmap.name, filesystem / "levels" / f"{xmap.name}.sti")
+    print(f"{xmap.name} stand-ins: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
     stats = EffectParticles(xmap, repacker.defs).write(filesystem / "fx" / f"{xmap.name}.fx")
     print(f"{xmap.name} particles: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
     write_list(filesystem / "tex" / f"{xmap.name}.list",
@@ -599,6 +603,12 @@ def main():
             stats = low_models.write(args.filesystem / "levels" / f"{xmap.name}-low{suffix}.mdl")
             print(f"{xmap.name}-low{suffix} models: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
             model_sets += [models, low_models]
+        # the obstacles' stand-ins (standins.py), coloured from the models as
+        # written (the full set's)
+        from . import standins
+        stats = standins.write(xmap, repacker.defs, args.filesystem, xmap.name,
+                               args.filesystem / "levels" / f"{xmap.name}.sti")
+        print(f"{xmap.name} stand-ins: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         # the effects' particles (port/n64/src/n64_particles.c)
         from .effects import EffectParticles
         stats = EffectParticles(xmap, repacker.defs).write(args.filesystem / "fx" / f"{xmap.name}.fx")

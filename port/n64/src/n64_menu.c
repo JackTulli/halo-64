@@ -232,6 +232,8 @@ static struct
 	/* HUD RESOLUTION STANDARD: the HUD 320 across, not at high detail
 	(n64_render_set_hud_detail) */
 	int hud_standard;
+	/* OBSTACLE STAND-INS off (n64_render_set_standins) */
+	int no_standins;
 	/* FIELD OF VIEW: degrees, FOV_MINIMUM to FOV_MAXIMUM a FOV_STEP at a
 	time (n64_field_of_view) */
 	int field_of_view;
@@ -956,8 +958,8 @@ enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE
 #define RUMBLE_PULSE_FRAMES 12
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
 enum { SETTING_CHUNKY, SETTING_HUD, SETTING_FIELD_OF_VIEW, SETTING_WIDESCREEN, SETTING_ANIMATIONS, SETTING_PARTICLES,
-	SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_TERRAIN, SETTING_ANTIALIAS, SETTING_DEDITHER, SETTING_HUD_INSET,
-	SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
+	SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_TERRAIN, SETTING_STANDINS, SETTING_ANTIALIAS, SETTING_DEDITHER,
+	SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
 /* the Settings rows shown: HUD RESOLUTION is not on the campaign cartridge
 (its level leaves no room for a 640x240 HUD after the menu: the row would do
 nothing); a row's place in the list */
@@ -1033,9 +1035,11 @@ static void settings_pack(unsigned char *bytes)
 	bytes[12] = (unsigned char)menu.fps_counter;
 	bytes[14] = (unsigned char)menu.terrain_detail;
 	/* (byte 15, a bit each, 0 in the records kept before them: DECALS off,
-	ANTI-ALIASING on, DEDITHER on, HUD RESOLUTION STANDARD) */
+	ANTI-ALIASING on, DEDITHER on, HUD RESOLUTION STANDARD; bit 4 unused;
+	OBSTACLE STAND-INS off, bit 5, so that a record from before the row
+	reads on) */
 	bytes[15] = (unsigned char)((menu.no_decals != 0) | (menu.antialias != 0) << 1 | (menu.dedither != 0) << 2 |
-		(menu.hud_standard != 0) << 3);
+		(menu.hud_standard != 0) << 3 | (menu.no_standins != 0) << 5);
 	/* (FIELD OF VIEW in degrees after the controllers', 0 in the records
 	kept before it: the default) */
 	bytes[40] = (unsigned char)menu.field_of_view;
@@ -1078,6 +1082,7 @@ static int settings_unpack(const unsigned char *bytes)
 	menu.antialias = (bytes[15] >> 1) & 1;
 	menu.dedither = (bytes[15] >> 2) & 1;
 	menu.hud_standard = (bytes[15] >> 3) & 1;
+	menu.no_standins = (bytes[15] >> 5) & 1;
 	menu.field_of_view = bytes[40] >= FOV_MINIMUM && bytes[40] <= FOV_MAXIMUM && !(bytes[40] % FOV_STEP) ?
 		bytes[40] : FOV_DEFAULT;
 	/* (the menu's display made next takes it too) */
@@ -1591,6 +1596,7 @@ static void draw_settings(int item)
 		[SETTING_DECALS] = {"BULLET HOLES, BLOOD AND SCORCH MARKS ON", "WALLS AND FLOORS (OFF: A LITTLE FASTER)"},
 		[SETTING_VIEW_MODEL] = {"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES;", "OFF IN SPLIT: LOW, NONE WITH 3-4 PLAYERS (FASTER)"},
 		[SETTING_TERRAIN] = {"FULL: GROUND DETAIL AT EVERY DISTANCE; HIGH: IT", "FADES; MEDIUM: LESS ON ROCK; LOW: NONE (FASTER)"},
+		[SETTING_STANDINS] = {"SIMPLE SHAPES FOR OBSTACLES WHEN MEMORY IS SHORT", "(OFF: OBSTACLES MAY VANISH WHEN MEMORY IS SHORT)"},
 		[SETTING_WIDESCREEN] = {"ANAMORPHIC: A 16:9 PICTURE, FOR A SCREEN", "THAT STRETCHES THE IMAGE TO 16:9"},
 		[SETTING_ANTIALIAS] = {"SMOOTHS THE EDGES OF WALLS, GROUND AND OBJECTS", "(THE N64'S OWN ANTI-ALIASING: SLOWER)"},
 		[SETTING_DEDITHER] = {"THE N64'S FILTER THAT SMOOTHS THE DITHER", "OUT OF THE PICTURE'S COLOURS"},
@@ -1662,6 +1668,10 @@ static void draw_settings(int item)
 			label = "TERRAIN DETAIL";
 			snprintf(value, sizeof(value), "%s",
 				terrain_details[menu.terrain_detail >= 0 && menu.terrain_detail <= 3 ? menu.terrain_detail : 0]);
+			break;
+		case SETTING_STANDINS:
+			label = "OBSTACLE STAND-INS";
+			snprintf(value, sizeof(value), "%s", menu.no_standins ? "OFF" : "ON");
 			break;
 		case SETTING_ANTIALIAS:
 			label = "ANTI-ALIASING";
@@ -2431,6 +2441,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					menu.no_decals = !menu.no_decals;
 				if (setting == SETTING_ANTIALIAS && (pad->left || pad->right || pad->pressed.a))
 					menu.antialias = !menu.antialias;
+				if (setting == SETTING_STANDINS && (pad->left || pad->right || pad->pressed.a))
+					menu.no_standins = !menu.no_standins;
 				if (setting == SETTING_DEDITHER && (pad->left || pad->right || pad->pressed.a))
 				{
 					menu.dedither = !menu.dedither;
@@ -2630,6 +2642,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_hud_set_inset(menu.hud_inset);
 			n64_render_show_counter(menu.fps_counter);
 			n64_render_set_terrain_detail(menu.terrain_detail);
+			/* (read at the map's load) */
+			n64_render_set_standins(!menu.no_standins);
 			n64_paint_set_decals(!menu.no_decals);
 			n64_render_set_antialias(menu.antialias);
 			n64_render_set_high_detail(menu.chunky == RESOLUTION_ULTRA ? N64_DETAIL_ULTRA :
