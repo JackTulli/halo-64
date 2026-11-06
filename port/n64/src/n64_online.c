@@ -353,6 +353,8 @@ static void frame_objects(const uint8_t *payload, int length)
 		o->id = (unsigned short)id;
 		memset(&o->n64, 0, sizeof(o->n64));
 		o->n64.model_tag_index = (short)model;
+		/* (the cache's tiers are for a game this cartridge plays itself) */
+		o->n64.tier = N64_TIER_DECORATION;
 		o->n64.node_count = (short)nodes;
 		o->n64.node_matrices = matrices;
 		memset(o->regions, 0, sizeof(o->regions));

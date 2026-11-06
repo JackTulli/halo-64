@@ -83,6 +83,25 @@ int n64_heap_has(unsigned long size)
 	return 1;
 }
 
+/* whether the heap has a piece of first bytes and, besides it, count pieces
+of each bytes, all at once (each probe made and freed through the volatile
+probes, as n64_heap_has) */
+static void *volatile heap_pieces[8];
+
+int n64_heap_has_pieces(unsigned long first, int count, unsigned long each)
+{
+	int ok = (heap_pieces[0] = malloc(first)) != NULL;
+
+	for (int i = 1; ok && i <= count && i < 8; i++)
+		ok = (heap_pieces[i] = malloc(each)) != NULL;
+	for (int i = 0; i < 8; i++)
+	{
+		free(heap_pieces[i]);
+		heap_pieces[i] = NULL;
+	}
+	return ok;
+}
+
 /* ---------- the heap's map
 
 newlib's malloc (dlmalloc 2.6) lays its chunks end to end from its first
@@ -297,6 +316,99 @@ int n64_heap_grows_in_place(void *block, unsigned long size)
 	if (next_size < 16 || next + next_size > top || (*(unsigned long *)(next + next_size + 4) & 1))
 		return 0;
 	return chunk_size + next_size >= need;
+}
+
+/* where freeing some of the given blocks (heap blocks' addresses, ascending)
+would make room for a chunk of size bytes: of the runs of free chunks and
+those blocks' chunks, the stretch of whole chunks at least size long with
+the fewest of the blocks in it -- all in one run. The top chunk, last, counts
+as its size less MINSIZE (16): malloc takes a chunk from it only where that
+much is left over. libdragon's sbrk room above it does not add to it: malloc
+asks sbrk for the whole chunk and MINSIZE, rounded up to its 4 KB page
+(malloc_extend_top), so the room counts only where it holds that by itself.
+(free trims the top chunk where it reaches 128 KB (malloc_trim,
+DEFAULT_TRIM_THRESHOLD; libdragon's sbrk takes a negative increment): all
+but less than a page goes back to sbrk. A stretch that ends in the top
+chunk is then sbrk room, which counts only where it holds the whole chunk
+alone; with little room past __heap_end, the drops could make no piece. It
+takes a stretch of about 120 KB or more to reach the threshold: the largest
+model's data on the maps is 45,470 bytes (scenery\c_uplink), well under it)
+chosen[i] is set for each block in the stretch; returns how many (0: a free
+piece is there already), -1: no run is that long */
+int n64_heap_window(void *const *blocks, int count, unsigned long size, unsigned char *chosen)
+{
+	char *base = __malloc_sbrk_base, *top = __malloc_av_[2], *chunk, *left = NULL, *best_left = NULL, *best_right = NULL;
+	unsigned long sum = 0;
+	int next = 0, drops = 0, best = -1;
+
+	memset(chosen, 0, count);
+	if (base == (char *)-1 || !top)
+		return -1;
+	chunk = base + ((8 - ((unsigned long)base & 7)) & 7);
+	while (chunk <= top)
+	{
+		unsigned long chunk_size = *(unsigned long *)(chunk + 4) & ~3UL;
+		int part, block = 0;
+
+		if (chunk == top)
+		{
+			chunk_size = chunk_size > 16 ? chunk_size - 16 : 0;
+			part = 1;
+		}
+		else
+		{
+			if (chunk_size < 16 || chunk + chunk_size > top)
+				break;
+			while (next < count && (char *)blocks[next] < chunk + 8)
+				next++;
+			part = !(*(unsigned long *)(chunk + chunk_size + 4) & 1);
+			if (next < count && (char *)blocks[next] == chunk + 8)
+			{
+				part = block = 1;
+				next++;
+			}
+		}
+		if (!part)
+			left = NULL;
+		else
+		{
+			if (!left)
+			{
+				left = chunk;
+				sum = 0;
+				drops = 0;
+			}
+			sum += chunk_size;
+			drops += block;
+			/* (the stretch's first chunks left out while the rest is long
+			enough: that leaves as many blocks or fewer. A chunk in use in a
+			run is one of the blocks: its use bit is in the next chunk) */
+			while (left != chunk)
+			{
+				unsigned long left_size = *(unsigned long *)(left + 4) & ~3UL;
+
+				if (sum - left_size < size)
+					break;
+				sum -= left_size;
+				drops -= (int)(*(unsigned long *)(left + left_size + 4) & 1);
+				left += left_size;
+			}
+			if (sum >= size && (best < 0 || drops < best))
+			{
+				best = drops;
+				best_left = left;
+				best_right = chunk;
+			}
+		}
+		if (chunk == top)
+			break;
+		chunk += chunk_size;
+	}
+	if (best != 0 && (unsigned long)(__heap_top - __heap_end) >= ((size + 16 + 4095) & ~4095UL))
+		best = 0;
+	for (int i = 0; best > 0 && i < count; i++)
+		chosen[i] = (char *)blocks[i] - 8 >= best_left && (char *)blocks[i] - 8 <= best_right;
+	return best;
 }
 
 /* testing (port.json flag "debug_heap_dump"): every block in use from

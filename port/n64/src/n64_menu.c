@@ -598,6 +598,7 @@ static void draw_scene(void)
 			.model_tag_index = (short)menu.sky_model, .node_count = 1, .node_matrices = matrix,
 			.region_permutations = permutations, .region_count = 0,
 			.center = {c[0], c[1], c[2]}, .radius = 1000.f, .tint = {0xFF, 0xFF, 0xFF, 0xFF},
+			.tier = N64_TIER_DECORATION,
 		};
 
 		n64_render_object(&sky);
@@ -609,6 +610,7 @@ static void draw_scene(void)
 			.model_tag_index = (short)menu.ring_model, .node_count = 1, .node_matrices = menu.ring,
 			.region_permutations = permutations, .region_count = 0,
 			.center = {menu.ring[10], menu.ring[11], menu.ring[12]}, .radius = 40.f, .tint = {0xFF, 0xFF, 0xFF, 0xFF},
+			.tier = N64_TIER_DECORATION,
 		};
 
 		n64_render_object(&ring);
@@ -1596,7 +1598,13 @@ static void draw_settings(int item)
 		[SETTING_DECALS] = {"BULLET HOLES, BLOOD AND SCORCH MARKS ON", "WALLS AND FLOORS (OFF: A LITTLE FASTER)"},
 		[SETTING_VIEW_MODEL] = {"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES;", "OFF IN SPLIT: LOW, NONE WITH 3-4 PLAYERS (FASTER)"},
 		[SETTING_TERRAIN] = {"FULL: GROUND DETAIL AT EVERY DISTANCE; HIGH: IT", "FADES; MEDIUM: LESS ON ROCK; LOW: NONE (FASTER)"},
+		/* (on the PC Expansion cartridge OFF puts the gun first: the local
+		player's view model's load may push the obstacles out, n64_render.c) */
+#ifdef HALO_N64_PC_EXPANSION
+		[SETTING_STANDINS] = {"SIMPLE SHAPES FOR OBSTACLES WHEN MEMORY IS SHORT", "(OFF: OBSTACLES MAY VANISH TO SHOW THE GUN)"},
+#else
 		[SETTING_STANDINS] = {"SIMPLE SHAPES FOR OBSTACLES WHEN MEMORY IS SHORT", "(OFF: OBSTACLES MAY VANISH WHEN MEMORY IS SHORT)"},
+#endif
 		[SETTING_WIDESCREEN] = {"ANAMORPHIC: A 16:9 PICTURE, FOR A SCREEN", "THAT STRETCHES THE IMAGE TO 16:9"},
 		[SETTING_ANTIALIAS] = {"SMOOTHS THE EDGES OF WALLS, GROUND AND OBJECTS", "(THE N64'S OWN ANTI-ALIASING: SLOWER)"},
 		[SETTING_DEDITHER] = {"THE N64'S FILTER THAT SMOOTHS THE DITHER", "OUT OF THE PICTURE'S COLOURS"},

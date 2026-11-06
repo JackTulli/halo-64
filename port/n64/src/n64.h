@@ -63,6 +63,8 @@ int n64_heap_has_held(unsigned long size);
 unsigned long n64_heap_free_held(void);
 /* whether realloc(block, size) grows block where it is */
 int n64_heap_grows_in_place(void *block, unsigned long size);
+int n64_heap_has_pieces(unsigned long first, int count, unsigned long each);
+int n64_heap_window(void *const *blocks, int count, unsigned long size, unsigned char *chosen);
 void n64_heap_dump(const char *tag, const void *start);
 /* the maps' home (n64_game.c) and the display buffers lent from it
 (n64_main.c, n64_render.c) */
@@ -287,11 +289,28 @@ struct n64_object
 	a collision model: its definition's absolute tag index + 1, its stand-in
 	drawn where its model is not (levels/<map>.sti); 0: none */
 	unsigned short obstacle_definition;
+	/* its model's tier for the model cache (n64_render.c load_model), most
+	wanted first: N64_TIER_FIRST_PERSON the local player's own view models,
+	N64_TIER_ACTOR bipeds, vehicles, projectiles and what a unit carries,
+	N64_TIER_ITEM weapons, equipment and garbage on the ground (nothing
+	shows them where their model has no room), N64_TIER_OBSTACLE scenery and
+	devices that collide (their stand-ins show them where their model has no
+	room; one with no stand-in to show is drawn at N64_TIER_ACTOR,
+	n64_render.c), N64_TIER_DECORATION scenery and devices that do not
+	collide, and the rest */
+	unsigned char tier;
 };
+#define N64_TIER_FIRST_PERSON 0
+#define N64_TIER_ACTOR 1
+#define N64_TIER_ITEM 2
+#define N64_TIER_OBSTACLE 3
+#define N64_TIER_DECORATION 4
 
 void n64_render_initialize(void);
 /* loads rom:/levels/<map>.lvl and its textures (with low, the lighter
 <map>-low.lvl where there is one); FALSE if there is none */
+/* the game's local players (before its level loads: the model cache's tiers) */
+void n64_render_set_players(int count);
 int n64_render_load_level(const char *map_name, int low);
 void n64_render_frame_begin(void);
 void n64_render_view(const struct n64_view *view);
@@ -660,6 +679,11 @@ void n64_hud_forget_recordings(void);
 from the cache for it; 0 if it can't be made (n64_render.c; not while
 recording a block) */
 int n64_render_make_room(unsigned long size, int count);
+/* room on the heap for need bytes in one piece, for a HUD image: on the PC
+Expansion cartridge with one or two players, item, obstacle and decoration
+models pushed out for it (n64_render.c; not while recording a block). 1:
+room; 0: none, nothing pushed out; -1: none, though models were pushed out */
+int n64_render_push_out_for_hud(unsigned long image, int pieces, unsigned long piece);
 /* the RSP's RDP output moved off every block's buffer, before a block is
 freed with rdpq_call_deferred (n64_render.c; not while recording a block) */
 void n64_render_park_rdp_output(void);
