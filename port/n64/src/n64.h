@@ -43,6 +43,8 @@ unsigned long long n64_microseconds(void);
 void n64_wait_microseconds(unsigned long microseconds);
 /* memory left on the heap, and the largest free block */
 unsigned long n64_heap_free(void);
+/* the bytes the uncached blocks' allocator asks memalign for (n64_main.c) */
+unsigned long n64_heap_uncached_asked(int align, unsigned long size);
 /* x / 255 for x up to 255 x 255, exactly, in four simple operations (GCC
 makes a division by 255 a 64-bit multiply and shifts: the multiply and its
 result's wait are most of a dozen cycles) */
@@ -283,6 +285,8 @@ void n64_render_view(const struct n64_view *view);
 /* after n64_render_view: objects in that view */
 /* returns whether it is in the view (not culled) */
 int n64_render_object(const struct n64_object *object);
+/* the model tags of the objects in the world, each once (n64_render_game.c) */
+int n64_render_game_world_models(short *tags, int most);
 /* n64_render_object for an object whose node matrices are in another order:
 node n's matrix is node_matrices[node_remap[n]] (a first-person model's,
 which are its animation graph's) */
@@ -633,8 +637,9 @@ void n64_hud_end(void);
 /* the views this frame (more views: each one's HUD code runs less often) */
 void n64_hud_set_view_count(int count);
 /* the HUD's sprites for a display 640 across (on): the full-width set
-(tools/n64/hud.py) where the map has one and room (bytes) holds all of it,
-else the half-size set */
+(tools/n64/hud.py) where the map has one and room is not 0 (the renderer's
+word that the models keep their room: n64_render.c's hud_sprite_room), else
+the half-size set */
 void n64_hud_set_wide(int on, unsigned long room);
 /* the views' HUD recordings dropped (the display changed size) */
 void n64_hud_forget_recordings(void);

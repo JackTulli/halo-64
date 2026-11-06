@@ -31,6 +31,9 @@ renderer's (port/n64/src/n64_render.c).
 #include "items/weapon_definitions.h"
 #include "tag_files/tag_groups.h"
 #include "scenario/scenario.h"
+#include "scenario/scenario_definitions.h"
+#include "items/item_definitions.h"
+#include "game/game_engine.h"
 #include "structures/structures.h"
 #include "structures/structure_bsp_definitions.h"
 #include "scenario/sky_definitions.h"
@@ -310,6 +313,74 @@ static unsigned char object_camouflage_opacity(struct object_datum *object)
 		object = object_try_and_get(object->object.parent_object_index);
 	}
 	return 255;
+}
+
+/* (a model tag added to the list once, if there is room) */
+static int world_model_add(
+	short *tags,
+	int count,
+	int most,
+	long definition_index)
+{
+	struct object_definition *definition;
+	short tag;
+	int k;
+
+	if (definition_index == NONE)
+		return count;
+	definition = object_definition_get(definition_index);
+	if (definition->object.model.index == NONE)
+		return count;
+	tag = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(definition->object.model.index);
+	for (k = 0; k < count && tags[k] != tag; k++)
+		;
+	if (k == count && count < most)
+		tags[count++] = tag;
+	return count;
+}
+
+/* the model tags of the map at its start, each tag once, at most most of
+them; how many (n64_render.c, the display's choices): every object in the
+world now (the map's scenery, machines, vehicles, weapons and equipment
+placed, and the players' and the bots' units and what they carry, which
+exist at the map's first frame, where the display is chosen), and every
+item of each item collection the game type spawns from (the netgame
+equipment), not only the one it drew: the game picks a collection's item
+at random, so the objects alive at the first frame differ from start to
+start (on Danger Canyon a spawn point gave the overshield on some starts
+and the active camouflage on others, 25 KB of models apart), and the
+choice must not */
+int n64_render_game_world_models(
+	short *tags,
+	int most)
+{
+	struct object_iterator iterator;
+	struct object_datum *object;
+	struct scenario *scenario = global_scenario_try_and_get();
+	int count = 0;
+
+	object_iterator_new(&iterator, _object_mask_all, 0);
+	while ((object = object_iterator_next(&iterator)) != NULL)
+		count = world_model_add(tags, count, most, object->definition_index);
+	for (short e = 0; scenario && game_engine && e < scenario->netgame_equipment.count; e++)
+	{
+		struct scenario_netgame_equipment *equipment =
+			TAG_BLOCK_GET_ELEMENT(&scenario->netgame_equipment, e, struct scenario_netgame_equipment);
+		struct item_collection_definition *collection;
+
+		if (equipment->item_collection.index == NONE ||
+			!match_game_type(game_engine->type, NUMBEROF(equipment->game_type), equipment->game_type))
+			continue;
+#ifdef HALO_N64_PC_EXPANSION
+		if ((equipment->flags & N64_PC_EQUIPMENT_FLAG) && !n64_game_pc_equipment_enabled())
+			continue;
+#endif
+		collection = tag_get(ITEM_COLLECTION_DEFINITION_TAG, equipment->item_collection.index);
+		for (long p = 0; p < collection->permutations.count; p++)
+			count = world_model_add(tags, count, most,
+				TAG_BLOCK_GET_ELEMENT(&collection->permutations, p, struct item_permutation_definition)->item.index);
+	}
+	return count;
 }
 
 static void gather_frame_objects(

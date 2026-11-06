@@ -344,6 +344,29 @@ void __wrap_free_uncached(void *buffer) __attribute__((used));
 
 /* libdragon's malloc_uncached_aligned (wrapped below): whole cache lines,
 none of them in the data cache */
+/* (a block this large -- a display's buffers and z-buffer, the HUD's
+surfaces -- is asked for so that its chunk ends where the next block of its
+alignment can begin: memalign(64, 153,600), a 320x240 buffer, took a chunk
+of 153,608 bytes and left the 56 bytes up to the next 64-byte place free
+between two buffers made one after the other. A small block made later
+(the level's 52-byte tables) took such a gap, and once the display was
+closed its buffers' places stayed three 150 KB pieces, not one: whether the
+HUD at 640x240 then found its room moved with where those small blocks
+happened to go. Asked for 8 bytes short of a multiple of the alignment,
+the chunk (the size and malloc's 8 bytes) is that multiple, and the next
+block begins right after it) */
+#define HEAP_UNCACHED_ABUT (32 * 1024)
+
+/* what heap_uncached asks memalign for, for a block of size bytes at align
+(n64_render.c's display_fits asks the same) */
+unsigned long n64_heap_uncached_asked(int align, unsigned long size)
+{
+	if (align < 16)
+		align = 16;
+	size = (size + 15) & ~15UL;
+	return size >= HEAP_UNCACHED_ABUT ? ((size + 8 + (unsigned long)align - 1) & ~((unsigned long)align - 1)) - 8 : size;
+}
+
 static void *heap_uncached(int align, size_t size)
 {
 	void *block;
@@ -351,7 +374,9 @@ static void *heap_uncached(int align, size_t size)
 	if (align < 16)
 		align = 16;
 	size = (size + 15) & ~(size_t)15;
-	block = memalign(align, size);
+	/* (the cache lines invalidated are the block's own: the padding is
+	never used) */
+	block = memalign(align, n64_heap_uncached_asked(align, size));
 	if (!block)
 		return NULL;
 	data_cache_hit_invalidate(block, size);

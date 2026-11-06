@@ -988,7 +988,7 @@ void n64_hud_set_wide(int on, unsigned long room)
 		snprintf(path, sizeof(path), "rom:/hud/%s-wide.list", hud.map_name);
 		hud.wide_name_count = read_list(path, &hud.wide_names, &hud.wide_bytes);
 	}
-	on = on && hud.wide_name_count == hud.name_count && hud.wide_bytes && hud.wide_bytes <= room;
+	on = on && hud.wide_name_count == hud.name_count && hud.wide_bytes && room;
 	if (!on && hud.wide_names)
 	{
 		free(hud.wide_names);
@@ -1000,7 +1000,7 @@ void n64_hud_set_wide(int on, unsigned long room)
 		return;
 	release_sprites();
 	hud.wide = on;
-	debugf("n64: HUD sprites %s (%lu KB of room)\n", on ? "full width" : "half size", room / 1024);
+	debugf("n64: HUD sprites %s (%lu KB past the models' room)\n", on ? "full width" : "half size", room / 1024);
 }
 
 /* the memory a sprite file loads into: a compressed asset's header

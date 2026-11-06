@@ -1335,41 +1335,122 @@ static void drop_all_models(void);
 static void record_model_modes(int again);
 static void record_rdp_output_park(void);
 
-/* room for count blocks of the display (its buffers and z-buffer, 16 bits
-a pixel) and the models the game draws (the cache is emptied first: it
-refills) */
-#define ROOM_FOR_MODELS (448 * 1024)
+static unsigned long hud_detail_models_room(void);
+
+/* (high and ultra detail, the models' cache emptied: the heap's free total
+less the blocks must hold the models' room as the HUD's width counts it,
+hud_detail_models_room; then the blocks are looked for in the pieces there
+are, each as display_init asks for it -- a surface's size as the uncached
+blocks' allocator asks for it, at 64 bytes -- so that a piece the display's
+buffer fits is one the trial's block fits: with a block 256 bytes larger,
+Hang 'Em High at ultra detail found the closed 320x240 display's place,
+614,656 bytes, 8 bytes short of 640x480) */
+/* (a mode of 480 lines leaves the models that much more: fitted to the three
+maps where this rule takes one, in test matches with each mode forced, in
+test builds -- Hang 'Em High at 640x480 drew every model with 129 KB past
+the room, Damnation at 512x480 drew one ground weapon fewer with 19 KB past
+it, Beaver Creek at 640x480 drew ground weapons and obstacles as nothing 35
+KB short of it. With it Hang 'Em High keeps 640x480, Damnation takes
+640x240 and Beaver Creek 512x480) */
+#define INTERLACED_HEADROOM (96 * 1024)
 
 static int display_fits(int width, int height, int count)
 {
-	unsigned long size = (unsigned long)width * height * 2 + 256;
-	void *blocks[5] = {NULL, NULL, NULL, NULL, NULL};
+	unsigned long size = n64_heap_uncached_asked(64, (unsigned long)width * height * 2);
+	void *blocks[4] = {NULL, NULL, NULL, NULL};
 	int fits = 1;
 
 	count = count < 4 ? count : 4;
+	if (n64_heap_free() < (unsigned long)count * (size + 8) + hud_detail_models_room() +
+		(height > 240 ? INTERLACED_HEADROOM : 0))
+		return 0;
 	for (int i = 0; i < count && fits; i++)
-		fits = (blocks[i] = malloc(size)) != NULL;
-	if (fits)
-		fits = (blocks[4] = malloc(ROOM_FOR_MODELS)) != NULL;
-	for (int i = 0; i < 5; i++)
+		fits = (blocks[i] = memalign(64, size)) != NULL;
+	for (int i = 0; i < 4; i++)
 		free(blocks[i]);
 	return fits;
 }
 
-/* the room for the HUD's full-width sprites once a display is made: the
-heap less the models' room (as display_fits leaves it) */
-static unsigned long hud_sprite_room(void)
+/* whether the HUD's full-width sprites may be loaded once a display of
+this many lines is made (its z-buffer too): what the heap's free total holds
+past the models' room as the display's choices count it
+(hud_detail_models_room), more than nothing at 240 lines; none at 480. Fitted
+to test matches with the full-width set forced on against off: at 640x240
+it cost no model draws on the eight maps tried (the room left from 13 KB
+short to 378 KB past it, the set's list 361 to 912 KB), at 640x480
+interlaced it cost some on both (Beaver Creek, 36 KB short; Hang 'Em High,
+129 KB past it). The set's listed size told nothing: its images load as they
+are drawn, each with its own room test. 0 where it may not */
+static unsigned long hud_sprite_room(int lines)
 {
-	unsigned long free_bytes = n64_heap_free();
+	unsigned long free_bytes = n64_heap_free(), need = hud_detail_models_room();
 
-	return free_bytes > ROOM_FOR_MODELS ? free_bytes - ROOM_FOR_MODELS : 0;
+	return lines <= 240 && free_bytes >= need ? free_bytes - need + 1 : 0;
+}
+
+/* The HUD at 640x240 takes 300 KB more than the 320x240 display, and on
+the PC Expansion cartridge's big maps those bytes are the models'. It is
+made only where it leaves the models the room the map needs: the models of
+the objects in the world at its start (n64_render_game_world_models) --
+each model's data and its recordings (768 bytes a batch, as
+model_allocation counts them), each of their textures once -- the cache's
+margin (MODEL_HEAP_MARGIN) and HUD_DETAIL_HEADROOM besides, for what play
+adds to them (the players' first-person view models, projectiles, effects,
+objects made during play, the HUD's own images and recordings; the players'
+and the bots' units and what they carry are in the world at the decision,
+so they are among the objects counted). In a scripted match with the HUD
+forced to 640 against 320, Danger Canyon and Timberland drew fewer models
+at 640 (3 of 418 character views; 75 of 2,244 Warthog views and 52 item
+views), Gephyrophobia, Sidewinder and Blood Gulch none fewer; at the
+decision the room left past those models and the margin was 172 and about
+210 KB on the first two, 269, 311 and 612 KB on the others: the headroom is
+set between. Before this the HUD went 640 wherever its surfaces and one 448
+KB piece for the models could be had, which moved with the heap's layout
+(where small blocks lay) and on Danger Canyon and Timberland cost model
+draws */
+#define HUD_DETAIL_HEADROOM (240 * 1024)
+#define HUD_DETAIL_MODELS 512
+
+static unsigned long model_texture_allocation(int texture);
+
+/* the room the models of the world's objects take (above) and the headroom:
+what a 640 HUD must leave free */
+static unsigned long hud_detail_models_room(void)
+{
+	short *tags = malloc(HUD_DETAIL_MODELS * sizeof(short));
+	unsigned char *counted = models.header ? calloc(models.header->texture_count + 1, 1) : NULL;
+	unsigned long room = MODEL_HEAP_MARGIN + HUD_DETAIL_HEADROOM;
+	int count = tags && counted ? n64_render_game_world_models(tags, HUD_DETAIL_MODELS) : 0;
+
+	for (int k = 0; k < count; k++)
+	{
+		struct model_record *model = tags[k] >= 0 && tags[k] < models.tag_count ? models.by_tag[tags[k]] : NULL;
+
+		if (!model)
+			continue;
+		room += model->vertex_bytes + model->index_bytes + (unsigned long)(model->far_first + model->far_count) * 768;
+		for (int b = 0; b < model->far_first + model->far_count; b++)
+		{
+			int texture = models.batches[model->first_batch + b].texture;
+
+			if (texture >= 0 && texture < models.header->texture_count && !counted[texture])
+			{
+				counted[texture] = 1;
+				room += model_texture_allocation(texture);
+			}
+		}
+	}
+	free(tags);
+	free(counted);
+	return room;
 }
 
 /* HUD RESOLUTION HIGH DETAIL: the display's two 640x240 buffers (300 KB
 each), then the 3D's 320x240 picture and its z-buffer (150 KB each): in the
 maps' home past the map's image, each that still fits there
-(n64_display_lend), the others from the heap, with room left for the models
-(as display_fits). 1 if made. */
+(n64_display_lend), the others from the heap, where the heap's free total
+less those leaves the models their room (hud_detail_models_room); the
+surfaces are then looked for in the pieces there are. 1 if made. */
 static int try_hud_detail(void)
 {
 	int width = 320, height = 240;
@@ -1382,6 +1463,25 @@ static int try_hud_detail(void)
 	heap_stats_t heap;
 
 	room = home ? home_size : 0;
+	{
+		/* (the models' room first, on the totals: what the surfaces that
+		the home cannot hold take from the heap, and malloc's 8 bytes each) */
+		unsigned long on_heap = 0, left = room, free_bytes = n64_heap_free(), need = hud_detail_models_room();
+
+		for (int i = 0; i < 4; i++)
+		{
+			if (sizes[i] <= left)
+				left -= sizes[i];
+			else
+				on_heap += sizes[i] + 8;
+		}
+		if (free_bytes < on_heap + need)
+		{
+			debugf("n64: no room for the HUD at 640x240 on this map: it would leave the models %lu KB, they need %lu KB\n",
+				free_bytes > on_heap ? (free_bytes - on_heap) / 1024 : 0, need / 1024);
+			return 0;
+		}
+	}
 	for (int i = 0; i < 4 && fits; i++)
 	{
 		if (sizes[i] <= room)
@@ -1389,9 +1489,7 @@ static int try_hud_detail(void)
 		else
 			fits = (blocks[i] = malloc(sizes[i])) != NULL;
 	}
-	if (fits)
-		fits = (blocks[4] = malloc(ROOM_FOR_MODELS)) != NULL;
-	for (int i = 0; i < 5; i++)
+	for (int i = 0; i < 4; i++)
 		free(blocks[i]);
 	if (!fits)
 		return 0;
@@ -1421,7 +1519,7 @@ static int try_hud_detail(void)
 	display_mode = DISPLAY_GAME_HIGH;
 	n64_hud_forget_recordings();
 	/* (the HUD 640 across: its full-width sprites, where there is room) */
-	n64_hud_set_wide(1, hud_sprite_room());
+	n64_hud_set_wide(1, hud_sprite_room(240));
 	sys_get_heap_stats(&heap);
 	debugf("n64: HUD 640x240 over 3D %dx%d, %d of 4 surfaces in the maps' home, heap %d KB free\n", width, height,
 		in_home, heap.free / 1024);
@@ -1438,7 +1536,7 @@ Infinity) */
 static int hud_detail_may_fit(void)
 {
 	unsigned long home_size;
-	unsigned long needed = 2 * (640UL * 240 * 2 + 256) + 2 * (320UL * 240 * 2 + 256) + ROOM_FOR_MODELS;
+	unsigned long needed = 2 * (640UL * 240 * 2 + 256) + 2 * (320UL * 240 * 2 + 256) + hud_detail_models_room();
 
 	n64_map_home_free_part(&home_size);
 	return n64_heap_free() + models.loaded_bytes + models.texture_bytes + (home_in_use ? 0 : GAME_DISPLAY_BYTES) +
@@ -1514,13 +1612,15 @@ static void try_high_detail(void)
 			screen_height = modes[i].height;
 			display_mode = DISPLAY_GAME_HIGH;
 			n64_hud_forget_recordings();
-			/* (a HUD 640 across, at 240 lines or 480: the full-width
-			sprites, where there is room) */
-			n64_hud_set_wide(modes[i].width == 640, hud_sprite_room());
 			/* the z-buffer made now, as the frame's start would
 			(display_get_zbuf): without one, the next mode down */
 			if (display_get_zbuf()->buffer)
 			{
+				/* (a HUD 640 across, at 240 lines or 480: the full-width
+				sprites, where there is room once the z-buffer is made too:
+				asked before it, the room counted the z-buffer's 300 or 600
+				KB as free) */
+				n64_hud_set_wide(modes[i].width == 640, hud_sprite_room(modes[i].height));
 				sys_get_heap_stats(&heap);
 				debugf("n64: %s detail %dx%d%s, %d buffers (%d in the maps' home), heap %d KB free\n",
 					want_high_detail == N64_DETAIL_ULTRA ? "ultra" : "high", screen_width, screen_height,
