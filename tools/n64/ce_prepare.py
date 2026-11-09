@@ -476,6 +476,21 @@ def repair(space, flat, log):
     if e:
         space.edit(tag, "-S", f"crosshairs[{e.group(1)}].crosshair_bitmap", "ui/hud/bitmaps/combined/hud_reticles.bitmap")
         return True
+    # an animation's frame index past its last frame: the last frame
+    a = re.match(r"Animation #(\d+) has an invalid ([a-z ]+) index \((\d+) > (\d+)\)", message)
+    if a:
+        field = a.group(2).replace(" ", "_") + "_index"
+        space.edit(tag, "-S", f"animations[{a.group(1)}].{field}", str(max(0, int(a.group(4)) - 1)))
+        return True
+    # a camera track with fewer than 4 points: its last point repeated
+    t = re.match(r"CameraTrack::control_points must have at least (\d+) blocks", message)
+    if t:
+        count = int(space.invoke("edit", "-t", space.tags, "-C", "control_points", tag))
+        if count == 0:
+            space.edit(tag, "-I", "control_points", t.group(1), "end")
+        for _ in range(count, int(t.group(1)) if count else 0):
+            space.edit(tag, "-c", f"control_points[{count - 1}]", "end")
+        return True
     return False
 
 
