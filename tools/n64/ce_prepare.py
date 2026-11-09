@@ -314,6 +314,10 @@ def build(space, scenario, name, log):
     """invader-build until it builds, a known repair made after each stop"""
     output = space.maps / f"{name}.map"
     last = None
+    # (invader-extract writes the tags lowercase; a map whose header names
+    # its scenario in capitals would fail "Tags may not have uppercase
+    # characters")
+    scenario = scenario.lower()
     for attempt in range(MAX_BUILDS):
         code, text = space.run([space.tools["build"], "-g", "xbox-ntsc", "-E", "-H", "-N", name, "-t", space.tags,
                                 "-o", output, scenario], check=False)
