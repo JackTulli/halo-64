@@ -1848,8 +1848,13 @@ extern int n64_hud_ensure_sprite_at(int number, float s, float t);
 void hud_draw_n64_load_digits_first(
 	void)
 {
+	/* (HUD STYLE 64 draws the ammunition and grenade counts itself) */
+	extern int n64_hud64_active;
 	long hud_number_index = interface_get_tag_index(_interface_hud_digits);
 	struct bitmap_data *bitmap;
+
+	if (n64_hud64_active)
+		return;
 
 	if (hud_number_index == NONE || hud_number_definition_get(hud_number_index)->number_bitmap.index == NONE)
 		return;

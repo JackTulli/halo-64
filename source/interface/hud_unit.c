@@ -810,7 +810,8 @@ void hud_unit_n64_load_meters_first(
 		return;
 	definition = unit_hud_interface_definition_get(hud_index);
 	player_index = local_player_get_player_index(player->local_player_index);
-	/* (each where hud_render_unit_interface draws it) */
+	/* (each where hud_render_unit_interface draws it; with HUD STYLE 64 the
+	shield and health are the style's, n64_hud64_active) */
 	/* (the HUD's frame and the meters' panels: decoration, given back first
 	for a critical sprite) */
 	hud_draw_n64_mark_sequence_decoration(definition->background.interface_bitmap.index,
@@ -819,10 +820,10 @@ void hud_unit_n64_load_meters_first(
 		definition->shield_meter.background.sequence_index);
 	hud_draw_n64_mark_sequence_decoration(definition->health_meter.background.interface_bitmap.index,
 		definition->health_meter.background.sequence_index);
-	if (game_engine_has_shield(player_index) &&
+	if (!n64_hud64_active && game_engine_has_shield(player_index) &&
 		!TEST_FLAG(unit_hud_globals->script_flags, _hud_panel_shield_dont_show_bit))
 		n64_load_first(definition->shield_meter.meter.meter_bitmap.index, definition->shield_meter.meter.sequence_index);
-	if (!TEST_FLAG(unit_hud_globals->script_flags, _hud_panel_health_dont_show_bit))
+	if (!n64_hud64_active && !TEST_FLAG(unit_hud_globals->script_flags, _hud_panel_health_dont_show_bit))
 		n64_load_first(definition->health_meter.meter.meter_bitmap.index, definition->health_meter.meter.sequence_index);
 	if (!TEST_FLAG(unit_hud_globals->script_flags, _hud_panel_motion_sensor_dont_show_bit) &&
 		game_engine_hud_draw_motion_sensor(player_index))

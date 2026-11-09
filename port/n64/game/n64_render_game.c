@@ -836,6 +836,16 @@ void render_frame(
 			rest of the HUD, and before the view's HUD recording begins (the
 			room a recording keeps would leave it out; the PC maps' cartridges:
 			n64_hud.c HUD_PACKING; a map whose HUD is packed) */
+			/* (HUD STYLE 64: the pass then asks only for what Halo still draws
+			under it -- the motion sensor, the crosshair, the damage arrows, a
+			scope's zoom parts -- not the sprites the style replaces;
+			n64_hud64_active is the flag those functions read, set again by
+			n64_hud64_game_begin below) */
+			{
+				extern int n64_hud64_active;
+
+				n64_hud64_active = style64;
+			}
 			if (n64_hud_packed())
 				hud_n64_load_critical_first(window->local_player_index);
 #endif
