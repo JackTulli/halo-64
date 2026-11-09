@@ -495,6 +495,61 @@ def _shrink_bitmap(space, tag):
     return True, f"{tag}: " + "; ".join(done)
 
 
+def keep_one_bsp(space, scenario, log):
+    """the N64 converter loads a scenario's first structure BSP only, and
+    stops on another's tags: of several (a day and a night version), the one
+    the multiplayer spawns are in is kept, as the first -- the most player
+    starting locations inside its world bounds, then the most naming it as
+    theirs; a tie, the first -- and the others erased.
+
+    The kept BSP becomes BSP 0, so the indices that name a BSP follow it:
+    the spawns name it; an encounter's or a command list's manual BSP index
+    that named the kept BSP names 0, and one that named the old BSP 0 names
+    the kept one's old index (now past the end). That leaves each index
+    either right or past the end, as erasing all but BSP 0 leaves them.
+    (The scenario's "bsp switch trigger volumes" are not tag data:
+    invader-build makes them again from the trigger volumes named
+    "bsp<from>,<to>", and stops on one that names an erased BSP, with or
+    without this choice.)"""
+    from .tagfile import TagFile, TagFileError
+    tag = scenario.lower().replace("\\", "/") + ".scenario"
+    try:
+        root = TagFile(space.tags / tag).root
+        bsps = [b.path("structure bsp").replace("\\", "/") for b in root.blocks("structure bsps")]
+        if len(bsps) < 2:
+            return
+        spawns = [(s.values("position"), s.get("bsp index")) for s in root.blocks("player starting locations")]
+        manual = [(f"{name.replace(' ', '_')}[{i}].manual_bsp_index", block.get("manual bsp index"))
+                  for name in ("encounters", "command lists") for i, block in enumerate(root.blocks(name))]
+        scores = []
+        for i, bsp in enumerate(bsps):
+            bounds = TagFile(space.tags / (bsp + ".scenario_structure_bsp")).root
+            box = [bounds.values(f"world bounds {axis}") for axis in "xyz"]
+            inside = sum(1 for point, _ in spawns if all(low <= v <= high for v, (low, high) in zip(point, box)))
+            named = sum(1 for _, index in spawns if index == i)
+            scores.append((inside, named, -i))
+            log(f"structure BSP #{i} {bsp}: {inside} of {len(spawns)} spawns inside, {named} name it")
+        keep = -max(scores)[2]
+    except (OSError, TagFileError) as error:
+        # (the tags not read: the first BSP kept)
+        count = int(space.invoke("edit", "-t", space.tags, "-C", "structure_bsps", tag))
+        if count < 2:
+            return
+        log(f"structure BSPs not compared ({error}): the first kept")
+        bsps, spawns, manual, keep = [f"#{i}" for i in range(count)], [], [], 0
+    if keep:
+        space.edit(tag, "-E", f"structure_bsps[0-{keep - 1}]")
+        for i, (_, index) in enumerate(spawns):
+            if index:
+                space.edit(tag, "-S", f"player_starting_locations[{i}].bsp_index", "0")
+        for key, index in manual:
+            if index in (0, keep):
+                space.edit(tag, "-S", key, str(keep - index))
+    if len(bsps) - keep > 1:
+        space.edit(tag, "-E", f"structure_bsps[1-{len(bsps) - keep - 1}]")
+    log(f"kept structure BSP #{keep} of {len(bsps)} ({bsps[keep]})")
+
+
 def build(space, scenario, name, log):
     """invader-build until it builds, a known repair made after each stop"""
     output = space.maps / f"{name}.map"
@@ -728,6 +783,7 @@ def prepare_ce_map(ce_map, xbox_maps, tools, work, name=None, log=print):
     sounds = pc_prepare._normalize_vorbis(space.tags, space.audio, space.invoke, space.decode_ogg)
     log(f"normalized: {len(hud)} HUD scales, {len(sounds)} Vorbis sounds made 16-bit PCM")
     apply_standins(space)
+    keep_one_bsp(space, scenario, log)
     output = build(space, scenario, name, log)
     try:
         pc_prepare.validate_xbox_map(output, name)
