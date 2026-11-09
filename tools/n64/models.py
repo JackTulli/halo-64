@@ -271,6 +271,13 @@ class ModelConverter:
         # 64-texel atlas is one texture load a part instead of several)
         self.first_person_deviation = FIRST_PERSON_DEVIATION
         self.detail_atlas = DETAIL_ATLAS
+        # the share of a side the first-person models' textures keep (their
+        # atlas, its windows and their other textures: convert.py's maps
+        # with smaller first-person textures), made apart from the other
+        # models' (use_small_textures)
+        self.first_person_texture_scale = 1.0
+        self.small_textures = False
+        self.other_caches = ({}, {}, {})
         # by model tag index: another order of levels of detail to take
         # (Firefight's Covenant: their lowest)
         self.lod_preferences = {}
@@ -285,6 +292,19 @@ class ModelConverter:
 
     def f(self, name):
         return {fl.name: o for o, fl in self.defs.fields(name)}
+
+    def use_small_textures(self, small):
+        """the textures made from here on at first_person_texture_scale (a
+        first-person model's), from caches of their own so that a texture
+        another model shares keeps its size there; or as before"""
+        if self.first_person_texture_scale == 1.0 or small == self.small_textures:
+            return
+        builder = self.textures
+        caches = (builder.texture_by_bitmap, builder.grey_by_bitmap, self.masked)
+        builder.texture_by_bitmap, builder.grey_by_bitmap, self.masked = self.other_caches
+        self.other_caches = caches
+        builder.texture_scale = self.first_person_texture_scale if small else 1.0
+        self.small_textures = small
 
     def block(self, address):
         return struct.unpack("<iI", self.map.read(address, 8))
@@ -844,6 +864,9 @@ class ModelConverter:
         atlas_limit = (128 if self.detail_atlas <= 64 else 256) if tag.name == "weapons\\flamethrower\\bitmaps\\flamethrower" else self.detail_atlas
         if wide:
             atlas_limit = 2 * self.detail_atlas
+        # (smaller, first_person_texture_scale: the atlas and its windows)
+        atlas_limit = int(atlas_limit * self.first_person_texture_scale)
+        window = int(WINDOW * self.first_person_texture_scale)
         try:
             atlas = decode(self.map, images[0], atlas_limit)
         except ValueError:
@@ -864,7 +887,7 @@ class ModelConverter:
             lum = lum.point(lambda v: int(round(round(v / top * levels) * 255 / levels)))
             alpha = atlas.getchannel("A").point(lambda v: 255 if v >= 128 else 0) if cutout else None
             tint = (choice[1] or self.textures.grey_tint(bitmap)) if choice[0].endswith("-tint") else (1.0, 1.0, 1.0)
-            shapes = ((128, 64), (64, 128)) if wide else ((WINDOW, WINDOW),)
+            shapes = ((2 * window, window), (window, 2 * window)) if wide else ((window, window),)
             grey_atlas = (lum, alpha, tuple(top / 255.0 * t for t in tint), shapes)
         elif multipurpose is not None:
             whole = self.masked_texture(bitmap, multipurpose, cutout, channel)
@@ -873,16 +896,17 @@ class ModelConverter:
         else:
             whole = self.textures.texture(bitmap)
         if tag.name == "weapons\\flamethrower\\bitmaps\\flamethrower":
-            triangles = split_painted_faces(vertices, triangles, (aw, ah))
-        return self.atlas_windows(atlas, mask, whole, tag.name, vertices, triangles, cutout, grey_atlas)
+            triangles = split_painted_faces(vertices, triangles, (aw, ah), span=window - 2)
+        return self.atlas_windows(atlas, mask, whole, tag.name, vertices, triangles, cutout, grey_atlas, window)
 
-    def atlas_windows(self, atlas, mask, whole, name, vertices, triangles, cutout=False, grey=None):
+    def atlas_windows(self, atlas, mask, whole, name, vertices, triangles, cutout=False, grey=None, window=WINDOW):
         """texture_windows' grouping over an image already at its size: the
-        triangles that fit a window's span get that window, the rest the
-        whole texture. grey: (the atlas's greys, its cut-out alpha or None,
-        the vertices' multiplier, the windows' shapes) for grey windows"""
+        triangles that fit a window's span (window texels a side) get that
+        window, the rest the whole texture. grey: (the atlas's greys, its
+        cut-out alpha or None, the vertices' multiplier, the windows' shapes)
+        for grey windows"""
         aw, ah = atlas.size
-        shapes = grey[3] if grey else ((WINDOW, WINDOW),)
+        shapes = grey[3] if grey else ((window, window),)
 
         def fits(w, h):
             return any(w <= a - 2 and h <= b - 2 for a, b in shapes)
@@ -1057,6 +1081,7 @@ class ModelConverter:
         batches = []
         model_data = []
         for tag in self.object_models():
+            self.use_small_textures(tag.index in self.first_person)
             vertex_data, index_data = bytearray(), bytearray()
             first_batch = len(batches)
             self.current_scale = self.position_scales.get(tag.index, 1.0)
@@ -1148,6 +1173,7 @@ class ModelConverter:
             model_records.append((tag.index, nc, rc, first_region, first_batch, near_count,
                                   far_first - first_batch, len(batches) - far_first))
             model_data.append((vertex_data, index_data))
+        self.use_small_textures(False)
 
         textures = self.textures.textures
         segments = []

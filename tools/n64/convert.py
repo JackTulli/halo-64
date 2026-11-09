@@ -63,6 +63,14 @@ def validate_pc_maps(pc_expansion=False, pc_maps=None, campaign=False):
 # model set's suffix, -fp<n>; 0 the plain set) and the first-person
 # models' triangle budget's scale
 VIEW_MODEL_QUALITIES = ((0, 1.0), (1, 1.25), (2, 2.0))
+# PC Expansion maps whose lighter model sets (the ones a game loads with
+# three or four players, or where the heap is under 1 MB at the level's
+# load: n64_render_game.c) make the first-person models' textures at half
+# their size a side (models.py first_person_texture_scale): on them the
+# local player's weapon could find no room to load after a respawn at some
+# spawn points. The other maps and model sets convert as before.
+SMALL_FIRST_PERSON_TEXTURE_MAPS = frozenset(("infinity",))
+SMALL_FIRST_PERSON_TEXTURE_SCALE = 0.5
 FIREFIGHT_SOURCE = "a30"
 FIREFIGHT_ROOTS = [("bipd", "characters\\grunt\\grunt"), ("bipd", "characters\\jackal\\jackal"),
                    ("bipd", "characters\\elite\\elite")]
@@ -594,6 +602,8 @@ def main():
             low_models.first_person_budget = int(350 * view_scale)
             low_models.first_person_deviation = 0.06
             low_models.detail_atlas = 64
+            if args.pc_expansion and xmap.name in SMALL_FIRST_PERSON_TEXTURE_MAPS:
+                low_models.first_person_texture_scale = SMALL_FIRST_PERSON_TEXTURE_SCALE
             low_models.lod_preferences = {i: lowest for i in covenant}
             low_models.budget_overrides = {i: 150 for i in covenant}
             stats = low_models.write(args.filesystem / "levels" / f"{xmap.name}-low{suffix}.mdl")
