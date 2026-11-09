@@ -433,6 +433,37 @@ def repair(space, flat, log):
     if o:
         space.edit(tag, "-S", f"crosshairs[{o.group(2)}].crosshair_overlays[{o.group(1)}].flags.not_a_sprite", "0")
         return True
+    # an empty palette entry (no object uses it): the palette's first
+    n = re.match(r"Scenario\w*Palette::name must not be null", message)
+    f = re.search(r"Failed to compile Scenario::(\w+_palette) #(\d+)", flat)
+    if n and f:
+        first = space.invoke("edit", "-t", space.tags, "-G", f"{f.group(1)}[0].name", tag)
+        space.edit(tag, "-S", f"{f.group(1)}[{f.group(2)}].name", first)
+        return True
+    # a particle state's bitmap that isn't sprites: another state's that is
+    # (the N64 converter drops particle systems)
+    q = re.match(r"Bitmap '.*' referenced in particle state #(\d+) of particle type #(\d+) is not of type sprites",
+                 message)
+    if q:
+        type_count = int(space.invoke("edit", "-t", space.tags, "-C", "particle_types", tag))
+        for t in range(type_count):
+            states = int(space.invoke("edit", "-t", space.tags, "-C", f"particle_types[{t}].particle_states", tag))
+            for s in range(states):
+                other = space.invoke("edit", "-t", space.tags, "-G", f"particle_types[{t}].particle_states[{s}].bitmaps",
+                                     tag)
+                if other and (space.tags / other).is_file() and \
+                        space.invoke("edit", "-t", space.tags, "-G", "type", other) == "sprites":
+                    space.edit(tag, "-S", f"particle_types[{q.group(2)}].particle_states[{q.group(1)}].bitmaps",
+                               other)
+                    return True
+        return False
+    # a chicago shader with no maps (an "invisible" shader): one white map,
+    # multiplied, which draws nothing
+    if message == "ShaderTransparentChicago::maps must have at least 1 block":
+        space.edit(tag, "-I", "maps", "1", "end")
+        space.edit(tag, "-S", "maps[0].map", WHITE)
+        space.edit(tag, "-S", "framebuffer_blend_function", "multiply")
+        return True
     # an overlay not flagged "not a sprite" on an image that isn't a sprite
     # sheet: flagged
     o = re.match(r"Overlay #(\d+) of crosshair #(\d+) is not marked as not a sprite, but '.*' is not a sprite sheet",
