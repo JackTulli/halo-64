@@ -358,11 +358,24 @@ def repair(space, flat, log):
     s = re.match(r"Sequence #(\d+) in '(.*)' referenced by (.*) is out of bounds", message)
     if s:
         field = s.group(3).strip()
-        key = field.replace(" ", "_") + "_sequence_index"
+        keys = [field.replace(" ", "_") + "_sequence_index"]
         indexed = re.match(r"(.*) #(\d+)$", field)
         if indexed:
-            key = f"{indexed.group(1).replace(' ', '_')}[{indexed.group(2)}].sequence_index"
-        space.edit(tag, "-S", key, "0")
+            # (Invader names the element in the singular, the block in the
+            # plural: "static element #0" is static_elements[0], "meter #0"
+            # meter_elements[0])
+            name = indexed.group(1).replace(' ', '_')
+            keys = [f"{name}{suffix}[{indexed.group(2)}].sequence_index" for suffix in ("", "s", "_elements")]
+        elif field == "contrail":
+            # (a contrail's sequence is its "first sequence index")
+            keys = ["first_sequence_index"]
+        for i, key in enumerate(keys):
+            try:
+                space.edit(tag, "-S", key, "0")
+                break
+            except CEPrepareError:
+                if i == len(keys) - 1:
+                    raise
         return True
     # a crosshair overlay past the Xbox bitmap's sequences (PC added some to
     # the shared reticles): the rocket hog the rocket launcher's (9), the
