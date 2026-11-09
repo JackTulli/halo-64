@@ -41,6 +41,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import types
 import wave
 
 from . import pc_prepare
@@ -403,6 +404,97 @@ def _repair_sound(space, tag):
                   f"({', '.join(old)}) made 16-bit PCM")
 
 
+# the Xbox's largest images (Invader's limits for the Xbox build), by
+# BitmapDataType: 2D textures 2048x2048, 3D textures 256x256x256, cube maps
+# 512x512 (each face), "white" 2048x2048
+BITMAP_LIMITS = {0: 2048, 1: 256, 2: 512, 3: 2048}
+# BitmapDataFormat: bits a pixel, DXT1/3/5 bytes a 4x4 block
+PIXEL_BITS = {0: 8, 1: 8, 2: 8, 3: 16, 6: 16, 8: 16, 9: 16, 10: 32, 11: 32, 17: 8}
+BLOCK_BYTES = {14: 8, 15: 16, 16: 16}
+X8R8G8B8, A8R8G8B8 = 10, 11
+COMPRESSED, PALETTIZED = 1 << 1, 1 << 2
+
+
+def _image_size(kind, width, height, depth):
+    if kind in BLOCK_BYTES:
+        return max(1, (width + 3) // 4) * max(1, (height + 3) // 4) * depth * BLOCK_BYTES[kind]
+    return width * height * depth * PIXEL_BITS[kind] // 8
+
+
+def shrink_bitmap(space, tag):
+    """a bitmap tag with images bigger than the Xbox's made the Xbox's size
+    (the N64 converter makes them far smaller anyway): an image's larger
+    mipmaps dropped, or (a 2D image without mipmaps that small) the image
+    halved until it fits, 32-bit (A8R8G8B8, X8R8G8B8 kept), its mipmaps
+    dropped. (True, what was done), or (False, why it can't be): any
+    failure of the repair is the second, and the caller makes the white
+    stand-in"""
+    try:
+        return _shrink_bitmap(space, tag)
+    except REPAIR_ERRORS + (ImportError,) as error:
+        return False, _failure(error)
+
+
+def _shrink_bitmap(space, tag):
+    from PIL import Image
+    from .bitmaps import FORMATS, decode
+    from .tagfile import TagFile
+    bitmap = TagFile(space.tags / tag)
+    pixels = bitmap.root.data("processed pixel data")
+    out, done = bytearray(), []
+    for index, image in enumerate(bitmap.root.blocks("bitmap data")):
+        width, height, depth = image.get("width"), image.get("height"), image.get("depth")
+        shape, kind, mipmaps = image.get("type"), image.get("format"), image.get("mipmap count")
+        if shape not in BITMAP_LIMITS or kind not in PIXEL_BITS and kind not in BLOCK_BYTES:
+            return False, f"image #{index} is of type {shape}, format {kind}"
+        faces = 6 if shape == 2 else 1
+        sizes = [_image_size(kind, max(1, width >> m), max(1, height >> m), max(1, depth >> m)) * faces
+                 for m in range(mipmaps + 1)]
+        start = image.get("pixel data offset")
+        data = pixels[start:start + sum(sizes)]
+        if len(data) != sum(sizes):
+            return False, f"image #{index}'s pixels are past the tag's"
+        image.set("pixel data offset", len(out))
+        limit = BITMAP_LIMITS[shape]
+        drop = 0
+        while max(width >> drop, height >> drop, depth >> drop if shape == 1 else 0) > limit:
+            drop += 1
+        size = f"{width}x{height}" + (f"x{depth}" if shape == 1 else "")
+        if not drop:
+            out += data
+        elif drop <= mipmaps:
+            out += data[sum(sizes[:drop]):]
+            image.set("width", max(1, width >> drop))
+            image.set("height", max(1, height >> drop))
+            image.set("depth", max(1, depth >> drop))
+            image.set("mipmap count", mipmaps - drop)
+            done.append(f"image #{index} {size} -> {max(1, width >> drop)}x{max(1, height >> drop)}: its "
+                        f"first {drop} mipmaps dropped")
+        elif shape == 0 and depth == 1:
+            level = types.SimpleNamespace(width=width, height=height, offset=0, mipmaps=0, flags=0,
+                                          format=FORMATS[kind], data=data[:sizes[0]])
+            # (each channel averaged on its own: PIL's RGBA reduction weighs
+            # the colour by the alpha, which loses the colour where the alpha
+            # is near 0 -- a sky's top rows)
+            picture = Image.merge("RGBA", [band.reduce(1 << drop) for band in decode(None, level).split()])
+            new = X8R8G8B8 if kind == X8R8G8B8 else A8R8G8B8
+            image.set("width", picture.width)
+            image.set("height", picture.height)
+            image.set("format", new)
+            image.set("flags", image.get("flags") & ~(COMPRESSED | PALETTIZED))
+            image.set("mipmap count", 0)
+            out += picture.tobytes("raw", "BGRA")
+            done.append(f"image #{index} {size} {FORMATS[kind]} -> {picture.width}x{picture.height} "
+                        f"{FORMATS[new]} ({1 << drop}:1)")
+        else:
+            return False, f"image #{index} ({size}, type {shape}) has {mipmaps} mipmaps, {drop} needed"
+    if not done:
+        return False, "no image past the Xbox's limits"
+    bitmap.root.set_data("processed pixel data", out)
+    bitmap.save()
+    return True, f"{tag}: " + "; ".join(done)
+
+
 def build(space, scenario, name, log):
     """invader-build until it builds, a known repair made after each stop"""
     output = space.maps / f"{name}.map"
@@ -596,6 +688,18 @@ def repair(space, flat, log):
             space.edit(tag, "-I", "control_points", t.group(1), "end")
         for _ in range(count, int(t.group(1)) if count else 0):
             space.edit(tag, "-c", f"control_points[{count - 1}]", "end")
+        return True
+    # a bitmap with an image bigger than the Xbox's: made the Xbox's size
+    # (shrink_bitmap), else white
+    if message == "Target engine runs on a system that does not support these bitmaps" and tag.endswith(".bitmap"):
+        shrunk, text = shrink_bitmap(space, tag)
+        if shrunk:
+            log(f"bitmap: {text}")
+            space.fixed(f"bitmap: {text}")
+        else:
+            log(f"stand-in: a white bitmap for {tag} ({text})")
+            shutil.copyfile(space.tags / WHITE, space.tags / tag)
+            space.fixed(f"stand-in: white bitmap for {tag} ({text})")
         return True
     return False
 
