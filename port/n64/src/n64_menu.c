@@ -234,6 +234,8 @@ static struct
 	int hud_standard;
 	/* OBSTACLE STAND-INS off (n64_render_set_standins) */
 	int no_standins;
+	/* HUD STYLE 64: the HUD redrawn for the N64 (n64_hud_set_style) */
+	int hud_style;
 	/* FIELD OF VIEW: degrees, FOV_MINIMUM to FOV_MAXIMUM a FOV_STEP at a
 	time (n64_field_of_view) */
 	int field_of_view;
@@ -959,7 +961,7 @@ enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE
 /* the buzz a controller gives when its rumble is turned on (frames) */
 #define RUMBLE_PULSE_FRAMES 12
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
-enum { SETTING_CHUNKY, SETTING_HUD, SETTING_FIELD_OF_VIEW, SETTING_WIDESCREEN, SETTING_ANIMATIONS, SETTING_PARTICLES,
+enum { SETTING_CHUNKY, SETTING_HUD, SETTING_HUD_STYLE, SETTING_FIELD_OF_VIEW, SETTING_WIDESCREEN, SETTING_ANIMATIONS, SETTING_PARTICLES,
 	SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_TERRAIN, SETTING_STANDINS, SETTING_ANTIALIAS, SETTING_DEDITHER,
 	SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
 /* the Settings rows shown: HUD RESOLUTION is not on the campaign cartridge
@@ -1037,11 +1039,11 @@ static void settings_pack(unsigned char *bytes)
 	bytes[12] = (unsigned char)menu.fps_counter;
 	bytes[14] = (unsigned char)menu.terrain_detail;
 	/* (byte 15, a bit each, 0 in the records kept before them: DECALS off,
-	ANTI-ALIASING on, DEDITHER on, HUD RESOLUTION STANDARD; bit 4 unused;
-	OBSTACLE STAND-INS off, bit 5, so that a record from before the row
-	reads on) */
+	ANTI-ALIASING on, DEDITHER on, HUD RESOLUTION STANDARD, HUD STYLE 64,
+	bit 4; OBSTACLE STAND-INS off, bit 5, so that a record from before the
+	row reads on) */
 	bytes[15] = (unsigned char)((menu.no_decals != 0) | (menu.antialias != 0) << 1 | (menu.dedither != 0) << 2 |
-		(menu.hud_standard != 0) << 3 | (menu.no_standins != 0) << 5);
+		(menu.hud_standard != 0) << 3 | (menu.hud_style != 0) << 4 | (menu.no_standins != 0) << 5);
 	/* (FIELD OF VIEW in degrees after the controllers', 0 in the records
 	kept before it: the default) */
 	bytes[40] = (unsigned char)menu.field_of_view;
@@ -1085,6 +1087,7 @@ static int settings_unpack(const unsigned char *bytes)
 	menu.dedither = (bytes[15] >> 2) & 1;
 	menu.hud_standard = (bytes[15] >> 3) & 1;
 	menu.no_standins = (bytes[15] >> 5) & 1;
+	menu.hud_style = (bytes[15] >> 4) & 1;
 	menu.field_of_view = bytes[40] >= FOV_MINIMUM && bytes[40] <= FOV_MAXIMUM && !(bytes[40] % FOV_STEP) ?
 		bytes[40] : FOV_DEFAULT;
 	/* (the menu's display made next takes it too) */
@@ -1592,6 +1595,7 @@ static void draw_settings(int item)
 	/* what the chosen row does, under the list */
 	static const char *const help[SETTING_COUNT][2] = {
 		[SETTING_CHUNKY] = {"MEDIUM 256 ACROSS, CHUNKY HALF, HIGH 640X240,", "ULTRA 480I (LESS WHERE THE MAP LEAVES NO ROOM)"},
+		[SETTING_HUD_STYLE] = {"ORIGINAL: HALO'S OWN HUD; 64: HALO'S HUD REDRAWN", "FOR THE N64'S SCREEN (LARGER TEXT AND NUMBERS)"},
 		[SETTING_FIELD_OF_VIEW] = {"HOW WIDE YOU SEE IN FIRST PERSON, IN DEGREES", "ACROSS (70 AS IN HALO; WIDER DRAWS MORE: SLOWER)"},
 		[SETTING_ANIMATIONS] = {"HALF: POSES, YOUR GUN'S TOO, AT HALF THE RATE", "(HALVED AGAIN WITH 3 OR 4 PLAYERS)"},
 		[SETTING_PARTICLES] = {"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
@@ -1646,6 +1650,10 @@ static void draw_settings(int item)
 			nothing to choose) */
 			snprintf(value, sizeof(value), "%s", menu.chunky >= RESOLUTION_HIGH ? "SAME AS 3D" :
 				menu.hud_standard ? "STANDARD" : "HIGH DETAIL");
+			break;
+		case SETTING_HUD_STYLE:
+			label = "HUD STYLE";
+			snprintf(value, sizeof(value), "%s", menu.hud_style ? "64" : "ORIGINAL");
 			break;
 		case SETTING_FIELD_OF_VIEW:
 			label = "FIELD OF VIEW";
@@ -2439,6 +2447,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					menu.chunky = resolution_step(menu.chunky, 1);
 				if (setting == SETTING_HUD && menu.chunky < RESOLUTION_HIGH && (pad->left || pad->right || pad->pressed.a))
 					menu.hud_standard = !menu.hud_standard;
+				if (setting == SETTING_HUD_STYLE && (pad->left || pad->right || pad->pressed.a))
+					menu.hud_style = !menu.hud_style;
 				if (setting == SETTING_ANIMATIONS && (pad->left || pad->right || pad->pressed.a))
 					menu.half_animation = !menu.half_animation;
 				if (setting == SETTING_WIDESCREEN && (pad->left || pad->right || pad->pressed.a))
@@ -2657,6 +2667,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_render_set_high_detail(menu.chunky == RESOLUTION_ULTRA ? N64_DETAIL_ULTRA :
 				menu.chunky == RESOLUTION_HIGH ? N64_DETAIL_HIGH : 0);
 			n64_render_set_hud_detail(!CAMPAIGN_CARTRIDGE && !menu.hud_standard);
+			n64_hud_set_style(menu.hud_style);
 			n64_half_animation_rate = menu.half_animation;
 			n64_field_of_view = menu.field_of_view;
 			settings_save();

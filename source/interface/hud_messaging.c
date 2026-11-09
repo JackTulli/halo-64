@@ -514,6 +514,14 @@ long time_code_stop_time = NONE;
 static long split_screen_hud_message_offset = 17;
 
 #ifdef HALO_N64
+/* HUD STYLE 64 (port/n64/game/n64_hud64_game.c): the view's values handed
+over, the design drawing them */
+extern void n64_hud64_game_collect(int what, real alpha);
+extern int n64_hud64_game_collect_string(wchar_t const *string);
+extern int n64_hud64_game_collect_button(int action);
+#endif
+
+#ifdef HALO_N64
 /* Reuse the original authored B-button icon, including its clip, tint,
    offsets and split-screen scale. N64 B is the action button in every
    current preset (xdk_input.c maps it to logical Xbox X). */
@@ -571,6 +579,10 @@ static void render_state_text(
 {
 	rectangle2d text_bounds;
 
+#ifdef HALO_N64
+	if (n64_hud64_game_collect_string(text))
+		return;
+#endif
 	draw_string_set_indents(cursor_bounds->x0 - bounds->x0, 0);
 	draw_unicode_string_compute_bounds(bounds, text, &text_bounds, cursor_bounds);
 	cursor_bounds->x0 -= 3;
@@ -1455,6 +1467,10 @@ void hud_messaging_update(
 		state_active = datum->state_message.valid &&
 			(datum->state_message.state_message || datum->state_message.message_buffer[0]);
 
+#ifdef HALO_N64
+		/* (HUD STYLE 64: the state message's words and buttons taken) */
+		n64_hud64_game_collect(2, 1.0f); /* the state message */
+#endif
 		if (objective_active || help_active || state_active)
 		{
 			struct hud_state_message_runtime_definition *state_message = &datum->state_message;
@@ -1631,6 +1647,11 @@ void hud_messaging_update(
 						{
 							short icon_index = NONE;
 
+#ifdef HALO_N64
+							if (n64_hud64_game_collect_button(element->data >= _icon_custom_1 ? 0 :
+								element->data == _icon_action ? 1 : 2))
+								break;
+#endif
 							if (element->data > _icon_right_stick)
 							{
 								if (element->data <= _icon_look)
@@ -1832,6 +1853,9 @@ void hud_messaging_update(
 			line_height = first_line_height;
 			line_top = line_cursor.y1;
 		}
+#ifdef HALO_N64
+		n64_hud64_game_collect(0, 0.0f);
+#endif
 
 		if (!objective_active && !help_active &&
 			(datum->state_message.valid || datum->leave_first_line_blank))
@@ -1900,6 +1924,10 @@ void hud_messaging_update(
 				_text_justification_left,
 				0,
 				&text_color);
+#ifdef HALO_N64
+			/* (HUD STYLE 64: the line taken, with its fade) */
+			n64_hud64_game_collect(1, text_color.alpha); /* a message line */
+#endif
 
 			if (message->item_definition_index != NONE)
 			{
@@ -1951,6 +1979,9 @@ void hud_messaging_update(
 					0,
 					message->text);
 			}
+#ifdef HALO_N64
+			n64_hud64_game_collect(0, 0.0f);
+#endif
 			message->valid = (real)(now - message->time) <
 				(hud_msg_def->fade_time + hud_msg_def->up_time) * TICKS_PER_SECOND;
 			if (!message->valid)

@@ -654,6 +654,15 @@ static void handle_one_player_input(
 		{
 			player->desired_grenade_index = unit->unit.desired_grenade_index;
 		}
+#ifdef HALO_N64
+		/* (HUD STYLE 64: a switch to a type with none flashes its slot) */
+		if (TEST_FLAG(input.player_control_flags, _player_control_rotate_grenades_bit))
+		{
+			extern void n64_hud64_game_grenade_switch(short local_player_index, long unit_index);
+
+			n64_hud64_game_grenade_switch(local_player_index, player->unit_index);
+		}
+#endif
 		if (TEST_FLAG(input.player_control_flags, _player_control_rotate_grenades_bit) ||
 			!unit_get_grenade_count(
 				player->unit_index,

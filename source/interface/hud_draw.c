@@ -2235,3 +2235,35 @@ void hud_draw_numbers(
 
 	return;
 }
+
+#ifdef HALO_N64
+/* HUD STYLE 64 keeps the weapon HUD's zoom parts: an element whose
+multitexture overlays take the zoom level as an effector's source is one
+(the sniper's angle ticks fade in by it) */
+boolean hud_multitexture_overlays_follow_zoom(
+	struct tag_block const *overlays)
+{
+	long overlay_index;
+
+	for (overlay_index = 0; overlay_index < overlays->count; overlay_index++)
+	{
+		struct multitexture_overlay_hud_element_definition const *overlay = TAG_BLOCK_GET_ELEMENT(
+			overlays,
+			overlay_index,
+			struct multitexture_overlay_hud_element_definition);
+		long function_index;
+
+		for (function_index = 0; function_index < overlay->functions.count; function_index++)
+		{
+			struct multitexture_overlay_hud_element_effector_definition const *effector = TAG_BLOCK_GET_ELEMENT(
+				&overlay->functions,
+				function_index,
+				struct multitexture_overlay_hud_element_effector_definition);
+
+			if (effector->source == _hud_multitexture_overlay_effector_source_zoom_level)
+				return TRUE;
+		}
+	}
+	return FALSE;
+}
+#endif

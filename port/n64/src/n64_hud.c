@@ -325,7 +325,6 @@ own unit HUDs and weapons, shared sprites once): with three the arena
 holds what fits, the rest is drawn from the heap. Its
 start and end (cached addresses), and the top of what is loaded */
 static uint8_t *arena_start, *arena_end, *arena_top;
-
 /* The places by size: the most meter textures one player's HUD draws at
 once, over every weapon and every vehicle seat with every weapon it may
 hold on the PC and Xbox maps, from their tags as hud_unit.c and
@@ -875,6 +874,8 @@ void n64_hud_release(void)
 	hud.packed_count = 0;
 	memset(hud.has_packed, 0, sizeof(hud.has_packed));
 	memset(hud.whole, 0, sizeof(hud.whole));
+	/* (HUD STYLE 64's textures with it, as in the version below) */
+	n64_hud64_release();
 }
 #else
 /* what the HUD keeps from its first map on -- the meters' texture slots
@@ -952,6 +953,11 @@ void n64_hud_release(void)
 	hud.wide_name_count = 0;
 	hud.wide_bytes = 0;
 	hud.wide = 0;
+	/* (HUD STYLE 64's textures, when its module is loaded: the RDP done
+	with them first, n64_hud64_stub.c. With ORIGINAL nothing waits here:
+	the sprites' frees stay deferred, and the heap is laid out as without
+	the style) */
+	n64_hud64_release();
 }
 
 /* (the meter places by size: the PC maps' cartridges only) */
@@ -1477,6 +1483,16 @@ int n64_hud_ensure_sprite(int number)
 
 void n64_render_hud_phase(void);
 
+/* HUD STYLE 64 drew with its own RDP modes, colours and TMEM loads
+(n64_hud64.c): the render state this file keeps (set_state, the TMEM's
+pixels) no longer holds -- anything drawn after it in the view sets it
+again */
+void n64_hud_state_lost(void)
+{
+	hud.mode = _mode_none;
+	hud.tmem_pixels = NULL;
+}
+
 /* the views' recordings dropped (the display changed size: high detail), each
 recorded again the next time its view is drawn */
 void n64_hud_forget_recordings(void)
@@ -1597,6 +1613,16 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 	rdpq_sync_pipe();
 	rdpq_set_scissor(x0, y0, x1, y1);
 	return 1;
+}
+
+/* (HUD STYLE 64's module: the view's rectangle, for its scissor over Halo's
+tracker -- n64_hud64_game.c) */
+void n64_hud_view_rect(int rect[4])
+{
+	rect[0] = hud.x0;
+	rect[1] = hud.y0;
+	rect[2] = hud.x1;
+	rect[3] = hud.y1;
 }
 
 void n64_hud_end(void)

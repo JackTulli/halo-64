@@ -902,6 +902,20 @@ void n64_render_hud_rect(int *x0, int *y0, int *x1, int *y1)
 	*y1 *= hud_scale_y;
 }
 
+/* the size of the display the HUD is drawn in, in or before the HUD's
+phase (HUD STYLE 64 picks its set by it) */
+void n64_render_hud_size(int *width, int *height)
+{
+	if (hud3d.buffer)
+	{
+		*width = hud3d.width * hud_scale_x;
+		*height = hud3d.height * hud_scale_y;
+		return;
+	}
+	*width = screen_width;
+	*height = screen_height;
+}
+
 /* a scene's models without a level (the menu's: levels/<name>.mdl) */
 void n64_render_load_scene(const char *name)
 {
@@ -2111,6 +2125,13 @@ int n64_render_make_room(unsigned long size, int count)
 		rspq_wait();
 	}
 	return 1;
+}
+
+int n64_render_room_leaving(unsigned long size, unsigned long margin)
+{
+	if (n64_heap_free() < size + margin || !n64_heap_has(size))
+		n64_render_make_room(size + margin, 1);
+	return n64_heap_free() >= size + margin && n64_heap_has(size);
 }
 
 /* the render modes of model batches, recorded once each: textured (the

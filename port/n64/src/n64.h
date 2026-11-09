@@ -684,6 +684,10 @@ Expansion cartridge with one or two players, item, obstacle and decoration
 models pushed out for it (n64_render.c; not while recording a block). 1:
 room; 0: none, nothing pushed out; -1: none, though models were pushed out */
 int n64_render_push_out_for_hud(unsigned long image, int pieces, unsigned long piece);
+/* room for size bytes in one block that still leaves margin bytes of the
+heap free, models dropped from the cache for it if short; 1 if there is
+(n64_render.c; HUD STYLE 64's module and textures) */
+int n64_render_room_leaving(unsigned long size, unsigned long margin);
 /* the RSP's RDP output moved off every block's buffer, before a block is
 freed with rdpq_call_deferred (n64_render.c; not while recording a block) */
 void n64_render_park_rdp_output(void);
@@ -714,6 +718,132 @@ void n64_hud_critical_pass(int on);
 int n64_hud_packed(void);
 /* a motion sensor blip: centre in pixels, position and size in pixels */
 void n64_hud_blip(float x, float y, float width, float height, unsigned long color);
+/* the view's rectangle (n64_hud_begin's), x0 y0 x1 y1 (HUD STYLE 64's module) */
+void n64_hud_view_rect(int rect[4]);
+
+/* ---------- HUD STYLE 64 (Settings; n64_hud64.c): the HUD redrawn as N64
+pixel art from tables, the game's HUD code handing over its values
+(port/n64/game/n64_hud64_game.c). 0 ORIGINAL (the game's own HUD), 1 64 */
+void n64_hud_set_style(int style);
+int n64_hud_style(void);
+#define N64_HUD64_MESSAGES 4
+enum { N64_HUD64_ROUNDS, N64_HUD64_BATTERY, N64_HUD64_NO_AMMO };
+/* (the reticle and the motion tracker are Halo's own with either style:
+the player keeps the aim and the tracker they know) */
+struct n64_hud64_state
+{
+	unsigned char show_ammo, show_grenades, show_shield, show_sensor, show_score;
+	unsigned char ammo_kind; /* N64_HUD64_* */
+	/* unlimited: a weapon no player holds (a vehicle's), which Halo spends
+	no rounds or battery of -- a lemniscate in the count's place, no round
+	grid */
+	unsigned char ammo_infinite;
+	short total;             /* the number: rounds in reserve, or the battery's percent */
+	short loaded, loaded_max; /* the magazine's rounds, of 60 (the grid's ticks) */
+	/* a battery weapon's heat (0-1) and whether it shows one, red from the
+	weapon HUD's flash cutoff (or overheated) */
+	unsigned char show_heat, heat_hot;
+	float heat;
+	short frags, plasmas;
+	signed char grenade_type; /* the selected type: 0 frag, 1 plasma (-1 none) */
+	/* the grenade panel's fill and rim as Halo colours its own for the
+	selected type's state: blue and rim, flashing at its flash cutoff,
+	Halo's warning colour with none left (0: the design's) */
+	unsigned long grenade_fill, grenade_edge;
+	/* the slots lit white now in a double flash: 1 frag, 2 plasma (a type
+	ran out, a switch to it or a throw with none: n64_hud64_game.c) */
+	unsigned char grenade_flash;
+	/* the seat's secondary function in the grenade panel's place: a seat
+	whose weapon has "secondary trigger overrides grenades" (the grenade
+	button fires its second trigger -- the Banshee's
+	fuel rod, the Scorpion's machine gun); its icon (0 a charge: the trigger
+	draws from a magazine; 1 a round: it does not), the part of its recharge
+	gone (0-255, 255 ready) and the grenade button's letter in the player's
+	controls */
+	unsigned char show_secondary, secondary_icon, secondary_fill;
+	char secondary_button;
+	/* an unlimited weapon whose main trigger draws from a magazine (the
+	Scorpion's cannon, the rocket Warthog's gun, the Multiplayer Ghost's)
+	shows its recharge under its card, in Halo's blue, filling to ready: the
+	part gone, 0-255, 255 when it can fire */
+	unsigned char show_cooldown, cooldown_fill;
+	/* shield 0-1, above 1 the overshield (Halo's overcharge levels, to 5);
+	health 0-1 */
+	float shield, health;
+	/* the health's colour as Halo picks it (its unit HUD's cutoffs: the
+	middle colour, the low one), 0xRRGGBB with the top byte set; 0: the
+	design's */
+	unsigned long health_colour;
+	/* (Halo's own flashes, the factor its get_flash_color blends by,
+	0-255, and the tag's flashing colour: HUD 64 blends its own colours
+	toward that colour by the factor) the health panel's (1 player's tag
+	only: the unit's shield-depleted flag) */
+	unsigned char health_flash;
+	unsigned long health_flash_colour;
+	/* the shield panel's low-shield blink (under 25%: its background, the
+	frame's outline and tray here) */
+	unsigned char shield_flash;
+	unsigned long shield_flash_colour;
+	/* the damage ghost: the shield value Halo holds after a drop
+	(last_shield_vitality), the factor its flash colour adds by (0: none),
+	and that colour (the meter's) */
+	float shield_held;
+	unsigned char shield_ghost;
+	unsigned long shield_ghost_colour;
+	short score, other, limit; /* yours, the best other's (team games: the teams'), the game's */
+	unsigned char other_leads;
+	/* the pickup prompt: the weapon's name in capitals ("" none), SWAP FOR */
+	char prompt[28];
+	unsigned char prompt_swap;
+	/* another prompt the game shows (to enter a vehicle...): as the
+	messages' text, '\2' the action button */
+	char state_text[72];
+	/* the game's messages, oldest first: capitals, '\1' before and after a
+	name (drawn in the numbers' colour), their fade (0-255) */
+	short message_count;
+	struct { char text[72]; unsigned char alpha; } messages[N64_HUD64_MESSAGES];
+};
+/* the display the HUD is drawn in (n64_render.c): with HUD RESOLUTION
+HIGH DETAIL 640x240, not the 3D's, which the screen is until the HUD's phase */
+void n64_render_hud_size(int *width, int *height);
+/* before a view's HUD, not while it is recorded: 1 if the style is 64 and
+the textures it draws with this many views are in memory (else the game
+draws its own HUD) */
+/* (n64_hud64_stub.c: the module, rom:/hud64.dso, loaded by the first of
+these in a map with the style at 64; given back with the map) */
+void n64_hud64_module_end(void);
+int n64_hud64_prepare(int views);
+/* the next draws kept in a rectangle (the module's own scissor) */
+void n64_hud64_scissor(int x0, int y0, int x1, int y1);
+/* a view's HUD, its rectangle in the HUD's pixels (after n64_hud_begin) */
+void n64_hud64_draw(const struct n64_hud64_state *state, int x0, int y0, int x1, int y1, int views);
+/* (HUD STYLE 64's module) the start of Halo's struct unit_hud_state
+(hud_unit.c, which checks that the two match): the view's unit HUD state
+the style reads and sets as Halo's own drawing would -- the shield's value
+held after a drop and its fade, the panels' flash start ticks */
+struct n64_hud64_unit_state
+{
+	float last_shield_vitality, last_body_vitality, fade_time;
+	long last_shield_hit_time, last_shield_flash_time, last_health_flash_time;
+};
+/* (n64_hud.c: its kept render state dropped, after HUD STYLE 64 drew) */
+void n64_hud_state_lost(void);
+/* the textures given back (n64_hud_release); their bytes in memory */
+void n64_hud64_release(void);
+unsigned long n64_hud64_resident_bytes(void);
+/* the heap HUD STYLE 64 leaves free when it loads its module and its
+textures; without that room, the game's own HUD on that map
+(n64_hud64_stub.c) */
+unsigned long n64_hud64_heap_margin(void);
+
+/* a module of code and data in the ROM (n64_module.c; libdragon's DSO
+format, n64dso -c 0) loaded and linked: its memory, given back with
+n64_module_free (libc's free: in the game's units free is cseries.h's
+debug_free); in *address the value of its export name. NULL without the
+file, an import the program lacks, or the room for it that leaves margin
+bytes of the heap free (n64_render_room_leaving) */
+void *n64_module_load(const char *path, const char *name, unsigned long margin, void **address);
+void n64_module_free(void *module);
 
 /* the pause menu (START in a game, port/n64/game/n64_game.c): the
 scoreboard over the frame's views, every player and bot a row, sorted --

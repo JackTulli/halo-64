@@ -89,6 +89,17 @@ symbols in this file:
 #include "units/unit_definitions.h"
 #include "units/units.h"
 
+#ifdef HALO_N64
+#include "../../port/n64/src/n64.h"
+
+/* HUD STYLE 64 (port/n64/game/n64_hud64_game.c): the view's values handed
+over, the design drawing them */
+extern int n64_hud64_active;
+extern void n64_hud64_game_unit(long unit_index, struct unit_hud_interface_definition const *definition,
+	long player_index, long script_flags, struct n64_hud64_unit_state *state);
+
+#endif
+
 /* ---------- constants */
 
 enum
@@ -164,6 +175,14 @@ typedef char unit_hud_globals_size_assert[
 	sizeof(struct unit_hud_globals) == 0x164 ? 1 : -1];
 typedef char hud_scripted_globals_size_assert[
 	sizeof(struct hud_scripted_globals) == 0x4 ? 1 : -1];
+#ifdef HALO_N64
+/* (HUD STYLE 64's module reads and sets the state's start as its own
+struct n64_hud64_unit_state, port/n64/src/n64.h) */
+typedef char n64_hud64_unit_state_assert[
+	offsetof(struct unit_hud_state, last_health_flash_time) ==
+		offsetof(struct n64_hud64_unit_state, last_health_flash_time) &&
+	offsetof(struct unit_hud_state, fade_time) == offsetof(struct n64_hud64_unit_state, fade_time) ? 1 : -1];
+#endif
 typedef char hud_messaging_parameters_definition_size_assert[
 	sizeof(struct hud_messaging_parameters_definition) == 0x120 ? 1 : -1];
 typedef char hud_waypoint_definition_size_assert[
@@ -934,6 +953,20 @@ void hud_render_unit_interface(
 			{
 				struct unit_hud_interface_definition *hud_definition =
 					unit_hud_interface_definition_get(unit_hud_indices[unit_count]);
+#ifdef HALO_N64
+				/* (HUD STYLE 64: the player's own shield and health handed
+				over -- the style's module works out what Halo's drawing below
+				shows of them, their colours and flashes, n64_hud64_game.c; the
+				motion sensor drawn as ORIGINAL draws it, its art, its place and
+				its blips, as the player knows it. A vehicle's panel stays
+				Halo's) */
+				if (unit_count == 0 && n64_hud64_active)
+				{
+					n64_hud64_game_unit(unit_indices[0], hud_definition, player_index, unit_hud_globals->script_flags,
+						(struct n64_hud64_unit_state *)hud_state);
+					goto motion_sensor;
+				}
+#endif
 
 				if (hud_definition->background.interface_bitmap.index != NONE)
 				{
@@ -1166,6 +1199,9 @@ void hud_render_unit_interface(
 					hud_state->last_body_vitality = hud_unit->object.body_vitality;
 				}
 
+#ifdef HALO_N64
+			motion_sensor:
+#endif
 				if (unit_count == 0 &&
 					!TEST_FLAG(
 						unit_hud_globals->script_flags,
@@ -1207,16 +1243,6 @@ void hud_render_unit_interface(
 							draw_flags,
 							NONE);
 					}
-					if (hud_definition->motion_sensor.foreground.interface_bitmap.index != NONE)
-					{
-						hud_draw_static_element(
-							local_player_index,
-							&absolute_placement,
-							&hud_definition->motion_sensor.foreground,
-							draw_flags,
-							NONE);
-					}
-
 					hud_calculate_point(
 						local_player_index,
 						&absolute_placement,
@@ -1225,11 +1251,38 @@ void hud_render_unit_interface(
 						local_player_count() > 1,
 						0.0f,
 						&corner);
+					if (hud_definition->motion_sensor.foreground.interface_bitmap.index != NONE)
+					{
+#ifdef HALO_N64
+						/* (HUD STYLE 64: without Halo's small range label, which
+						it draws itself off the tracker -- n64_hud64_game.c; not
+						in a frame that shows Halo's own label) */
+						extern void n64_hud64_game_tracker_clip(point2d const *center);
+
+						if (n64_hud64_active)
+							n64_hud64_game_tracker_clip(&corner);
+#endif
+						hud_draw_static_element(
+							local_player_index,
+							&absolute_placement,
+							&hud_definition->motion_sensor.foreground,
+							draw_flags,
+							NONE);
+#ifdef HALO_N64
+						if (n64_hud64_active)
+							n64_hud64_game_tracker_clip(NULL);
+#endif
+					}
 					motion_sensor_draw_screen(
 						local_player_index,
 						local_player_count() > 1,
 						&corner);
 				}
+#ifdef HALO_N64
+				/* (HUD STYLE 64: the rest of the panel not drawn, as before) */
+				if (unit_count == 0 && n64_hud64_active)
+					continue;
+#endif
 
 				{
 					struct auxilary_panel_definition *auxilary_panel = &hud_definition->auxilary_panel;

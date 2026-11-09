@@ -1187,6 +1187,9 @@ static void *n64_map_load(
 
 	if (n64_map.image && !strcmp(n64_map.name, name))
 		return n64_map.image + n64_map.header.tag_header_offset;
+	/* (HUD STYLE 64's module, if still loaded, given back before the map's
+	image: it loads again with the map's first 64 HUD, n64_hud64_prepare) */
+	n64_hud64_module_end();
 	if (n64_map.image)
 	{
 		/* (libc's: the image is memalign's, and in the game's units free is
@@ -1349,6 +1352,8 @@ void n64_game_free_map(
 	until the next map's is made, above where this one was, and splits the
 	memory the next image wants in one piece) */
 	n64_hud_release();
+	/* (HUD STYLE 64's module with it, when loaded) */
+	n64_hud64_module_end();
 	n64_particles_release();
 #ifdef HALO_N64_CAMPAIGN
 	n64_campaign_stop();
