@@ -428,6 +428,23 @@ def repair(space, flat, log):
     if z:
         space.edit(tag, "-S", "zoom_levels", z.group(2))
         return True
+    # a crosshair overlay flagged "not a sprite" on a sprite sheet: a sprite
+    o = re.match(r"Overlay #(\d+) of crosshair #(\d+) is marked as not a sprite, but '.*' is a sprite sheet", message)
+    if o:
+        space.edit(tag, "-S", f"crosshairs[{o.group(2)}].crosshair_overlays[{o.group(1)}].flags.not_a_sprite", "0")
+        return True
+    # an overlay not flagged "not a sprite" on an image that isn't a sprite
+    # sheet: flagged
+    o = re.match(r"Overlay #(\d+) of crosshair #(\d+) is not marked as not a sprite, but '.*' is not a sprite sheet",
+                 message)
+    if o:
+        space.edit(tag, "-S", f"crosshairs[{o.group(2)}].crosshair_overlays[{o.group(1)}].flags.not_a_sprite", "1")
+        return True
+    # a crosshair's sequence with no images: the stock reticles
+    e = re.match(r"Sequence #\d+ in '.*' referenced in overlay #\d+ of crosshair #(\d+) has 0 bitmaps", message)
+    if e:
+        space.edit(tag, "-S", f"crosshairs[{e.group(1)}].crosshair_bitmap", "ui/hud/bitmaps/combined/hud_reticles.bitmap")
+        return True
     return False
 
 
