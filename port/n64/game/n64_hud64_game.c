@@ -266,10 +266,11 @@ void n64_hud64_game_grenade_switch(
 		return;
 	unit = unit_get(unit_index);
 	current = unit->unit.current_grenade_index;
-	if (current == NONE)
+	/* (none of either type: the whole panel flashes, so that the player
+	sees that no grenade of either type is left) */
+	if (current == NONE || (unit->unit.grenade_counts[0] == 0 && unit->unit.grenade_counts[1] == 0))
 	{
-		/* (none of either type) */
-		grenade_switch_slots[local_player_index] |= 3;
+		grenade_switch_slots[local_player_index] |= 7;
 		return;
 	}
 	next = (short)((current + 1) % 2);
@@ -329,9 +330,10 @@ void n64_hud64_game_grenades(
 					start |= (unsigned char)(1 << t);
 			}
 			/* (not over a flash that runs: the throw that spent the last
-			grenade, its button still held) */
+			grenade, its button still held. Both types are out then: the
+			whole panel) */
 			if (no_grenade && !last_no_grenade[p] && phase[p] >= 4)
-				start |= view.grenade_type == 1 ? 2 : view.grenade_type == 0 ? 1 : 3;
+				start |= 7;
 		}
 		start |= grenade_switch_slots[p];
 		grenade_switch_slots[p] = 0;

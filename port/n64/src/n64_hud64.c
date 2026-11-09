@@ -1293,9 +1293,19 @@ static void grenades(const struct n64_hud64_state *st, int fill, int edge, int g
 	const struct hud64_set *set = draw.m.set;
 	int frag_lit = st->grenade_type != 1 && st->frags > 0, plasma_lit = st->grenade_type == 1 && st->plasmas > 0, x;
 
-	draw_ref(&set->ref[fill], gx, Tp, st->grenade_fill ? (uint32_t)(st->grenade_fill & 0xFFFFFF) : HUD64_BLUE, 0, 0, 255, 0, 0);
-	draw_ref(&set->ref[edge], gx, Tp, st->grenade_edge ? (uint32_t)(st->grenade_edge & 0xFFFFFF) : HUD64_OUTLINE, 0, 0,
-		HUD64_ALPHA_EDGE, 0, 0);
+	uint32_t fill_c = st->grenade_fill ? (uint32_t)(st->grenade_fill & 0xFFFFFF) : HUD64_BLUE;
+	uint32_t edge_c = st->grenade_edge ? (uint32_t)(st->grenade_edge & 0xFFFFFF) : HUD64_OUTLINE;
+
+	/* (both types out, a switch or a throw: the whole panel flashes with its
+	slots, its rim white and its fill half way to white, so that the white
+	slots still read on it -- n64_hud64_game.c grenade_flash) */
+	if (st->grenade_flash & 4)
+	{
+		fill_c = blend(fill_c, HUD64_WHITE, 128);
+		edge_c = HUD64_WHITE;
+	}
+	draw_ref(&set->ref[fill], gx, Tp, fill_c, 0, 0, 255, 0, 0);
+	draw_ref(&set->ref[edge], gx, Tp, edge_c, 0, 0, HUD64_ALPHA_EDGE, 0, 0);
 	/* (a type out, a switch to it or a throw with none: its slot flashes
 	white twice -- n64_hud64_game.c grenade_flash) */
 	uint32_t frag_c = frag_lit ? HUD64_NUMBER : HUD64_DIM, plasma_c = plasma_lit ? HUD64_PLASMA : HUD64_DIM;

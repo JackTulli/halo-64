@@ -751,7 +751,8 @@ struct n64_hud64_state
 	Halo's warning colour with none left (0: the design's) */
 	unsigned long grenade_fill, grenade_edge;
 	/* the slots lit white now in a double flash: 1 frag, 2 plasma (a type
-	ran out, a switch to it or a throw with none: n64_hud64_game.c) */
+	ran out, a switch to it or a throw with none: n64_hud64_game.c); 4 the
+	whole panel too (a switch or a throw with both types out) */
 	unsigned char grenade_flash;
 	/* the seat's secondary function in the grenade panel's place: a seat
 	whose weapon has "secondary trigger overrides grenades" (the grenade
