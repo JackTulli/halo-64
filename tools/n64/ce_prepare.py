@@ -31,6 +31,7 @@ them, ogg2wav or ffmpeg); the input maps are only read.
 """
 
 import argparse
+import array
 import json
 import os
 from pathlib import Path
@@ -310,6 +311,98 @@ def silent_sound(space, name):
     space.fixed(f"stand-in: a silent sound for {name}.sound")
 
 
+# a sound's formats (SoundFormat): 16-bit PCM (big-endian in a tag file),
+# Xbox ADPCM (36-byte blocks a channel), IMA ADPCM, Ogg Vorbis
+PCM, XBOX_ADPCM, OGG_VORBIS = 0, 1, 3
+FORMAT_NAMES = {0: "16-bit PCM", 1: "Xbox ADPCM", 2: "IMA ADPCM", 3: "Ogg Vorbis"}
+
+
+def _big_endian(pcm):
+    """little-endian 16-bit samples made big-endian (a tag file's)"""
+    samples = array.array("h")
+    samples.frombytes(pcm)
+    if sys.byteorder == "little":
+        samples.byteswap()
+    return samples.tobytes()
+
+
+# what a repair that fails raises (a tag file that doesn't match its
+# definition, a stream that won't decode, a file not there): the stand-in
+# is made instead
+REPAIR_ERRORS = (OSError, ValueError, KeyError, IndexError, struct.error, wave.Error, CEPrepareError)
+
+
+def _failure(error):
+    return f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
+
+
+def repair_sound(space, tag):
+    """a sound tag the Xbox build won't take, made whole: a permutation of a
+    size no whole number of samples (Xbox ADPCM: blocks) makes cut to its
+    last whole one; permutations of other formats than the sound's, all
+    decoded to 16-bit PCM, the sound's too. (True, what was done), or
+    (False, why it can't be): any failure of the repair is the second, and
+    the caller makes the silent stand-in"""
+    try:
+        return _repair_sound(space, tag)
+    except REPAIR_ERRORS as error:
+        return False, _failure(error)
+
+
+def _repair_sound(space, tag):
+    from .sounds import decode_xbox_adpcm
+    from .tagfile import TagFile
+    sound = TagFile(space.tags / tag)
+    root = sound.root
+    channels = 2 if root.get("channel count") == 1 else 1
+    permutations = [p for r in root.blocks("pitch ranges") for p in r.blocks("permutations")]
+    formats = {p.get("format") for p in permutations}
+    unit = {PCM: 2 * channels, XBOX_ADPCM: 36 * channels}
+    if formats == {root.get("format")} and root.get("format") in unit:
+        size = unit[root.get("format")]
+        cut = 0
+        for permutation in permutations:
+            samples = permutation.data("samples")
+            if len(samples) % size:
+                permutation.set_data("samples", samples[:len(samples) - len(samples) % size])
+                if root.get("format") == PCM:
+                    permutation.set("buffer size", len(samples) - len(samples) % size)
+                cut += 1
+        if not cut:
+            return False, "no permutation to cut"
+        sound.save()
+        return True, (f"{cut} of {len(permutations)} permutation{'s' if len(permutations) != 1 else ''} of {tag} "
+                      f"cut to {'its' if cut == 1 else 'their'} last whole "
+                      f"{'sample' if root.get('format') == PCM else 'block'}")
+    for i, permutation in enumerate(permutations):
+        kind, samples = permutation.get("format"), permutation.data("samples")
+        if kind == PCM:
+            pcm = samples[:len(samples) - len(samples) % unit[PCM]]
+        elif kind == XBOX_ADPCM:
+            pcm = _big_endian(decode_xbox_adpcm(samples[:len(samples) - len(samples) % unit[XBOX_ADPCM]], channels))
+        elif kind == OGG_VORBIS:
+            decoded = space.audio / "decoded" / f"{i}.wav"
+            decoded.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                space.decode_ogg(samples, decoded)
+                with wave.open(str(decoded), "rb") as stream:
+                    if stream.getnchannels() != channels or stream.getsampwidth() != 2:
+                        return False, f"permutation #{i}'s Ogg Vorbis stream has {stream.getnchannels()} channels"
+                    pcm = _big_endian(stream.readframes(stream.getnframes()))
+            finally:
+                decoded.unlink(missing_ok=True)
+        else:
+            return False, f"permutation #{i} is {FORMAT_NAMES.get(kind, f'format {kind}')}"
+        permutation.set("format", PCM)
+        permutation.set_data("samples", pcm)
+        permutation.set("buffer size", len(pcm))
+    old = sorted(FORMAT_NAMES.get(f, str(f)) for f in formats | {root.get("format")})
+    root.set("format", PCM)
+    sound.save()
+    return True, (f"{len(permutations)} permutation{'s' if len(permutations) != 1 else ''} of {tag} "
+                  f"({', '.join(old)}) made 16-bit PCM")
+
+
 def build(space, scenario, name, log):
     """invader-build until it builds, a known repair made after each stop"""
     output = space.maps / f"{name}.map"
@@ -427,6 +520,19 @@ def repair(space, flat, log):
                  r"crosshair #\d+ only has (\d+)", message)
     if z:
         space.edit(tag, "-S", "zoom_levels", z.group(2))
+        return True
+    # a sound the Xbox build won't take (permutations of other formats than
+    # the sound's, or a permutation of a size no whole number of samples
+    # makes): made whole (repair_sound), else silent
+    if re.match(r"Sound (format does not match \d+ permutations?|permutation #\d+ has an invalid size)", message):
+        whole, text = repair_sound(space, tag)
+        if whole:
+            log(f"sound: {text}")
+            space.fixed(f"sound: {text}")
+        else:
+            log(f"stand-in: a silent sound for {tag} ({text})")
+            (space.tags / tag).unlink()
+            silent_sound(space, tag.rsplit(".", 1)[0])
         return True
     # a crosshair overlay flagged "not a sprite" on a sprite sheet: a sprite
     o = re.match(r"Overlay #(\d+) of crosshair #(\d+) is marked as not a sprite, but '.*' is a sprite sheet", message)
