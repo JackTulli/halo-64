@@ -352,7 +352,8 @@ def repair(space, flat, log):
     m = re.search(r"FATAL ERROR: (.*)\n\.\.\.in (\S.*)", flat)
     if not m:
         return False
-    message, tag = m.group(1).strip(), m.group(2).strip()
+    # (a wrapped line's trailing space and its join make two)
+    message, tag = re.sub(r"\s+", " ", m.group(1)).strip(), m.group(2).strip()
     log(f"repairing: {message} ({tag})")
     s = re.match(r"Sequence #(\d+) in '(.*)' referenced by (.*) is out of bounds", message)
     if s:
