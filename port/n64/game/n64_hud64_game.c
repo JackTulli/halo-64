@@ -739,14 +739,21 @@ program's stub finds by name and calls through */
 given back and the game's own HUD for the rest of the map, when the view's
 textures are not in memory -- at any frame: the game's HUD must not draw
 while the module holds the HUD's meter block (n64_hud_lend_slots), and a
-context that failed is not tried again -- and, until the module's first 64
-HUD of the map, without the margin still free once everything it made for
-that HUD is counted (its textures, their upload blocks, the outline sheets;
-cached models dropped for it if short) */
+context that failed is not tried again -- and, once, without the margin
+still free after the module's first 64 frame (cached models dropped for it
+if short). That check is at the next frame's first prepare, not at this
+frame's: render_frame asks for the HUD's critical sprites after each
+view's prepare, and while the module holds the meter block they load on
+the heap (n64_hud.c: no arena then). So it counts all the first frame
+made: the module's textures, their upload blocks, the outline sheets and
+every view's critical sprites. Without the margin the map has drawn one 64
+frame, and the game's own HUD from then on */
 static int prepare(
 	int views)
 {
-	static int drew;
+	/* (the prepares of the module's first 64 frame, one a view: the check
+	at the next; then done) */
+	static int calls, checked;
 	int ready = n64_hud64_prepare(views);
 	char line[128];
 
@@ -758,16 +765,16 @@ static int prepare(
 			"of the map");
 		return -1;
 	}
-	if (drew)
+	if (checked || ++calls <= views)
 		return ready;
 	if (!n64_render_room_leaving(0, n64_hud64_heap_margin()))
 	{
-		snprintf(line, sizeof(line), "hud64: the module given back (%lu KB free with its textures, a %lu KB margin "
-			"kept): the game's own HUD on this map", n64_heap_free() / 1024, n64_hud64_heap_margin() / 1024);
+		snprintf(line, sizeof(line), "hud64: the module given back (%lu KB free after its first frame, a %lu KB "
+			"margin kept): the game's own HUD on this map", n64_heap_free() / 1024, n64_hud64_heap_margin() / 1024);
 		n64_log(line);
 		return -1;
 	}
-	drew = TRUE;
+	checked = TRUE;
 	return ready;
 }
 

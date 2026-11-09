@@ -828,7 +828,10 @@ void render_frame(
 		if (!n64_debug_flag("debug_no_hud"))
 		{
 			/* HUD STYLE 64 (n64_hud64.c): its textures in memory first (not
-			while the HUD is recorded); without them the game's own HUD */
+			while the HUD is recorded); without them the game's own HUD. Before
+			the critical pass below: with the style in, its module has the end
+			of the HUD's meter block (n64_hud_lend_slots), where the pass would
+			otherwise load the critical sprites */
 			int style64 = n64_hud64_prepare(local_player_count());
 
 #if defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS)

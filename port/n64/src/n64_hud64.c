@@ -98,9 +98,16 @@ static struct
 when its context loads) */
 static rspq_block_t *upload_block(const surface_t *surface)
 {
+	rspq_block_t *block;
+
+	/* (its blocks from the arena in the meter slots where there is room:
+	n64_main.c's malloc_uncached, only between these two calls) */
+	n64_uncached_arena_begin();
 	rspq_block_begin();
 	rdpq_tex_upload(TILE0, surface, NULL);
-	return rspq_block_end();
+	block = rspq_block_end();
+	n64_uncached_arena_end();
+	return block;
 }
 
 /* (the setting, n64_hud_set_style and n64_hud_style: the resident part's,
@@ -132,10 +139,12 @@ static int load_group(int group)
 	fseek(file, 0, SEEK_END);
 	size = (unsigned long)ftell(file);
 	fseek(file, 0, SEEK_SET);
-	/* (room for it that leaves the style's margin free, the model cache's
-	oldest dropped first if short; without it the game's own HUD on this
-	map: n64_hud64_stub.c) */
-	if (!n64_render_room_leaving(size, n64_hud64_heap_margin()))
+	/* (in the meter slots' memory after the module where it fits,
+	n64_hud64_stub.c; else room for it that leaves the style's margin free,
+	the model cache's oldest dropped first if short; without it the game's
+	own HUD on this map) */
+	data = n64_hud64_arena_take(size);
+	if (!data && !n64_render_room_leaving(size, n64_hud64_heap_margin()))
 	{
 		fclose(file);
 		hud64.failed[group] = 1;
@@ -143,7 +152,8 @@ static int load_group(int group)
 			size / 1024, n64_hud64_heap_margin() / 1024, n64_heap_free() / 1024);
 		return 0;
 	}
-	data = memalign(16, size);
+	if (!data)
+		data = memalign(16, size);
 	if (!data)
 	{
 		fclose(file);
@@ -155,7 +165,12 @@ static int load_group(int group)
 	if (fread(data, 1, size, file) != size || memcmp(data, "H64T", 4) || (data[4] << 8 | data[5]) != HUD64_TABLES_ID)
 	{
 		fclose(file);
-		free(data);
+		/* (from the meter slots' memory: given back there now, not at the
+		map's end -- nothing was taken after it) */
+		if (n64_hud64_arena_owns(data))
+			n64_hud64_arena_give_back(data);
+		else
+			free(data);
 		hud64.failed[group] = 1;
 		debugf("hud64: %s unreadable or not from these tables\n", path);
 		return 0;
@@ -206,7 +221,8 @@ void n64_hud64_release(void)
 	}
 	for (int g = 0; g < HUD64_CONTEXTS; g++)
 	{
-		free(hud64.data[g]);
+		if (!n64_hud64_arena_owns(hud64.data[g]))
+			free(hud64.data[g]);
 		hud64.data[g] = NULL;
 		hud64.bytes[g] = 0;
 	}

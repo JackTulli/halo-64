@@ -754,8 +754,42 @@ void *__wrap_malloc_uncached_aligned(int align, size_t size)
 	return heap_uncached_or_reserve(align, size);
 }
 
+/* (HUD STYLE 64: between n64_uncached_arena_begin and _end -- only around the
+module's recording of a texture's upload, n64_hud64.c upload_block -- the
+uncached blocks rspq and rdpq make for that recording come from the meter
+slots' memory after the style's context files, n64_hud64_stub.c's arena,
+where there is room; with the arena full they come from the heap as any
+other. Freeing one in the arena is nothing: the module frees its recordings
+before the arena is reset, as its textures go) */
+static int uncached_arena_open;
+
+void n64_uncached_arena_begin(void)
+{
+	uncached_arena_open = 1;
+}
+
+void n64_uncached_arena_end(void)
+{
+	uncached_arena_open = 0;
+}
+
+static void *hud64_uncached(size_t size)
+{
+	size_t rounded = (size + 15) & ~(size_t)15;
+	uint8_t *block = uncached_arena_open ? n64_hud64_arena_take(rounded) : NULL;
+
+	if (!block)
+		return NULL;
+	data_cache_hit_invalidate(block, rounded);
+	return UncachedAddr(block);
+}
+
 void *__wrap_malloc_uncached(size_t size)
 {
+	void *hud64_block = hud64_uncached(size);
+
+	if (hud64_block)
+		return hud64_block;
 	if (size <= SMALL_UNCACHED)
 	{
 		disable_interrupts();
@@ -799,6 +833,9 @@ void __wrap_free_uncached(void *buffer)
 			room_owner[i] = NULL;
 			break;
 		}
+	/* (HUD STYLE 64's, from its arena) */
+	if (n64_hud64_arena_owns(cached))
+		return;
 	if (poison_freed)
 	{
 		uint32_t *word = (uint32_t *)UncachedAddr(cached);

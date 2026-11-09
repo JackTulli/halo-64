@@ -24,11 +24,12 @@ loaded. Without it each does nothing, and the game draws its own HUD.
 #include "../src/n64.h"
 #include "n64_hud64_module.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-/* the module's file: its code, tables and state (54,000 bytes while it is
-loaded on the PC Expansion cartridge, 53,968 on the Multiplayer cartridge;
+/* the module's file: its code, tables and state (54,032 bytes while it is
+loaded on the PC Expansion cartridge, 54,000 on the Multiplayer cartridge;
 n64_module.c finds it room) */
 #define HUD64_MODULE "rom:/hud64.dso"
 
@@ -38,11 +39,12 @@ crash), so that a late allocation in a long game still finds room: HUD
 STYLE ORIGINAL's lowest free heap during play, the Multiplayer and PC
 Expansion maps at 1 and 4 players from the menu, HUD RESOLUTION HIGH
 DETAIL: 58 KB, PC Infinity at 1 player (64 KB at 4; Death Island 91 and
-84; no Multiplayer map under 568). The module's prepare checks it once, at
-the map's first 64 frame, with everything the module made for that frame
-counted (n64_hud64_game.c prepare). The model cache loads a model only with
-96 KB left over (80 KB for the local player's view model on the PC
-Expansion cartridge), so it never takes the margin */
+84; no Multiplayer map under 568). The module's prepare checks it once,
+after the map's first 64 frame, with everything that frame made for the
+style counted, the critical sprites Halo still draws under it included
+(n64_hud64_game.c prepare). The model cache loads a model only with 96 KB
+left over (80 KB for the local player's view model on the PC Expansion
+cartridge), so it never takes the margin */
 #define HUD64_HEAP_MARGIN (58 * 1024)
 
 /* (libdragon's) */
@@ -102,13 +104,75 @@ void *n64_hud64_import_tag(long group_tag, long tag_index)
 
 /* the module in, where there is room; else the game's own HUD for the
 rest of the map */
+/* The module's home: the HUD's meter slots past HUD64_SLOTS_KEPT, lent by
+n64_hud.c while the module is in. Halo draws none of its meters while the
+style draws (the player's shield and health, the weapon's meters are the
+style's; no vehicle seat on the PC maps has a meter), so their memory -- one
+block, made at boot for ORIGINAL -- holds the module and, after it, its
+context files (n64_hud64_arena_take) and their textures' upload blocks
+(n64_main.c's uncached arena), as far as they fit. The heap still gives the
+link's temporaries while the module loads (given back after the link), what
+does not fit in the block, and with HUD RESOLUTION HIGH DETAIL the outline
+sheets and cells of the 640-wide faces (n64_hud64.c build_outlines: 5,449
+bytes at 1-2 players, 4,776 at 3-4). While the block is lent there is no
+critical-sprite arena (n64_hud.c), so on the PC maps the critical sprites
+Halo still draws under the style (the motion sensor, the crosshair, the
+damage arrows, a zoomed weapon's parts) load on the heap, with n64_hud.c's
+own reserve (HUD_HEAP_RESERVE, 32 KB) -- on PC Infinity at 1 player about
+10 KB (81 KB free before them, 71 after) -- and the block's return gives
+them back for the arena. The module's margin check, after its first
+frame, counts all of these. HUD64_SLOTS_KEPT slots stay for any meter Halo
+still draws (a meter past them evicts the oldest). Without the block, or
+if the module does not fit, it takes the heap as before */
+#define HUD64_SLOTS_KEPT 2
+static uint8_t *arena_start, *arena_next, *arena_end;
+
+/* (the module's: a context file's memory) the next size bytes (16-aligned)
+of the slots' memory after the module; NULL without room there */
+void *n64_hud64_arena_take(
+	unsigned long size)
+{
+	uint8_t *block = (uint8_t *)(((uintptr_t)arena_next + 15) & ~(uintptr_t)15);
+
+	if (!arena_next || block + size > arena_end)
+		return NULL;
+	arena_next = block + size;
+	return block;
+}
+
+int n64_hud64_arena_owns(
+	const void *block)
+{
+	return arena_start && (const uint8_t *)block >= arena_start && (const uint8_t *)block < arena_end;
+}
+
+/* (the module's: a context file that did not read) its block, the last
+taken, free again */
+void n64_hud64_arena_give_back(
+	void *block)
+{
+	if (n64_hud64_arena_owns(block))
+		arena_next = (uint8_t *)block;
+	return;
+}
+
 static void module_start(
 	void)
 {
-	void *address;
+	unsigned long home_bytes = 0, resident = 0;
+	void *address, *home;
 
 	module_tried = TRUE;
-	module = n64_module_load(HUD64_MODULE, N64_HUD64_ENTRIES, n64_hud64_heap_margin(), &address);
+	home = n64_hud_lend_slots(HUD64_SLOTS_KEPT, &home_bytes);
+	module = n64_module_load_into(HUD64_MODULE, N64_HUD64_ENTRIES, n64_hud64_heap_margin(), &address, home,
+		home_bytes, &resident);
+	if (module && module == home)
+	{
+		arena_start = arena_next = (uint8_t *)home + resident;
+		arena_end = (uint8_t *)home + home_bytes;
+	}
+	else if (home)
+		n64_hud_return_slots();
 	if (!module)
 	{
 		/* (without room, n64_module.c's own line says how much there was) */
@@ -116,7 +180,9 @@ static void module_start(
 		return;
 	}
 	entry = (const struct n64_hud64_entries *)address;
-	n64_log("hud64: module loaded");
+	/* (in the meter slots it takes no heap: only the link's temporaries
+	came from it, given back) */
+	n64_log(module == home ? "hud64: module loaded, in the meter slots" : "hud64: module loaded");
 	return;
 }
 
@@ -130,6 +196,9 @@ void n64_hud64_release(
 		rspq_wait();
 		entry->release();
 	}
+	/* (its context files given back: the slots' memory after the module free
+	again) */
+	arena_next = arena_start;
 	return;
 }
 
@@ -151,6 +220,9 @@ static void module_unload(
 	entry = NULL;
 	n64_module_free(module);
 	module = NULL;
+	/* (the meter slots back, if the module had them) */
+	arena_start = arena_next = arena_end = NULL;
+	n64_hud_return_slots();
 	return;
 }
 
@@ -176,7 +248,20 @@ int n64_hud64_prepare(
 	int ready;
 
 	n64_hud64_label_halo = 0;
-	if (!entry && !module_tried && n64_hud_style())
+	/* (the style off with the module in -- the setting is applied as a game
+	starts, so only a test switches it mid-map: the module given back, the
+	meter slots ORIGINAL's again; loaded again if the style comes back) */
+	if (!n64_hud_style())
+	{
+		if (module)
+		{
+			n64_log("hud64: style off, module given back");
+			module_unload();
+		}
+		module_tried = FALSE;
+		return 0;
+	}
+	if (!entry && !module_tried)
 		module_start();
 	if (!entry)
 		return 0;

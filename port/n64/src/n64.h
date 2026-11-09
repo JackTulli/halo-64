@@ -843,6 +843,16 @@ debug_free); in *address the value of its export name. NULL without the
 file, an import the program lacks, or the room for it that leaves margin
 bytes of the heap free (n64_render_room_leaving) */
 void *n64_module_load(const char *path, const char *name, unsigned long margin, void **address);
+void *n64_module_load_into(const char *path, const char *name, unsigned long margin, void **address, void *home,
+	unsigned long size, unsigned long *resident);
+/* HUD STYLE 64's borrowed meter slots and the memory after its module in them (n64_hud.c, n64_hud64_stub.c) */
+void *n64_hud_lend_slots(int keep, unsigned long *bytes);
+void n64_hud_return_slots(void);
+void *n64_hud64_arena_take(unsigned long size);
+void n64_uncached_arena_begin(void);
+void n64_uncached_arena_end(void);
+int n64_hud64_arena_owns(const void *block);
+void n64_hud64_arena_give_back(void *block);
 void n64_module_free(void *module);
 
 /* the pause menu (START in a game, port/n64/game/n64_game.c): the

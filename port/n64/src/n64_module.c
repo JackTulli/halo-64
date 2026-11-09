@@ -197,7 +197,22 @@ static int link_module(uint8_t *base, const uint8_t *link, const struct dso_symb
 	return 1;
 }
 
+/* (the resident part given a home of the caller's, n64_module_load_into: no
+heap for it, and not given back by n64_module_free) */
+static void *module_home;
+
 void *n64_module_load(const char *path, const char *name, unsigned long margin, void **address)
+{
+	return n64_module_load_into(path, name, margin, address, NULL, 0, NULL);
+}
+
+/* as n64_module_load, with the resident part put at home (aligned 32, size
+bytes) where it fits, so that it takes no heap: then only the link's
+temporaries (its relocations, the program's symbols) come from the heap,
+the margin left besides them. *resident (if given): the resident part's
+bytes */
+void *n64_module_load_into(const char *path, const char *name, unsigned long margin, void **address, void *home,
+	unsigned long size, unsigned long *resident)
 {
 	struct dso_header header;
 	uint8_t *base = NULL, *link = NULL;
@@ -215,8 +230,12 @@ void *n64_module_load(const char *path, const char *name, unsigned long margin, 
 	}
 	/* (room for it that leaves the margin free once it is linked; while it
 	links, the margin holds its relocations and the program's symbols) */
-	if (!n64_render_room_leaving(header.resident_size, margin > header.link_size + 4096 ? margin :
-		header.link_size + 4096))
+	if (resident)
+		*resident = header.resident_size;
+	if (home && (header.resident_size > size || ((uintptr_t)home & 31)))
+		home = NULL;
+	if (!n64_render_room_leaving(home ? header.link_size + 4096 : header.resident_size,
+		home ? margin : margin > header.link_size + 4096 ? margin : header.link_size + 4096))
 	{
 		debugf("module: %s: %lu + %lu KB wanted, %lu KB free\n", path,
 			(unsigned long)header.resident_size / 1024, margin / 1024, n64_heap_free() / 1024);
@@ -225,7 +244,7 @@ void *n64_module_load(const char *path, const char *name, unsigned long margin, 
 	}
 	/* (the resident part first, below the rest, which is given back; at
 	the alignment n64dso gives the image in it, the module's segment's) */
-	if ((base = memalign(32, header.resident_size)) && (link = malloc(header.link_size)) &&
+	if ((base = home ? home : memalign(32, header.resident_size)) && (link = malloc(header.link_size)) &&
 		lseek(file, header.resident_offset, SEEK_SET) == (off_t)header.resident_offset &&
 		read(file, base, header.resident_size) == (ssize_t)header.resident_size &&
 		lseek(file, header.link_offset, SEEK_SET) == (off_t)header.link_offset &&
@@ -237,14 +256,19 @@ void *n64_module_load(const char *path, const char *name, unsigned long margin, 
 	free(link);
 	if (!linked)
 	{
-		free(base);
+		if (base != home)
+			free(base);
 		*address = NULL;
 		return NULL;
 	}
+	module_home = home;
 	return base;
 }
 
 void n64_module_free(void *module)
 {
-	free(module);
+	if (module && module != module_home)
+		free(module);
+	if (module == module_home)
+		module_home = NULL;
 }

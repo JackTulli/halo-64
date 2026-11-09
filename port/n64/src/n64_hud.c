@@ -325,6 +325,14 @@ own unit HUDs and weapons, shared sprites once): with three the arena
 holds what fits, the rest is drawn from the heap. Its
 start and end (cached addresses), and the top of what is loaded */
 static uint8_t *arena_start, *arena_end, *arena_top;
+/* (HUD STYLE 64) the bytes at the meter block's end lent to the style's
+module while it is in (n64_hud_lend_slots), 0 when none: Halo draws none of
+the meters the places are made for under the style -- the shield, the health
+and the weapon's are the style's -- so the places are then two of 8 KB at
+the block's start, for any meter Halo still draws (a vehicle's), with no
+arena: the critical sprites load on the heap, with their reserve */
+static unsigned long meter_lent;
+
 /* The places by size: the most meter textures one player's HUD draws at
 once, over every weapon and every vehicle seat with every weapon it may
 hold on the PC and Xbox maps, from their tags as hud_unit.c and
@@ -339,11 +347,14 @@ still drawn) and 7 of 4352, a small texture taking a large place where
 it is free; in split
 screen each is at most 4096 bytes, at most 3 of a player's are over
 2048, and at most 8 are not. With the full-width sprites (twice as wide),
-the 12 places of 8 KB. 0: those; 1-4: the player count's */
+the 12 places of 8 KB. 0: those; 1-4: the player count's; 5: the two of
+8 KB the block keeps while HUD STYLE 64 has its end (meter_lent) */
 static int meter_layout(void)
 {
 	int arena = hud.packed_count > 0 && hud.view_count <= 3;
 
+	if (meter_lent)
+		return 5;
 	if (!hud.packed_count || hud.wide || meter_too_large || hud.view_count < 1 || hud.view_count > 4)
 		return 0;
 	return hud.view_count + (arena ? 8 : 0);
@@ -351,13 +362,13 @@ static int meter_layout(void)
 
 static void place_meters(int layout)
 {
-	static const struct { unsigned short bytes, count[5]; } kinds[] =
+	static const struct { unsigned short bytes, count[6]; } kinds[] =
 	{
-		{8192, {12, 0, 0, 0, 0}},
-		{6272, {0, 2, 0, 0, 0}},
-		{4352, {0, 7, 0, 0, 0}},
-		{4096, {0, 0, 6, 9, 12}},
-		{2048, {0, 0, 12, 18, 24}},
+		{8192, {12, 0, 0, 0, 0, 2}},
+		{6272, {0, 2, 0, 0, 0, 0}},
+		{4352, {0, 7, 0, 0, 0, 0}},
+		{4096, {0, 0, 6, 9, 12, 0}},
+		{2048, {0, 0, 12, 18, 24, 0}},
 	};
 	uint8_t *at = meter_block;
 	int places = layout & 7;
@@ -631,6 +642,56 @@ static void check_layout(void)
 	place_meters(layout);
 }
 
+/* (HUD STYLE 64, n64_hud64_stub.c) the meter block past its first keep
+places of 8 KB lent to the style's module: what was made in the block given
+back first (the views' recordings with it), the arena's sprites forgotten,
+the places laid out as two of 8 KB; none of the lent memory in the data
+cache. Its memory (cached) and *bytes; NULL without the block, or lent
+already */
+void *n64_hud_lend_slots(int keep, unsigned long *bytes)
+{
+	unsigned long kept = (unsigned long)keep * METER_SLOT_WIDTH * METER_SLOT_HEIGHT * 2;
+	void *cached;
+
+	*bytes = 0;
+	if (!meter_block || meter_lent || keep < 1 || kept >= METER_BLOCK)
+		return NULL;
+	drop_made_in_play();
+	forget_arena(arena_start);
+	meter_lent = METER_BLOCK - kept;
+	place_meters(meter_layout());
+	cached = CachedAddr(meter_block + kept);
+	data_cache_hit_invalidate(cached, meter_lent);
+	*bytes = meter_lent;
+	return cached;
+}
+
+/* (HUD STYLE 64) the lent memory back: the RDP done with what the style
+put there, its cache lines written back and dropped (the places are written
+uncached), the places laid out again for the player count (check_layout:
+what was made from the sprites dropped). Where that layout has the arena,
+the sprites loaded on the heap meanwhile -- the critical pass's, with no
+arena -- are given back too: the next pass loads them into the arena, so
+that the game's own HUD takes the heap it takes without the style */
+void n64_hud_return_slots(void)
+{
+	if (!meter_lent)
+		return;
+	rspq_wait();
+	data_cache_hit_writeback_invalidate(CachedAddr(meter_block + METER_BLOCK - meter_lent), meter_lent);
+	meter_lent = 0;
+	check_layout();
+	for (int i = 0; arena_end > arena_start && i < MAXIMUM_SPRITES; i++)
+	{
+		if (!hud.sprites[i])
+			continue;
+		sprite_free(hud.sprites[i]);
+		hud.sprites[i] = NULL;
+		hud.sprite_wide[i] = 0;
+		hud.held[i] = 0;
+	}
+}
+
 /* the passes since a mark was made (hud.pass + 1 then: 1 to 65535; the
 pass wraps at 65535, so that no mark is 0, "never") */
 static unsigned pass_age(unsigned short mark)
@@ -878,15 +939,82 @@ void n64_hud_release(void)
 	n64_hud64_release();
 }
 #else
+/* The meters' slots are one block (meter_block, uncached), each slot a part
+of it, so that HUD STYLE 64 can borrow the block's last slots for its module
+and textures while it is in, where nothing else of the heap moves
+(n64_hud_lend_slots, n64_hud64_stub.c), and have them back as slots, with
+nothing to allocate, when it goes (n64_hud_return_slots). Without the block
+(no room at boot) each slot is its own surface, as before, and nothing is
+lent */
+#define METER_SLOT_BYTES (METER_SLOT_WIDTH * METER_SLOT_HEIGHT * 2)
+static uint8_t *meter_block;
+static int meter_lent;
+
+static void meter_slots_from_block(void)
+{
+	for (int i = 0; i < METER_CACHE; i++)
+	{
+		memset(&meters[i], 0, sizeof(meters[i]));
+		meters[i].sprite = -1;
+		if (i < METER_CACHE - meter_lent)
+			meters[i].slot = surface_make(meter_block + i * METER_SLOT_BYTES, FMT_RGBA16, METER_SLOT_WIDTH,
+				METER_SLOT_HEIGHT, METER_SLOT_WIDTH * 2);
+	}
+}
+
+/* (HUD STYLE 64) the block's slots past keep, lent: the views' recordings
+dropped (they may draw the slots' textures), the RDP done with them, none of
+their memory in the data cache; their memory (cached) and its bytes. NULL
+without the block, or lent already */
+void *n64_hud_lend_slots(int keep, unsigned long *bytes)
+{
+	void *cached;
+
+	*bytes = 0;
+	if (!meter_block || meter_lent || keep < 1 || keep >= METER_CACHE)
+		return NULL;
+	n64_hud_forget_recordings();
+	rspq_wait();
+	meter_lent = METER_CACHE - keep;
+	meter_slots_from_block();
+	*bytes = (unsigned long)meter_lent * METER_SLOT_BYTES;
+	cached = CachedAddr(meter_block + keep * METER_SLOT_BYTES);
+	data_cache_hit_invalidate(cached, *bytes);
+	return cached;
+}
+
+/* (HUD STYLE 64) the lent slots back: the views' recordings dropped, the RDP
+done with what the style put there, its cache lines written back and dropped
+(the slots are written uncached) */
+void n64_hud_return_slots(void)
+{
+	if (!meter_lent)
+		return;
+	n64_hud_forget_recordings();
+	rspq_wait();
+	data_cache_hit_writeback_invalidate(CachedAddr(meter_block + (METER_CACHE - meter_lent) * METER_SLOT_BYTES),
+		(unsigned long)meter_lent * METER_SLOT_BYTES);
+	meter_lent = 0;
+	meter_slots_from_block();
+}
+
 /* what the HUD keeps from its first map on -- the meters' texture slots
 (96 KB), the blip, its font -- made at boot (n64_main.c), at the heap's
 bottom: made with the first map, above its image, they split the heap a
 later, bigger map needs in one piece (n64_anim.c) */
 void n64_hud_reserve(void)
 {
+	if (!meter_block)
+	{
+		/* (whole cache lines, none in the data cache: n64_main.c's
+		malloc_uncached_aligned) */
+		meter_block = malloc_uncached_aligned(64, METER_CACHE * METER_SLOT_BYTES);
+		if (meter_block)
+			meter_slots_from_block();
+	}
 	for (int i = 0; i < METER_CACHE; i++)
 	{
-		if (!meters[i].slot.buffer)
+		if (!meters[i].slot.buffer && !meter_block)
 			meters[i].slot = surface_alloc(FMT_RGBA16, METER_SLOT_WIDTH, METER_SLOT_HEIGHT);
 		meters[i].sprite = -1;
 	}
@@ -1065,7 +1193,8 @@ void n64_hud_set_map(const char *map_name)
 	n64_hud_release();
 	for (int i = 0; i < METER_CACHE; i++)
 	{
-		if (!meters[i].slot.buffer)
+		/* (the block's slots are there, or lent to HUD STYLE 64) */
+		if (!meters[i].slot.buffer && !meter_block)
 			meters[i].slot = surface_alloc(FMT_RGBA16, METER_SLOT_WIDTH, METER_SLOT_HEIGHT);
 	}
 	if (!hud.blip.buffer)
@@ -1877,7 +2006,9 @@ static surface_t *meter_surface(const struct n64_hud_quad *quad, sprite_t *sprit
 			m->last_used = meter_clock;
 			return &m->surface;
 		}
-		if (m->last_used < oldest->last_used)
+		/* (only an entry with a slot: HUD STYLE 64 may have the block's last
+		slots) */
+		if (m->slot.buffer && (!oldest->slot.buffer || m->last_used < oldest->last_used))
 			oldest = m;
 	}
 	entry = oldest;
