@@ -41,8 +41,11 @@ the arena -- on the cartridges whose maps have HUD images larger than
 256x256 for the converter to pack (tools/n64/hud.py): the PC Expansion's
 and the Custom Edition's (the PC's HUD bitmaps); there, only on the maps
 whose HUD the converter packed (n64_hud_packed). The Xbox maps -- every
-cartridge's -- have none, and no HUD sprite was refused there: their HUD
-is v0.6.6's */
+cartridge's -- have none. On the other cartridges their HUD is v0.6.6's;
+on these two a map with no packed sprite has v0.6.6's HUD but for one rule
+(hud_sprite): a view whose recording left an image out is drawn live the
+next time, and an image left out of a live view is asked for again
+HUD_RETRY_VIEWS views later */
 #if defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS)
 #define HUD_PACKING 1
 #else
@@ -822,10 +825,11 @@ static void swap_critical(void)
 }
 
 /* whether this map's HUD is packed: the critical pass (n64_render_game.c),
-and with it the reserve, the retry windows, live_next, the swap and the
-meter places by size, only there; a map with no packed sprite -- the Xbox
-maps, on every cartridge, and the Custom Edition maps the converter did
-not pack -- has v0.6.6's HUD */
+and with it the reserve, the swap and the meter places by size, only there;
+a map with no packed sprite -- the Xbox maps, on every cartridge, and the
+Custom Edition maps the converter did not pack -- has v0.6.6's HUD, but for
+live_next and the HUD_RETRY_VIEWS window (hud_sprite; it has no critical
+pass) */
 int n64_hud_packed(void)
 {
 	return hud.packed_count > 0;
@@ -1288,9 +1292,18 @@ static sprite_t *hud_sprite(int number)
 			hud.push_pieces[hud.view] = asked_pieces;
 			hud.push_sprite[hud.view] = number;
 		}
-		if (!hud.sprites[number] && hud.packed_count && hud.recording >= 0 && hud.recording < MAXIMUM_VIEWS)
+		/* (left out of the view's recording: the view drawn live the next
+		time, where the image needs no recording's room; left out of a live
+		view: asked for again HUD_RETRY_VIEWS views later, in a packed map's
+		critical pass HUD_RETRY_VIEWS_CRITICAL. On every map: with the room the
+		map image's savings leave, a view's recording finds its room where
+		v0.6.7 drew the view live, and an image beside that room seldom finds
+		its own -- on the Custom Edition cartridge the image and the
+		recording's room in one piece, on the PC Expansion cartridge the
+		image's piece and the recording's pieces besides it (hud_room)) */
+		if (!hud.sprites[number] && hud.recording >= 0 && hud.recording < MAXIMUM_VIEWS)
 			hud.live_next[hud.recording] = 1;
-		else if (!hud.sprites[number] && hud.packed_count)
+		else if (!hud.sprites[number])
 			hud.refused_at[number] = (unsigned short)(hud.views + 1);
 		if (hud.sprites[number] && n64_debug_flag("debug_hud_sprites"))
 			debugf("hud sprite %d: %dx%d format %d%s\n", number, hud.sprites[number]->width,
