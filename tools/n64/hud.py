@@ -23,9 +23,12 @@ one texel of margin): numbered after the images, named at the end of both
 lists, and placed by rom:/hud/<map>.subs, a line "<image> <sprite> <s0>
 <t0> <s1> <t1>" each (the half-size set's texels). The HUD draws a quad
 inside such a rectangle from that sprite (n64_hud.c): a weapon's bullet row
-needs a few KB, not its image's 128 (pack). On a map with such images (the
-PC HUD's) the HUD's digits image and the motion sensor's images, drawn on
-every frame, each get one more: the digits
+needs a few KB, not its image's 128 (pack). On the Custom Edition cartridge
+(pack_meters) so does each meter image of 256x256 texels: the Xbox HUD's
+unit and ammunition meters, which every Custom Edition map has, take 32 KB
+each at half size for a few strips. On a map with such images the HUD's
+digits image and the motion sensor's images, drawn on every frame, each get
+one more: the digits
 cropped to their glyphs' rectangles, the motion sensor's (drawn whole, no
 rectangles) to what is not clear, where that is at most half the image (a
 line's seventh field, 1: the sprite the image is drawn from).
@@ -49,6 +52,10 @@ HUD_GROUPS = ("unhi", "wphi", "grhi", "hudg", "hud#")
 # an image of more texels than this is packed (pack): the Xbox maps' HUD
 # images have no more, the PC HUD's 512x512 ones four times as many
 PACKED_TEXELS = 256 * 256
+# a meter image of this many texels or more is packed where meters are
+# (HudExporter pack_meters: the Custom Edition cartridge's maps): the Xbox
+# HUD's unit and ammunition meters, 256x256
+PACKED_METER_TEXELS = 256 * 256
 # the packed sprites the HUD reads a map (n64_hud.c MAXIMUM_PACKED_SPRITES):
 # more would be ignored there
 PACKED_SPRITES = 64
@@ -167,11 +174,13 @@ def bleed(img, passes=2):
 
 
 class HudExporter:
-    def __init__(self, xmap, defs, map_name, out_dir):
+    def __init__(self, xmap, defs, map_name, out_dir, pack_meters=False):
         self.map = xmap
         self.defs = defs
         self.map_name = map_name
         self.out_dir = Path(out_dir)
+        # the meter images of PACKED_METER_TEXELS packed too (pack)
+        self.pack_meters = pack_meters
         # the Xbox address of an image's bitmap data -> sprite number
         self.sprite_of = {}
         self.count = 0
@@ -209,6 +218,9 @@ class HudExporter:
         # pack -- those with large images: the PC maps; the Xbox maps' lists
         # stay as they were)
         arrows = []
+        # (with pack_meters, the meter images of PACKED_METER_TEXELS: after
+        # the large images, so that a map's packed sprites keep their numbers)
+        meters = []
         for tag in bitmaps:
             if any(name in tag.name for name in SKIPPED_NAMES):
                 continue
@@ -226,6 +238,8 @@ class HudExporter:
                 number = self.count
                 if img.width * img.height > PACKED_TEXELS:
                     self.large.append((number, img, "meter" in tag.name, self.rectangles(tag, i, img)))
+                elif self.pack_meters and "meter" in tag.name and img.width * img.height >= PACKED_METER_TEXELS:
+                    meters.append((number, img, True, self.rectangles(tag, i, img)))
                 elif "damage_arrows" in tag.name:
                     arrows.append((number, img, False, self.rectangles(tag, i, img)))
                 self.numbers_of.setdefault(tag.index, {})[i] = (number, img, "meter" in tag.name, tag)
@@ -235,8 +249,8 @@ class HudExporter:
                 self.wide_names.append(share_file(out / f"{number}w.sprite", self.out_dir / "hud", ".sprite"))
                 self.sprite_of[pointer + i * size] = number
                 self.count += 1
-        if self.large:
-            self.large.extend(arrows)
+        if self.large or meters:
+            self.large.extend(arrows + meters)
         self.find_whole()
         hud_dir = self.out_dir / "hud"
         self.wide_bytes = sum(sprite_bytes(hud_dir / f"{name}.sprite") for name in self.wide_names)
@@ -334,7 +348,8 @@ class HudExporter:
 
     def pack(self):
         """a sprite for each sprite rectangle of each image of more than
-        PACKED_TEXELS texels, and, on a map with such images, one for the box
+        PACKED_TEXELS texels (with pack_meters, of each meter image of
+        PACKED_METER_TEXELS too), and, on a map with such images, one for the box
         of each digits' and motion sensor's image where the box is at most half
         of it (both sets), named after the images in both lists and placed by
         <map>.subs; the number of sprites made"""
