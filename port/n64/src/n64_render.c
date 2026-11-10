@@ -423,6 +423,23 @@ which have N64_UNCACHED_RESERVE besides) took at most 32 KB of the heap in
 test runs: the free heap stayed at 55 KB or more, near the least that
 MODEL_HEAP_MARGIN left in the long test runs (58 KB) */
 #define VIEW_MODEL_HEAP_MARGIN (80 * 1024)
+/* the heap the local player's weapon's load leaves free on the custom
+cartridge where the map's HUD is packed, besides the room of the HUD's
+critical sprites wanted and missing (load_model): HUD_HEAP_RESERVE, the
+most the game itself took in play, which the critical sprites leave too
+(n64_hud.c). With MODEL_HEAP_MARGIN, on Yoyorast Island the heap in play
+never had room for the weapon, with one player or four, and the gun was
+never drawn; with four players and the HUD's images loaded first, 70 KB
+was free there and the assault rifle's load (its half-size first-person
+textures) asks about 35 KB besides the margin: it loads with 32 KB, not
+with 40 */
+#define CUSTOM_VIEW_MODEL_HEAP_MARGIN (32 * 1024)
+/* the frames after a view model gave way for the HUD's critical sprites
+(view_models_give_way) in which none gives way again, and the most frames
+the view models wait for the HUD's first critical pass on a map
+(load_model) */
+#define GIVE_WAY_FRAMES 600
+#define FIRST_PASS_FRAMES 30
 
 struct loaded_model
 {
@@ -498,6 +515,12 @@ static struct
 	(push_out_for_piece), and for the HUD's images
 	(n64_render_push_out_for_hud) */
 	unsigned long pushed_out;
+#ifdef HALO_N64_CUSTOM_MAPS
+	/* the frame until which no view model gives way for the HUD
+	(view_models_give_way); the first frame a view model waited for the
+	HUD's first critical pass (load_model) */
+	unsigned long give_way_held, first_pass_wait;
+#endif
 	/* by batch: the batches alike from it on (RUN_LENGTH) and whether a run
 	starts there (RUN_HEAD) -- see mark_batch_runs */
 	uint8_t *runs;
@@ -2360,6 +2383,63 @@ static int first_person_model(int index)
 #endif
 }
 
+#ifdef HALO_N64_CUSTOM_MAPS
+/* (the custom cartridge) the first-person model handed over next is the
+arms (n64_render_game.c): render_object marks it so (loaded_model arms) */
+static int view_model_arms;
+
+void n64_render_view_model_arms(int on)
+{
+	view_model_arms = on;
+}
+
+/* HUD first (the HUD's tiers: its critical readouts before every
+model). Where a critical HUD sprite wanted and missing
+(n64_hud_view_model_room) finds too few bytes free but would find its own
+bytes (not its reserve) with a loaded view model's back -- its load's heap
+besides its textures (cost16) and its textures, shared ones included --
+that view model gives way, the arms before the weapon, and the HUD asks for
+the sprite again in its next view; the view model loads again only where
+the heap has room for both (load_model). At most once in GIVE_WAY_FRAMES:
+where the sprite finds no room all the same, the view model is not dropped
+for it again and again */
+static void view_models_give_way(void)
+{
+	unsigned long free, back;
+	int chosen = -1;
+
+	if (renderer.frame_index < models.give_way_held || !n64_hud_view_model_room(~0UL))
+		return;
+	for (int i = 0; i < models.header->model_count; i++)
+	{
+		if (models.loaded[i].data && first_person_model(i) && (chosen < 0 || models.loaded[i].arms > models.loaded[chosen].arms))
+			chosen = i;
+	}
+	if (chosen < 0)
+		return;
+	struct model_record *model = &models.models[chosen];
+
+	free = n64_heap_free();
+	back = 16UL * models.loaded[chosen].cost16;
+	for (int b = 0; b < model->far_first + model->far_count; b++)
+	{
+		int texture = models.batches[model->first_batch + b].texture, previous;
+
+		if (texture < 0 || texture >= models.header->texture_count)
+			continue;
+		for (previous = 0; previous < b; previous++)
+			if (models.batches[model->first_batch + previous].texture == texture) break;
+		if (previous == b) back += model_texture_allocation(texture);
+	}
+	if (n64_hud_view_model_room(free + back) <= n64_hud_view_model_room(free))
+		return;
+	drop_model(chosen);
+	rspq_wait(); /* the dropped model's memory comes back once the RSP is done with it */
+	models.give_way_held = renderer.frame_index + GIVE_WAY_FRAMES;
+	n64_hud_view_models_gave_way();
+}
+#endif
+
 #ifdef HALO_N64_PC_EXPANSION
 /* the kept view model a weapon switch left: one the view drawing now drew
 in first person before this frame but not in it (first_person_view), while
@@ -2724,6 +2804,30 @@ static int load_model(int index, int tier, int gun_first)
 		models.missing++;
 		return 0;
 	}
+#ifdef HALO_N64_CUSTOM_MAPS
+	/* (the local player's view models, kept, on a map whose HUD is packed
+	-- where the HUD's critical pass loads its critical sprites first: the
+	weapon CUSTOM_VIEW_MODEL_HEAP_MARGIN, the arms the whole margin; both
+	besides the room of the HUD's critical sprites wanted and missing that
+	the heap has now, which they leave them -- HUD first,
+	view_models_give_way -- and none before the map's first critical pass,
+	for at most FIRST_PASS_FRAMES. Elsewhere the whole margin, as before) */
+	if (priority && tier == N64_TIER_FIRST_PERSON && n64_hud_packed())
+	{
+		if (n64_hud_view_models_wait())
+		{
+			if (!models.first_pass_wait)
+				models.first_pass_wait = renderer.frame_index;
+			if (renderer.frame_index < models.first_pass_wait + FIRST_PASS_FRAMES)
+			{
+				models.missing++;
+				return 0;
+			}
+		}
+		margin = (loaded->arms ? MODEL_HEAP_MARGIN : CUSTOM_VIEW_MODEL_HEAP_MARGIN) +
+			n64_hud_view_model_room(n64_heap_free());
+	}
+#endif
 	/* room: drop the models drawn longest ago, none drawn in the frames
 	still in flight (their textures go with the last model using them; for
 	a kept view model, see below), past the cache's size or while the heap
@@ -3800,9 +3904,11 @@ void n64_render_frame_begin(void)
 	renderer.matrix_count = 0;
 	palette_count = 0;
 #ifdef HALO_N64_CUSTOM_MAPS
-	/* the view models first, before the world's take the heap */
+	/* the view models first, before the world's take the heap -- after the
+	HUD's critical sprites (view_models_give_way) */
 	if (models.header && models.loaded && display_mode == DISPLAY_GAME)
 	{
+		view_models_give_way();
 		for (int i = 0; i < models.header->model_count; i++)
 		{
 			if (first_person_model(i))
@@ -5763,7 +5869,14 @@ static void render_object(const struct n64_object *object)
 		models.loaded[model - models.models].first_person_drawn = renderer.frame_index;
 		models.loaded[model - models.models].first_person_view = (unsigned char)(renderer.view_count - 1);
 	}
+#ifdef HALO_N64_CUSTOM_MAPS
+	/* (on the custom cartridge the arms keep the first-person tier:
+	n64_render_view_model_arms) */
+	models.loaded[model - models.models].arms = renderer.first_person &&
+		(object->tier == N64_TIER_DECORATION || (object->tier == N64_TIER_FIRST_PERSON && view_model_arms));
+#else
 	models.loaded[model - models.models].arms = renderer.first_person && object->tier == N64_TIER_DECORATION;
+#endif
 	int tier = object->tier;
 #ifdef HALO_N64_PC_EXPANSION
 	/* (an obstacle with no stand-in to show -- none for this map (the

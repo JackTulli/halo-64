@@ -103,6 +103,12 @@ memory of the weapon they replace (swap_critical) */
 /* the HUD views after which a sprite left out for want of room is asked for
 again */
 #define HUD_RETRY_VIEWS 32
+/* (the custom cartridge) the HUD views, from its first such try, for which
+a critical sprite wanted and missing keeps the local player's view models
+out where its last try did not find too few bytes free -- it was left out
+of a recording, or found no piece its size -- (n64_hud_view_model_room);
+the critical pass asks for it again every HUD_RETRY_VIEWS_CRITICAL views */
+#define CRITICAL_HOLD_VIEWS (2 * HUD_RETRY_VIEWS)
 /* the largest image (the room asset_load takes for it and 1 KB) for which a
 view's HUD may push models out (n64_render_push_out_for_hud): a 128x128
 image at 2 bytes a texel -- its texels, its sprite headers and the room left
@@ -228,11 +234,24 @@ static struct
 	/* the packed sprite an image is drawn from whole (the digits', the
 	motion sensor's: its box of what is not clear), +1; 0 none */
 	unsigned char whole[MAXIMUM_SPRITES];
+#ifdef HALO_N64_CUSTOM_MAPS
+	/* the free bytes each sprite not loaded needs (in 16 bytes; 0: none)
+	where a try left it out -- SPRITE_FREE_SHORT where the last found too
+	few bytes free for it over its reserve -- and hud.views when it was
+	first so (+1, its low 16 bits): the room the local player's view models
+	leave the critical ones on a map whose HUD is packed
+	(n64_hud_view_model_room) */
+	unsigned short short_of[MAXIMUM_SPRITES];
+	unsigned short short_at[MAXIMUM_SPRITES];
+	/* a critical pass has run on this map (n64_hud_view_models_wait) */
+	int passed;
+#endif
 } hud = {.inset = -1, .recording = -1};
 
 #define SPRITE_WANTED 1
 #define SPRITE_IN_ARENA 2
 #define SPRITE_DECORATION 4
+#define SPRITE_FREE_SHORT 8
 static inline int sprite_flag(int number, int flag) { return hud.flags[number] & flag; }
 static inline void sprite_set(int number, int flag) { hud.flags[number] |= (unsigned char)flag; }
 static inline void sprite_clear(int number, int flag) { hud.flags[number] &= (unsigned char)~flag; }
@@ -463,8 +482,15 @@ static void release_sprites(void)
 		hud.held[i] = 0;
 		hud.flags[i] = 0;
 		hud.carried[i] = 0;
+#ifdef HALO_N64_CUSTOM_MAPS
+		hud.short_of[i] = 0;
+		hud.short_at[i] = 0;
+#endif
 	}
 	memset(hud.live_next, 0, sizeof(hud.live_next));
+#ifdef HALO_N64_CUSTOM_MAPS
+	hud.passed = 0;
+#endif
 	push_out_reset(1);
 	hud.swap_failed_at = 0;
 	arena_top = arena_start;
@@ -835,12 +861,65 @@ int n64_hud_packed(void)
 	return hud.packed_count > 0;
 }
 
+#ifdef HALO_N64_CUSTOM_MAPS
+/* HUD first (the HUD's tiers: the critical readouts before every model),
+on a map whose HUD is packed -- where the critical pass loads the critical
+sprites before the rest of the HUD: the free bytes the critical sprites
+wanted and missing need -- each sprite asked for in the critical pass that
+is not loaded and that a try left out (short_of): where the last try found
+too few bytes free for it, until it loads; else (it was left out of a
+recording, or found no piece its size) for CRITICAL_HOLD_VIEWS -- of those
+that need at most limit. The local player's view models leave them free
+(n64_render.c load_model) and give way for them (view_models_give_way) */
+unsigned long n64_hud_view_model_room(unsigned long limit)
+{
+	unsigned long room = 0;
+
+	for (int i = 0; i < MAXIMUM_SPRITES; i++)
+	{
+		unsigned long need = (unsigned long)hud.short_of[i] << 4;
+
+		if (need && need <= limit && !hud.sprites[i] && !hud.missing[i] && is_critical(i) &&
+			(sprite_flag(i, SPRITE_FREE_SHORT) || (unsigned short)(hud.views + 1 - hud.short_at[i]) < CRITICAL_HOLD_VIEWS))
+			room += need;
+	}
+	return room;
+}
+
+/* whether no critical pass has run on this map yet: the first comes after
+the first-person weapon's models are asked for, and the local player's
+view models wait for it (n64_render.c load_model) */
+int n64_hud_view_models_wait(void)
+{
+	return !hud.passed;
+}
+
+/* a view model gave way for the critical sprites wanted and missing: they
+are asked for again in the views' next HUD, not HUD_RETRY_VIEWS later, and
+keep the view models out for CRITICAL_HOLD_VIEWS from now at least -- a
+recording that leaves one out does not answer for the view models */
+void n64_hud_view_models_gave_way(void)
+{
+	for (int i = 0; i < MAXIMUM_SPRITES; i++)
+	{
+		if (hud.short_of[i] && !hud.sprites[i] && is_critical(i))
+		{
+			hud.refused_at[i] = 0;
+			hud.short_at[i] = (unsigned short)(hud.views + 1);
+		}
+	}
+}
+#endif
+
 /* (the critical pass, hud.c) the sprites asked for meanwhile are critical;
 at its end, those it left out for want of room swapped in for a replaced
 weapon's (swap_critical) */
 void n64_hud_critical_pass(int on)
 {
 	hud.critical_pass = on;
+#ifdef HALO_N64_CUSTOM_MAPS
+	hud.passed |= on;
+#endif
 	if (on)
 	{
 		check_layout();
@@ -1305,6 +1384,28 @@ static sprite_t *hud_sprite(int number)
 			hud.live_next[hud.recording] = 1;
 		else if (!hud.sprites[number])
 			hud.refused_at[number] = (unsigned short)(hud.views + 1);
+#ifdef HALO_N64_CUSTOM_MAPS
+		/* (the bytes it was left out for, and whether for too few bytes
+		free -- a live try's answer: a recording's keeps the last -- the room
+		the view models leave it, n64_hud_view_model_room) */
+		if (hud.sprites[number] || !asked)
+		{
+			hud.short_of[number] = hud.short_at[number] = 0;
+			sprite_clear(number, SPRITE_FREE_SHORT);
+		}
+		else if (!hud.swapping)
+		{
+			hud.short_of[number] = (unsigned short)((asked + 15) >> 4);
+			if (!hud.short_at[number])
+				hud.short_at[number] = (unsigned short)(hud.views + 1);
+			if (hud.recording < 0)
+			{
+				sprite_clear(number, SPRITE_FREE_SHORT);
+				if (hud_free(asked) < asked + (critical ? HUD_HEAP_RESERVE : HUD_HEAP_RESERVE_REST))
+					sprite_set(number, SPRITE_FREE_SHORT);
+			}
+		}
+#endif
 		if (hud.sprites[number] && n64_debug_flag("debug_hud_sprites"))
 			debugf("hud sprite %d: %dx%d format %d%s\n", number, hud.sprites[number]->width,
 				hud.sprites[number]->height, (int)sprite_get_format(hud.sprites[number]),
