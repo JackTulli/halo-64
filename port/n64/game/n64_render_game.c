@@ -14,6 +14,7 @@ renderer's (port/n64/src/n64_render.c).
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "camera/director.h"
 #include "game/game.h"
 #include "game/players.h"
 #include "game/local_players.h"
@@ -524,16 +525,37 @@ static boolean object_reaches_visible_cluster(
 	return FALSE;
 }
 
+/* whether an object is the unit or hangs under it (its parent chain) */
+static boolean object_under_unit(
+	long object_index,
+	long unit_index)
+{
+	while (object_index != NONE && object_index != unit_index)
+		object_index = object_get(object_index)->object.parent_object_index;
+	return object_index != NONE;
+}
+
 static void render_objects_for_view(
 	short local_player_index,
 	boolean third_person)
 {
 	long viewer_unit = NONE;
+	long viewer_vehicle = NONE;
 	long player_index = local_player_get_player_index(local_player_index);
 	short i;
 
 	if (player_index != NONE && !third_person)
 		viewer_unit = player_get(player_index)->unit_index;
+	/* A seated unit hangs under its vehicle (its ultimate parent), so the
+	test below kept it: in a seat that looks out in first person (a
+	Warthog's passenger) the player's own body and the gun it holds were
+	drawn around the eye, beside the first-person gun. Like Halo's renderer
+	(render_objects.c, object_is_first_person_camera), a first-person view
+	leaves out the unit and what it holds; a seat's third-person camera
+	still shows them. */
+	if (viewer_unit != NONE && object_get(viewer_unit)->object.parent_object_index != NONE &&
+		director_get_perspective(local_player_index) == _director_perspective_first_person)
+		viewer_vehicle = object_get_ultimate_parent(viewer_unit);
 	if (frame_objects_frame != render.frame_index)
 		gather_frame_objects();
 	for (i = 0; i < frame_object_count; i++)
@@ -547,6 +569,9 @@ static void render_objects_for_view(
 			!object_reaches_visible_cluster(entry->object_index))
 			continue;
 		if (viewer_unit != NONE && entry->ultimate_parent == viewer_unit)
+			continue;
+		if (viewer_vehicle != NONE && entry->ultimate_parent == viewer_vehicle &&
+			object_under_unit(entry->object_index, viewer_unit))
 			continue;
 		if (n64_render_object(&entry->n64))
 			n64_object_seen[DATUM_INDEX_TO_ABSOLUTE_INDEX(entry->object_index) & (N64_SEEN_SLOTS - 1)] =
