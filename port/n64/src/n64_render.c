@@ -1150,7 +1150,21 @@ static void game_display_init(void)
 /* the display closed, the game's z-buffer with it */
 static void game_display_close(void)
 {
+	/* (display_close with the CPU's interrupts off: libdragon's
+	vi_wait_vblank, with which display_close waits for the blanked picture
+	before it frees the buffers, then makes the VI's pending register writes
+	itself once it reads the vertical blank's line. With them on it leaves
+	the writes to the VI interrupt and asserts at once that they were made
+	(vi.c, "cfg_pending == 0"): in ares the interrupt sometimes came after
+	that test. Nothing display_close does waits for an interrupt -- the line
+	is read from the VI's register, the rest frees memory and lowers the
+	VI's count (vi_close; the joypad keeps the VI on). This holds while
+	libdragon's kernel is not started, as here: with kernel_init,
+	vi_wait_vblank would wait for the VI interrupt and, with interrupts off,
+	never return) */
+	disable_interrupts();
 	display_close();
+	enable_interrupts();
 	if (game_zbuf.buffer)
 		surface_free(&game_zbuf);
 	game_zbuf = (surface_t){0};
