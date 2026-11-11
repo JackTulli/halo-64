@@ -365,6 +365,10 @@ void n64_render_set_chunky(int level); /* 0 off, 1 medium (4/5 width), 2 chunky 
 loaded: 0 low, 1 medium, 2 high -- the first-person weapons and arms at
 1.25 or 2 times the triangles (levels/<map>-fp1.mdl, -fp2) */
 void n64_render_set_view_model_quality(int quality);
+/* (the custom cartridge) the first-person model handed to the renderer
+next is the arms, on: they keep the model cache's whole margin, the weapon
+a smaller one (n64_render.c load_model) */
+void n64_render_view_model_arms(int on);
 /* the FPS counter in the corner (off in the menu) */
 void n64_render_show_counter(int on);
 /* the menu's display, 640x480 interlaced (two buffers and a z-buffer of
@@ -712,6 +716,12 @@ void n64_hud_mark_carried_at(int number, float s, float t);
 void n64_hud_critical_pass(int on);
 /* whether this map's HUD is packed (rom:/hud/<map>.subs): its HUD runs the critical pass */
 int n64_hud_packed(void);
+/* (the custom cartridge) the free bytes the critical HUD sprites wanted and
+missing need, of those that need at most limit: the room the local
+player's view models leave them; and a view model gave way for them */
+unsigned long n64_hud_view_model_room(unsigned long limit);
+int n64_hud_view_models_wait(void);
+void n64_hud_view_models_gave_way(void);
 /* a motion sensor blip: centre in pixels, position and size in pixels */
 void n64_hud_blip(float x, float y, float width, float height, unsigned long color);
 
