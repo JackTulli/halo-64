@@ -12,6 +12,8 @@ root tags needs to a map (an XboxMap, changed in place):
   NONE): sound environments, unit HUD interfaces, actors; of a dialogue
   ('udlg') only the vocalizations Firefight plays are followed (the
   game's own pain and death sounds, the AI's few lines), the rest NONE;
+  but a unit HUD interface the base map has under the same name stands
+  in (a copied vehicle's seats keep their HUDs: the PC rocket Warthog's);
 - the rest are copied: the source's tag data is mapped at IMPORT_BASE
   instead of TAG_BASE, its block, data and plain pointers moved there, and
   its tag references renumbered to the merged tags.
@@ -79,6 +81,8 @@ def merge_tags(base, source, roots, defs=None):
             continue
         if t.group in left_out:
             decided[t.index] = None
+            if t.group_name == "unhi":
+                decided[t.index] = own.get((t.group, t.name))
             continue
         if (t.group, t.name) in own:
             existing = own[(t.group, t.name)]
