@@ -142,6 +142,15 @@ void hud_draw_numbers(
 	long flash_reference_time,
 	real override_scale);
 
+#ifdef HALO_N64
+struct tag_block;
+
+/* TRUE when an element's multitexture overlays follow the zoom level
+(the sniper's angle ticks) */
+boolean hud_multitexture_overlays_follow_zoom(
+	struct tag_block const *overlays);
+#endif
+
 /* ---------- public code */
 
 __inline short check_stack_buffer(

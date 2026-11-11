@@ -419,6 +419,26 @@ static void play_weapon_hud_sounds(
 static void render_grenade_hud(
 	short local_player_index,
 	long unit_index);
+#ifdef HALO_N64
+/* HUD STYLE 64 (port/n64/game/n64_hud64_game.c): the view's values handed
+over, the design drawing them */
+extern int n64_hud64_active;
+extern void n64_hud64_game_weapon(long weapon_index, boolean heat_hot);
+extern void n64_hud64_game_grenades(long unit_index, unsigned long fill, unsigned long edge);
+
+/* HUD STYLE 64 draws the ammunition itself: of the weapon HUD it keeps
+only the zoom parts -- the elements that follow the zoom level (the
+sniper's angle ticks) and the numbers shown only when zoomed (its range
+readouts) -- as ORIGINAL draws them */
+static boolean weapon_hud_zoom_parts_only;
+
+enum
+{
+	/* (hud_draw.c's _hud_number_show_only_when_zoomed_bit) */
+	_weapon_hud_number_show_only_when_zoomed_bit = 1
+};
+#endif
+
 static void crosshairs_draw(
 	struct player_datum *player,
 	long weapon_index,
@@ -624,6 +644,24 @@ static void render_grenade_hud(
 	{
 		hud_state->last_grenade_flash_time = NONE;
 	}
+
+#ifdef HALO_N64
+	/* (HUD STYLE 64: the counts, where Halo shows its panel, and the
+	panel's colours as Halo's would be -- its background's and its count
+	panel's: the disabled colour with none of the selected type left. Not
+	Halo's flashing from the flash cutoff, the selected type's last grenade:
+	HUD 64 flashes a type's slot on its own events, n64_hud64_game.c) */
+	if (n64_hud64_active)
+	{
+		struct hud_color_definition const *fill = &definition->background.colors;
+		struct hud_color_definition const *edge = &definition->grenade_count_panel.background.colors;
+
+		n64_hud64_game_grenades(unit_index,
+			TEST_FLAG(draw_flags, _hud_draw_disabled_bit) ? fill->disabled_color : fill->color,
+			TEST_FLAG(draw_flags, _hud_draw_disabled_bit) ? edge->disabled_color : edge->color);
+		goto finished;
+	}
+#endif
 
 	if (definition->background.interface_bitmap.index != NONE)
 	{
@@ -1014,11 +1052,16 @@ static void n64_weapon_hud_sprites(
 	{
 		struct weapon_hud_interface_definition *definition = weapon_hud_interface_definition_get(hud_index);
 
+		/* (with HUD STYLE 64 the weapon's meters, count panels and type icons
+		are the style's: of them only the zoom parts, which Halo still draws
+		zoomed -- render_weapon_hud -- and the crosshair) */
 		for (i = 0; !crosshairs_only && i < definition->meters.count; i++)
 		{
 			struct weapon_hud_meter_element *element =
 				TAG_BLOCK_GET_ELEMENT(&definition->meters, i, struct weapon_hud_meter_element);
 
+			if (n64_hud64_active && !hud_multitexture_overlays_follow_zoom(&element->meter_element.multitexture_overlays))
+				continue;
 			if (!TEST_FLAG(element->header.runtime_flags, _hud_element_runtime_invalid_bit) &&
 				TEST_FLAG(map_type_flags, element->header.use_on_map_type))
 				n64_weapon_sequence(element->meter_element.meter_bitmap.index, element->meter_element.sequence_index, mark);
@@ -1031,14 +1074,15 @@ static void n64_weapon_hud_sprites(
 			char const *name = bitmap_index != NONE ? tag_get_name(bitmap_index) : NULL;
 
 			if (TEST_FLAG(element->header.runtime_flags, _hud_element_runtime_invalid_bit) ||
-				!TEST_FLAG(map_type_flags, element->header.use_on_map_type))
+				!TEST_FLAG(map_type_flags, element->header.use_on_map_type) ||
+				(n64_hud64_active && !hud_multitexture_overlays_follow_zoom(&element->static_element.multitexture_overlays)))
 				continue;
 			if (!mark)
 				n64_load_panel_first(bitmap_index, element->static_element.sequence_index);
 			else if (name && !strstr(name, "outline"))
 				hud_draw_n64_mark_sequence_carried(bitmap_index, element->static_element.sequence_index);
 		}
-		for (i = 0; !crosshairs_only && i < definition->overlays.count; i++)
+		for (i = 0; !crosshairs_only && !n64_hud64_active && i < definition->overlays.count; i++)
 		{
 			struct weapon_hud_overlays_element *element =
 				TAG_BLOCK_GET_ELEMENT(&definition->overlays, i, struct weapon_hud_overlays_element);
@@ -1153,7 +1197,9 @@ void hud_weapon_n64_load_critical_first(
 	if (weapon_index != NONE && weapon_index != own_weapon_index)
 		n64_weapon_hud_sprites(hud_index, map_type_flags, FALSE, crosshair, 0, TRUE);
 	/* (the grenades, as render_grenade_hud draws them: not for a vehicle's
-	driver or gunner, nor with a weapon of the unit's own that throws none) */
+	driver or gunner, nor with a weapon of the unit's own that throws none;
+	with HUD STYLE 64 the panel is the style's) */
+	if (!n64_hud64_active)
 	{
 		short grenade_type = unit_get_current_grenade_type(player->unit_index);
 		long grenade_hud = grenade_type == NONE ? NONE : TAG_BLOCK_GET_ELEMENT(
@@ -1887,6 +1933,11 @@ static void render_weapon_hud(
 		if (!TEST_FLAG(element->header.runtime_flags, _hud_element_runtime_invalid_bit) &&
 			TEST_FLAG(map_type_flags, element->header.use_on_map_type))
 		{
+#ifdef HALO_N64
+			if (weapon_hud_zoom_parts_only &&
+				!hud_multitexture_overlays_follow_zoom(&element->static_element.multitexture_overlays))
+				continue;
+#endif
 			state_index = element->header.state_type;
 			hud_draw_static_element(
 				local_player_index,
@@ -1911,6 +1962,11 @@ static void render_weapon_hud(
 		{
 			byte value;
 
+#ifdef HALO_N64
+			if (weapon_hud_zoom_parts_only &&
+				!hud_multitexture_overlays_follow_zoom(&element->meter_element.multitexture_overlays))
+				continue;
+#endif
 			state_index = element->header.state_type;
 			value = (byte)number_values[state_index];
 			hud_draw_meter(
@@ -1941,6 +1997,11 @@ static void render_weapon_hud(
 			short value;
 			short decimal_value;
 
+#ifdef HALO_N64
+			if (weapon_hud_zoom_parts_only &&
+				!TEST_FLAG(element->number_element.number_flags, _weapon_hud_number_show_only_when_zoomed_bit))
+				continue;
+#endif
 			if (TEST_FLAG(
 				element->weapon_flags,
 				_weapon_number_divide_by_clip_size_bit))
@@ -2004,6 +2065,10 @@ static void render_weapon_hud(
 		if (!TEST_FLAG(element->runtime_flags, _hud_element_runtime_invalid_bit) &&
 			TEST_FLAG(map_type_flags, element->use_on_map_type))
 		{
+#ifdef HALO_N64
+			if (weapon_hud_zoom_parts_only)
+				continue;
+#endif
 			state_index = element->state_type;
 			hud_draw_weapon_overlays(
 				local_player_index,
@@ -2188,6 +2253,12 @@ void hud_render_weapon_interface(
 			weapon_index,
 			&weapon_state);
 		hud_index = definition->weapon.interface_definition.hud_interface.index;
+#ifdef HALO_N64
+		/* (HUD STYLE 64: the ammunition handed over, not drawn) */
+		/* (the heat red from the weapon HUD's flash cutoff, or overheated) */
+		n64_hud64_game_weapon(weapon_index, weapon_state.overheated || (hud_index != NONE &&
+			weapon_state.heat * 100.0f >= (real)weapon_hud_interface_definition_get(hud_index)->flash_cutoffs.heat));
+#endif
 		if (hud_index != NONE)
 		{
 			crosshairs_draw(
@@ -2195,6 +2266,12 @@ void hud_render_weapon_interface(
 				weapon_index,
 				hud_index,
 				&weapon_state);
+#ifdef HALO_N64
+			/* (HUD STYLE 64: only the zoom parts, and only zoomed -- unzoomed
+			ORIGINAL draws them faded out) */
+			weapon_hud_zoom_parts_only = n64_hud64_active;
+			if (!n64_hud64_active || player_control_get_zoom_level(player->local_player_index) != NONE)
+#endif
 			render_weapon_hud(
 				hud_index,
 				player->local_player_index,
@@ -2203,6 +2280,9 @@ void hud_render_weapon_interface(
 				NULL,
 				NULL,
 				NULL);
+#ifdef HALO_N64
+			weapon_hud_zoom_parts_only = FALSE;
+#endif
 			play_weapon_hud_sounds(
 				player->local_player_index,
 				hud_index,

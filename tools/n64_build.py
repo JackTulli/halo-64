@@ -15,6 +15,7 @@ import argparse
 import fnmatch
 import json
 import os
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -196,11 +197,27 @@ def main(argv=None):
                     "$bin/mips64-elf-strip -s $in.stripped && "
                     "$bin/n64elfcompress -o $outdir -c $rom_elf_compression $in.stripped"),
            description="N64 PROGRAM $in")
+    # HUD STYLE 64's module (port/n64/game/n64_hud64_stub.c loads it, with
+    # port/n64/src/n64_module.c): linked on its own, keeping only what its
+    # one export reaches (n64_hud64_module.h), its imports kept in the
+    # program (an externs linker script), the program's symbols for them in
+    # the ROM (.msym); stored as it is (-c 0: n64_module.c reads it so)
+    n.rule("dso_link",
+           command=("cd $root && $bin/mips64-elf-ld --emit-relocs --unresolved-symbols=ignore-all --nmagic "
+                    "--gc-sections -u $export -T$libdir/dso.ld -Map=$out.map -o $out $in"),
+           description="N64 MODULE LINK $out")
+    n.rule("dso", command="cd $root && export N64_INST=$n64inst && $bin/n64dso -o $outdir -c 0 $in",
+           description="N64 MODULE $out")
+    n.rule("dso_extern", command="cd $root && export N64_INST=$n64inst && $bin/n64dso-extern -o $out $in",
+           description="N64 MODULE IMPORTS $out")
+    n.rule("msym", command="cd $root && export N64_INST=$n64inst && $bin/n64dso-msym -e $externs $in $out",
+           description="N64 PROGRAM SYMBOLS $out")
+    n.rule("copy", command="cd $root && mkdir -p $$(dirname $out) && cp $in $out", description="N64 COPY $out")
     n.rule("z64",
            command=("cd $root && export N64_INST=$n64inst INVADER_DEFINITIONS=$definitions && $bin/n64sym --all $in $in.sym && cp $in $in.stripped && "
                     "$bin/mips64-elf-strip -s $in.stripped && "
                     "$bin/n64elfcompress -o $outdir -c $rom_elf_compression $in.stripped && "
-                    "$bin/n64tool --toc --title \"$title\" --output $out.tmp --align 256 $in.stripped $in.sym $extra && "
+                    "$bin/n64tool --toc --title \"$title\" --output $out.tmp --align 256 $in.stripped $in.sym $msym $extra && "
                     "$bin/ed64romconfig --expansionpak required --savetype eeprom4k --regionfree $out.tmp && mv $out.tmp $out"),
            description="N64 ROM $out")
     n.newline()
@@ -225,6 +242,18 @@ def main(argv=None):
     # -O wins over the unit's own)
     source_flags = port.get("source_flags", {})
 
+    # HUD STYLE 64's units: its module, rom:/hud64.dso (the program keeps a
+    # stub, port/n64/game/n64_hud64_stub.c); no link-time optimisation, no
+    # small data (-G0: the module reaches the program's data by address)
+    module_sources = {"port/n64/src/n64_hud64.c", "port/n64/game/n64_hud64_game.c"}
+
+    def module_flags(cflags):
+        flags = [f for f in cflags.split(" ") if f not in ("-flto", "-ffat-lto-objects") and not re.fullmatch(r"-G\d+", f)]
+        # (the module compiled for size, -Os: its image is memory a map gives HUD STYLE 64 while it plays; its few
+        # per-draw functions ask for -O2 themselves, n64_hud64.c HOT)
+        flags = ["-Os" if f == "-O2" else f for f in flags]
+        return " ".join(flags + ["-G0", "-DN64_DSO"])
+
     def add(objects, obj_dir, source, cflags):
         name = posix(source).replace(os.sep, "/")
         extra = " ".join(flags for pattern, flags in source_flags.items()
@@ -235,6 +264,9 @@ def main(argv=None):
             extra = f"{extra} -DHALO64_VERSION='\"{VERSION}\"'"
         if extra:
             cflags = f"{cflags} {extra}"
+        if name in module_sources:
+            cflags = module_flags(cflags)
+            obj_dir = obj_dir / "module"
         obj = obj_dir / Path(source).with_suffix(".o")
         objects.append(posix(obj))
         n.build(posix(obj), "cc", posix(source), implicit=[posix(semantics)],
@@ -351,6 +383,18 @@ def main(argv=None):
         objects += musl_objects
 
         variant_dir.mkdir(parents=True, exist_ok=True)
+        # HUD STYLE 64's module: its objects out of the program
+        module_objects = [o for o in objects if "/obj/module/" in o]
+        objects = [o for o in objects if o not in module_objects]
+        libdir = N64_INST / "mips64-elf" / "lib"
+        module_elf = variant_dir / "hud64.elf"
+        module = variant_dir / "hud64.dso"
+        externs = variant_dir / "halo.externs"
+        msym = variant_dir / "halo.msym"
+        n.build(posix(module_elf), "dso_link", module_objects, implicit=[posix(libdir / "dso.ld")],
+                variables={"libdir": q(libdir), "export": "n64_hud64_entries"})
+        n.build(posix(module), "dso", posix(module_elf), variables={"outdir": q(variant_dir)})
+        n.build(posix(externs), "dso_extern", posix(module))
         # the object list, for tools/n64_link_check.py
         objlist = variant_dir / "objects.txt"
         objlist.write_text("\n".join(objects) + "\n", encoding="utf-8")
@@ -358,24 +402,35 @@ def main(argv=None):
         libdir = N64_INST / "mips64-elf" / "lib"
         link_dependencies = [posix(libdir / name) for name in ("libdragon.a", "libm.a", "libdragonsys.a", "libc.a", "n64.ld", "crt0.o")]
         link_dependencies += [posix(TINY3D / "build/libt3d.a"), "tools/n64_link_check.py"]
-        n.build(posix(elf), "link", objects, implicit=link_dependencies, variables={
+        n.build(posix(elf), "link", objects, implicit=link_dependencies + [posix(externs)], variables={
             "libdir": q(libdir),
             "objlist": q(objlist),
             "ldlibs": " ".join(port.get("libraries", [])) + f" {q(TINY3D / 'build/libt3d.a')} -ldragon -lm -ldragonsys",
             # (four link-time jobs: each lto1 takes hundreds of MB, and sixteen
             # of them beside the map conversions froze a 15 GB machine)
-            "ldflags": " ".join(port.get("ldflags", []) + (["-flto=4", game_opt, small, *CODE_FLAGS] if lto else [])),
+            "ldflags": " ".join(port.get("ldflags", []) + (["-flto=4", game_opt, small, *CODE_FLAGS] if lto else [])
+                                + [f"-Wl,-T{q(externs)}"]),
         })
+        n.build(posix(msym), "msym", posix(elf), implicit=[posix(externs)], variables={"externs": q(externs)})
         if program_only:
             products = [posix(variant_dir / "halo.elf.stripped"), posix(variant_dir / "halo.elf.sym")]
             n.build(products, "program", posix(elf),
                     implicit=[posix(N64_INST / "bin" / (name + (".exe" if sys.platform == "win32" else "")))
                               for name in ("n64sym", "mips64-elf-strip", "n64elfcompress")],
                     variables={"outdir": q(variant_dir), "rom_elf_compression": str(compression)})
-            return products[0], len(game_objects), len(objects)
+            # (what a ROM made from this program needs, tools/n64/rombuilder.py: the program and its symbols,
+            # HUD STYLE 64's module and the program's symbols for it, all from the same link)
+            return products + [posix(module), posix(msym)], len(game_objects), len(objects)
 
         fsdir = variant_dir / "filesystem"
         fs_files = []
+        # (HUD STYLE 64's module, rom:/hud64.dso, and its textures, rom:/hud64/c*.bin: assets/hud64, written by
+        # tools/n64/hud64/hud64_gen.py with port/n64/src/n64_hud64_data.h)
+        n.build(posix(fsdir / "hud64.dso"), "copy", posix(module))
+        fs_files.append(posix(fsdir / "hud64.dso"))
+        for texture_file in sorted(Path("assets/hud64").glob("c*.bin")):
+            n.build(posix(fsdir / "hud64" / texture_file.name), "copy", posix(texture_file))
+            fs_files.append(posix(fsdir / "hud64" / texture_file.name))
         for name in maps:
             out_map = fsdir / "maps" / f"{name}.map"
             outputs = [posix(out_map), posix(fsdir / "levels" / f"{name}.lvl"), posix(fsdir / "maps" / f"{name}.anims"),
@@ -487,8 +542,9 @@ def main(argv=None):
         n.build(posix(dfs), "mkdfs_packed" if pc_expansion else "mkdfs", dfs_files, variables={"fsdir": q(dfsdir), "flags": " ".join(flags),
                                                            "maps": " ".join(maps + ["ui"])})
         target = BUILD_DIR / rom
-        n.build(posix(target), "z64", posix(elf), implicit=[posix(dfs)] + [posix(N64_INST / "bin" / (name + (".exe" if sys.platform == "win32" else ""))) for name in ("n64sym", "mips64-elf-strip", "n64elfcompress", "n64tool", "ed64romconfig")],
-                variables={"extra": q(dfs), "outdir": q(variant_dir), "title": title, "rom_elf_compression": str(compression)})
+        n.build(posix(target), "z64", posix(elf), implicit=[posix(dfs), posix(msym)] + [posix(N64_INST / "bin" / (name + (".exe" if sys.platform == "win32" else ""))) for name in ("n64sym", "mips64-elf-strip", "n64elfcompress", "n64tool", "ed64romconfig")],
+                variables={"extra": q(dfs), "msym": q(msym), "outdir": q(variant_dir), "title": title,
+                           "rom_elf_compression": str(compression)})
         return target, len(game_objects), len(objects)
 
     targets = []
@@ -521,7 +577,7 @@ def main(argv=None):
         program, _, _ = variant(BUILD_DIR / "custom", custom.get("defines", []), [], [], custom.get("rom"),
                                 custom.get("title"), False, compression=custom.get("rom_elf_compression", 1),
                                 program_only=True)
-        n.build("custom", "phony", posix(program))
+        n.build("custom", "phony", program)
     if args.pc_expansion:
         pc = port.get("pc_expansion")
         if not pc:

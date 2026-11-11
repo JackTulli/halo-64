@@ -114,6 +114,96 @@ def elf_files(cartridge):
     return folder / "halo.elf.stripped", folder / "halo.elf.sym"
 
 
+def hud64_files(cartridge):
+    """HUD STYLE 64 (Settings): its module, built with the cartridge's own
+    program (rom:/hud64.dso), and that program's symbols, which the module is
+    linked against when it loads (the ROM's .msym, port/n64/src/n64_module.c):
+    (module, symbols), or None for a program built without the style (it then
+    draws ORIGINAL)"""
+    elf, _ = elf_files(cartridge)
+    return check_hud64_files(elf.parent)
+
+
+def check_hud64_files(folder):
+    """HUD STYLE 64's module and the program's symbols for it beside a
+    program: (module, symbols) when both are there, None when neither is. One
+    without the other is an error, and so is a .msym that is not from the link
+    of the halo.elf beside it, where there is one (the build folder; the
+    package is checked so): a module linked against another link's addresses
+    would call into the wrong code"""
+    module, symbols = folder / "hud64.dso", folder / "halo.msym"
+    if not module.is_file() and not symbols.is_file():
+        return None
+    if not module.is_file() or not symbols.is_file():
+        have, missing = (module, symbols) if module.is_file() else (symbols, module)
+        raise BuildError(f"{folder} has {have.name} but not {missing.name} (HUD STYLE 64's module and the "
+                         "program's symbols for it go together): build the cartridge again")
+    program = folder / "halo.elf"
+    if program.is_file():
+        wrong = msym_mismatch(symbols, program)
+        if wrong:
+            raise BuildError(f"{symbols} is not from the link of {program} ({wrong}): build the cartridge again")
+    return module, symbols
+
+
+def msym_mismatch(msym, elf):
+    """None if every symbol of a .msym (n64dso-msym: "MSYM", the table's
+    size, its count; then each symbol's name offset, value and info, and the
+    names) has that value in the ELF's symbol table; else what differs"""
+    data = msym.read_bytes()
+    if len(data) < 12 or data[:4] != b"MSYM":
+        return "not a .msym file"
+    size, count = struct.unpack_from(">II", data, 4)
+    table = data[12:12 + size]
+    if len(table) < size or 12 * count > size:
+        return "the .msym file is cut short"
+    symbols = elf_symbols(elf)
+    for i in range(count):
+        name_offset, value, _ = struct.unpack_from(">III", table, 12 * i)
+        name = table[name_offset:table.find(b"\0", name_offset)].decode("ascii", "replace")
+        if symbols.get(name) != value:
+            program = f"0x{symbols[name]:08X}" if name in symbols else "no such symbol"
+            return f"{name} at 0x{value:08X}, in the program {program}"
+    return None
+
+
+def elf_symbols(path):
+    """a big-endian ELF file's defined global and weak symbols: {name: value}"""
+    data = path.read_bytes()
+    if data[:4] != b"\x7fELF" or data[5] != 2:
+        raise BuildError(f"{path} is not a big-endian ELF file")
+    wide = data[4] == 2
+    if wide:
+        offset, = struct.unpack_from(">Q", data, 0x28)
+        entry_size, count = struct.unpack_from(">HH", data, 0x3A)
+    else:
+        offset, = struct.unpack_from(">I", data, 0x20)
+        entry_size, count = struct.unpack_from(">HH", data, 0x2E)
+    header = ">IIQQQQIIQQ" if wide else ">IIIIIIIIII"
+    sections = [struct.unpack_from(header, data, offset + i * entry_size) for i in range(count)]
+    found = {}
+    for _, kind, _, _, start, size, link, _, _, step in sections:
+        if kind != 2:  # (SHT_SYMTAB)
+            continue
+        strings = sections[link][4]
+        for at in range(start, start + size, step):
+            if wide:
+                name, info, _, index, value, _ = struct.unpack_from(">IBBHQQ", data, at)
+            else:
+                name, value, _, info, _, index = struct.unpack_from(">IIIBBH", data, at)
+            if index and info >> 4 in (1, 2):  # (defined; STB_GLOBAL or STB_WEAK)
+                at_name = strings + name
+                found[data[at_name:data.index(b"\0", at_name)].decode("ascii", "replace")] = value
+    return found
+
+
+def hud64_textures():
+    """HUD STYLE 64's textures (rom:/hud64/c*.bin): assets/hud64, written by
+    tools/n64/hud64/hud64_gen.py; project-original art, no Halo data"""
+    root = payload_root()
+    return root / "art" / "hud64" if root else REPO / "assets" / "hud64"
+
+
 def worker_environment(font=None):
     env = dict(os.environ)
     root = payload_root()
@@ -329,8 +419,9 @@ class RomBuilder:
         # Edition maps left out)
         self.notes = []
         # the multiplayer cartridge's packed files, once made (the online
-        # cartridge's too)
+        # cartridge's too), and the tree they were packed from
         self.multiplayer_dfs = None
+        self.multiplayer_fs = None
 
     # (what each cartridge needs)
     def maps_for(self, cartridge):
@@ -386,6 +477,7 @@ class RomBuilder:
             for path in elf_files(cartridge):
                 if not path.is_file():
                     raise BuildError(f"the builder is missing its {cartridge} program ({path.name})")
+            hud64_files(cartridge)
 
     def check_custom(self):
         """the Custom Edition cartridge's maps and tools, before anything runs"""
@@ -567,10 +659,37 @@ class RomBuilder:
 
     def build_online(self, maps):
         """Halo 64 Online's cartridge: the multiplayer cartridge's files (made
-        now if that cartridge isn't), with the online program"""
+        now if that cartridge isn't), with the online program -- and the HUD
+        STYLE 64 module built with that program: the files packed again where
+        it is not the multiplayer one's"""
         if self.multiplayer_dfs is None:
             return self.build("multiplayer", maps, rom_cartridge="online")
-        return self.make_rom("online", self.multiplayer_dfs, "online")
+        dfs = self.multiplayer_dfs
+        if self.add_hud64(self.multiplayer_fs, "online"):
+            dfs = self.multiplayer_dfs.with_name("halo-online.dfs")
+            self.run_tool("Packing the files (online)", [tool("mkdfs"), str(dfs), str(self.multiplayer_fs)])
+        return self.make_rom("online", dfs, "online")
+
+    def add_hud64(self, folder, cartridge):
+        """HUD STYLE 64's files in a cartridge's tree, before it is packed: the
+        module of the cartridge's program and the textures. True if the tree's
+        module changed"""
+        files = hud64_files(cartridge)
+        target = folder / "hud64.dso"
+        if not files:
+            # (none with this program: none in its tree either, where another
+            # cartridge's was put -- it would find no symbols to link against)
+            if target.is_file():
+                target.unlink()
+                return True
+            return False
+        module, _ = files
+        changed = not target.is_file() or target.read_bytes() != module.read_bytes()
+        shutil.copy2(module, target)
+        (folder / "hud64").mkdir(exist_ok=True)
+        for texture in sorted(hud64_textures().glob("c*.bin")):
+            shutil.copy2(texture, folder / "hud64" / texture.name)
+        return changed
 
     def write_online_kit(self, maps):
         """Halo 64 Online's folder for a PC with a SummerCart64, beside the
@@ -672,18 +791,25 @@ class RomBuilder:
                             ["--filesystem", str(fsdir), "--output", str(packed_fs), "--maps", *names])
             manifest = packed_fs.with_name(packed_fs.name + ".fx-pool.json")
             shutil.copy2(manifest, self.receipts / "pc-fx-pool.json")
-        # The pooled tree is already final; do not prune or modify it here.
+        # The pooled tree is already final; do not prune or modify it here
+        # (only HUD STYLE 64's files are added: the program's module and the
+        # textures, which no effect record names).
+        self.add_hud64(packed_fs, rom_cartridge or cartridge)
         dfs = variant / "halo.dfs"
         self.run_tool(f"Packing the files ({label})", [tool("mkdfs"), str(dfs), str(packed_fs)])
         self.step(WEIGHTS["pack"], f"Files packed ({label})")
         if cartridge == "multiplayer":
             self.multiplayer_dfs = dfs
+            self.multiplayer_fs = packed_fs
         return self.make_rom(rom_cartridge or cartridge, dfs, "online" if rom_cartridge == "online" else label)
 
     def make_rom(self, cartridge, dfs, label):
-        """the ROM: the cartridge's program, its symbols, the files"""
+        """the ROM: the cartridge's program, its symbols, (HUD STYLE 64) the
+        program's symbols for the module, the files"""
         config = self.config[cartridge] if cartridge in ("campaign", "pc_expansion", "custom", "online") else self.config
         elf, symbols = elf_files(cartridge)
+        files = hud64_files(cartridge)
+        extra = [str(files[1])] if files else []
         rom = self.output / CARTRIDGES[cartridge]["rom"]
         # Reserve a unique owned temporary file so rejection/cleanup cannot
         # remove another build's file or the previously published ROM.
@@ -692,7 +818,8 @@ class RomBuilder:
         title = config.get("title", "HALO N64")
         try:
             self.run_tool(f"Making the ROM ({label})", [tool("n64tool"), "--toc", "--title", title, "--output",
-                                                       str(temporary), "--align", "256", str(elf), str(symbols), str(dfs)])
+                                                       str(temporary), "--align", "256", str(elf), str(symbols), *extra,
+                                                       str(dfs)])
             self.run_tool(f"Making the ROM ({label})", [tool("ed64romconfig"), "--expansionpak", "required", "--savetype",
                                                        "eeprom4k", "--regionfree", str(temporary)])
             size = temporary.stat().st_size

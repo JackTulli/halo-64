@@ -249,6 +249,9 @@ void rasterizer_psuedo_dynamic_screen_quad_draw(
 labels its real hold-to-pick-up action in the current split-screen viewport;
 B remains Xbox X in every preset, including both Golden schemes. */
 extern short n64_hud_original_action_icon(short x, short baseline, pixel32 color, short *bottom);
+/* HUD STYLE 64 (n64_hud64_game.c): 1 when it takes the prompt, a string */
+extern int n64_hud64_game_prompt(char const *name, int swap);
+extern int n64_hud64_game_collect_string(wchar_t const *string);
 void n64_hud_game_weapon_prompt(char const *name, int swap)
 {
 	real virtual_x = render.camera.viewport_bounds.x0 + 16;
@@ -258,6 +261,9 @@ void n64_hud_game_weapon_prompt(char const *name, int swap)
 	real text_scale = n64_render_layout_scale_x() * n64_render_hud_squeeze();
 	short icon_x, after_icon, icon_bottom = (short)virtual_y;
 	int name_y = y + 16;
+
+	if (n64_hud64_game_prompt(name, swap))
+		return;
 	/* Keep the existing HOLD / action / weapon flow and the original font.
 	   Pixel advance is measured after the existing lazy font load. */
 	n64_hud_text(x, y, 0xFF8CC0FFu, "HOLD ");
@@ -361,7 +367,7 @@ void rasterizer_draw_unicode_string(
 	(void)clip;
 	(void)cursor_reference;
 	(void)height_adjust;
-	if (!string)
+	if (!string || n64_hud64_game_collect_string(string))
 		return;
 	for (i = 0; i < (short)sizeof(text) - 1 && string[i]; i++)
 		text[i] = string[i] < 128 ? (char)string[i] : '?';

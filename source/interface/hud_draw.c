@@ -1848,8 +1848,13 @@ extern int n64_hud_ensure_sprite_at(int number, float s, float t);
 void hud_draw_n64_load_digits_first(
 	void)
 {
+	/* (HUD STYLE 64 draws the ammunition and grenade counts itself) */
+	extern int n64_hud64_active;
 	long hud_number_index = interface_get_tag_index(_interface_hud_digits);
 	struct bitmap_data *bitmap;
+
+	if (n64_hud64_active)
+		return;
 
 	if (hud_number_index == NONE || hud_number_definition_get(hud_number_index)->number_bitmap.index == NONE)
 		return;
@@ -2235,3 +2240,35 @@ void hud_draw_numbers(
 
 	return;
 }
+
+#ifdef HALO_N64
+/* HUD STYLE 64 keeps the weapon HUD's zoom parts: an element whose
+multitexture overlays take the zoom level as an effector's source is one
+(the sniper's angle ticks fade in by it) */
+boolean hud_multitexture_overlays_follow_zoom(
+	struct tag_block const *overlays)
+{
+	long overlay_index;
+
+	for (overlay_index = 0; overlay_index < overlays->count; overlay_index++)
+	{
+		struct multitexture_overlay_hud_element_definition const *overlay = TAG_BLOCK_GET_ELEMENT(
+			overlays,
+			overlay_index,
+			struct multitexture_overlay_hud_element_definition);
+		long function_index;
+
+		for (function_index = 0; function_index < overlay->functions.count; function_index++)
+		{
+			struct multitexture_overlay_hud_element_effector_definition const *effector = TAG_BLOCK_GET_ELEMENT(
+				&overlay->functions,
+				function_index,
+				struct multitexture_overlay_hud_element_effector_definition);
+
+			if (effector->source == _hud_multitexture_overlay_effector_source_zoom_level)
+				return TRUE;
+		}
+	}
+	return FALSE;
+}
+#endif

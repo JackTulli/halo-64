@@ -41,6 +41,11 @@ renderer's (port/n64/src/n64_render.c).
 
 #include "../src/n64.h"
 
+/* HUD STYLE 64's game side (n64_hud64_game.c) */
+extern void n64_hud64_game_begin(int active);
+extern void n64_hud64_game_end(int x0, int y0, int x1, int y1);
+
+
 typedef char verify_render_globals_used_size[
 	offsetof(struct render_globals, environment_surface_flags) == 0x430 ? 1 : -1];
 
@@ -827,11 +832,28 @@ void render_frame(
 		n64_render_view_particles();
 		if (!n64_debug_flag("debug_no_hud"))
 		{
+			/* HUD STYLE 64 (n64_hud64.c): its textures in memory first (not
+			while the HUD is recorded); without them the game's own HUD. Before
+			the critical pass below: with the style in, its module has the end
+			of the HUD's meter block (n64_hud_lend_slots), where the pass would
+			otherwise load the critical sprites */
+			int style64 = n64_hud64_prepare(local_player_count());
+
 #if defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS)
 			/* the unit's shield and health meters' sprite asked for before the
 			rest of the HUD, and before the view's HUD recording begins (the
 			room a recording keeps would leave it out; the PC maps' cartridges:
 			n64_hud.c HUD_PACKING; a map whose HUD is packed) */
+			/* (HUD STYLE 64: the pass then asks only for what Halo still draws
+			under it -- the motion sensor, the crosshair, the damage arrows, a
+			scope's zoom parts -- not the sprites the style replaces;
+			n64_hud64_active is the flag those functions read, set again by
+			n64_hud64_game_begin below) */
+			{
+				extern int n64_hud64_active;
+
+				n64_hud64_active = style64;
+			}
 			if (n64_hud_packed())
 				hud_n64_load_critical_first(window->local_player_index);
 #endif
@@ -852,8 +874,18 @@ void render_frame(
 				render.camera.window_bounds.y0 += inset * 2;
 				render.camera.window_bounds.x1 -= inset * 2;
 				render.camera.window_bounds.y1 -= inset * 2;
+				/* (HUD STYLE 64: the parts the design redraws hand their
+				values over, n64_hud64_game.c; the view's 64 HUD after them) */
+				n64_hud64_game_begin(style64);
 				interface_draw_screen();
 				render.camera.window_bounds = window_bounds;
+				if (style64)
+				{
+					int x0 = view.x0, y0 = view.y0, x1 = view.x1, y1 = view.y1;
+
+					n64_render_hud_rect(&x0, &y0, &x1, &y1);
+					n64_hud64_game_end(x0, y0, x1, y1);
+				}
 				/* Firefight's wave, lives and score, low in the middle (of
 				the view as its HUD is drawn: n64_render_hud_rect) */
 				if (n64_firefight_status(status, sizeof(status)))
