@@ -591,6 +591,10 @@ class LevelBuilder:
         self.materials = []
         self.material_by_shader = {}
         self.texture_prefix = ""
+        # the share of a side a texture keeps (the first-person weapons'
+        # smaller textures on some maps: models.py
+        # first_person_texture_scale): 1 everywhere else
+        self.texture_scale = 1.0
         # Halo's environment shader doubles texture x light; the N64 draws
         # the level in one RDP cycle, so the doubling is in the texture
         self.texture_brightness = 2.0
@@ -783,17 +787,19 @@ class LevelBuilder:
         (long, short), its size is the box's way round that loses least
         (fit_box): the texture picker's full colour 32x64. Dithered (a CI4
         texture: the picker's "more dithering"), each texel's entry is
-        chosen with the error spread (dither.py)"""
+        chosen with the error spread (dither.py). The size's limit and the
+        box are times texture_scale"""
         # at most 64 texels a side and 4 KB of TMEM with mipmaps: CI4 64x64
         # is 2 KB, its mipmaps about 0.7 KB more
         fmt = fmt or TEXTURE_FORMAT
         w, h = img.size
-        limit = 32.0 if fmt == "RGBA16" else 64.0
+        k = self.texture_scale
+        limit = (32.0 if fmt == "RGBA16" else 64.0) * k
         scale = min(1.0, limit / max(w, h))
         w2 = max(4, 1 << int(math.log2(max(1, int(w * scale)))))
         h2 = max(4, 1 << int(math.log2(max(1, int(h * scale)))))
         if box is not None:
-            w2, h2 = (max(4, side) for side in fit_box(img, *box))
+            w2, h2 = (max(4, side) for side in fit_box(img, *(int(side * k) for side in box)))
         img = img.resize((w2, h2), Image.LANCZOS)
         if mask is not None:
             mask = mask.resize((w2, h2), Image.BILINEAR)
@@ -855,8 +861,9 @@ class LevelBuilder:
         range (dithered more, the picker's choice: dither.py). Returns the
         texture and the factor for its vertices' light (the stretch undone;
         the renderer doubles, MATERIAL_DOUBLE: in the texture the doubling
-        turned bright textures white, on the vertices bright light dark)."""
-        limit = limit or GREYSCALE_TEXELS
+        turned bright textures white, on the vertices bright light dark).
+        The texels are times texture_scale squared."""
+        limit = int((limit or GREYSCALE_TEXELS) * self.texture_scale ** 2)
         key = (bitmap_datum, alpha_test, alpha_source, limit) + (("dither",) if dither else ())
         if key in self.grey_by_bitmap:
             return self.grey_by_bitmap[key]
