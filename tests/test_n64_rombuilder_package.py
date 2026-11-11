@@ -24,6 +24,7 @@ class PackageTests(unittest.TestCase):
         self.output = self.root / "output"
         for folder in [self.tools, self.elf / "campaign", self.pc_tools, self.pc_elf, self.notices,
                        self.repo / "tools" / "n64", self.repo / "assets" / "paintball",
+                       self.repo / "assets" / "hud64",
                        self.repo / "port" / "n64", self.invader / "src" / "tag" / "hek" / "definition",
                        self.invader / "include" / "invader" / "hek", self.invader / "src" / "bitmap" / "p8"]:
             folder.mkdir(parents=True, exist_ok=True)
@@ -38,6 +39,8 @@ class PackageTests(unittest.TestCase):
         (self.notices / "LICENSE.txt").write_text("matching supplied tool licence fixture")
         (self.repo / "tools" / "n64" / "rombuilder_main.py").write_text("# entry point")
         (self.repo / "assets" / "paintball" / "paint-splatter-original.png").write_bytes(b"original art fixture")
+        # (HUD STYLE 64's textures, which the package carries: assets/hud64)
+        (self.repo / "assets" / "hud64" / "c000.bin").write_bytes(b"hud64 texture fixture")
         (self.repo / "port" / "n64" / "port.json").write_text("{}")
         (self.invader / "include" / "invader" / "hek" / "fourcc.hpp").write_text("// definitions")
         (self.invader / "LICENSE.md").write_text("Invader GPL licence fixture")
