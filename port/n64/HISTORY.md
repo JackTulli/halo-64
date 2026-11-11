@@ -5,6 +5,52 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+11 November: version 0.6.8, nine pull requests by jz-k (details and
+measurements in each pull request's description).
+
+- Closing a display (pull request 32): `game_display_close` runs
+  `display_close` with the CPU's interrupts off, so `vi_wait_vblank` makes
+  the pending VI writes itself and its `cfg_pending == 0` assertion holds
+  (a rare stop as the menu ended or a map's first frame made the display
+  again).
+- Display modes and the models' room (pull request 33): the HUD at 640,
+  high and ultra detail and the full-width HUD images are taken only where
+  the heap left after the display holds the map's models at its start, a
+  margin and a headroom, decided on the heap's totals, so a map no longer
+  chooses its HUD width by where a few small blocks lie.
+- Models where memory is short (pull request 35): models are admitted by
+  tier (the first-person weapon first, obstacles below items), a weapon
+  switch shows the new gun at once, a texture that finds no room refuses
+  its model, the map image leaves out data the game never reads, and an
+  obstacle whose model has no room is drawn as a shape made from its
+  collision (`levels/<map>.sti`, `tools/n64/standins.py`; Settings row
+  OBSTACLE STAND-INS, on by default, EEPROM byte 15 bit 5 for off). A HUD
+  image a recording leaves out is drawn live.
+- Infinity's first-person textures (pull request 36): half-size in its
+  lighter model sets (`SMALL_FIRST_PERSON_TEXTURE_MAPS`), so the gun loads
+  again after a respawn there.
+- Custom Edition repairs (pull request 37): `ce_prepare.py` repairs (with
+  the new `tools/n64/tagfile.py` and `tests/test_n64_ce_repairs.py`) so that
+  13 more of the most downloaded Custom Edition maps convert.
+- HUD STYLE 64 (pull request 38): a Settings row, HUD STYLE, ORIGINAL by
+  default (EEPROM byte 15 bit 4; older saves read as ORIGINAL) or 64:
+  Halo's HUD readouts redrawn as N64 pixel art with larger numerals and
+  text. The style is a module, `rom:/hud64.dso`, linked when it loads
+  against the program's symbols (`halo.msym`, `port/n64/src/n64_module.c`)
+  and in memory only while a map is played with 64; its textures are
+  `assets/hud64/c*.bin`, made with `tools/n64/hud64/hud64_gen.py`. About
+  200 KB of ROM and 5.8 KB of program on each cartridge. The ROM Builder
+  carries each cartridge's module and symbols.
+- A first-person seat (pull request 39): the Warthog's passenger seat and
+  the Scorpion's rider seats no longer draw the player's own body and a
+  second copy of the gun.
+- Custom Edition HUD meters and Yoyorast Island's gun (pull request 40):
+  the Custom Edition cartridge's HUD meter images are packed, and the
+  custom cartridge's weapon margin comes after the HUD's critical images,
+  so Yoyorast Island draws the rifle and the shield and health meters.
+- The PC rocket Warthog's seat HUDs (pull request 41): `merge.py` keeps
+  the unit HUD interfaces of the rocket Warthog copied into the Xbox maps.
+
 5 November: version 0.6.7, six pull requests by jz-k (details and
 measurements in each pull request's description), the ROM Builder's
 window, and the online list's kinds.
