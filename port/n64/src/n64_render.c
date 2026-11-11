@@ -194,6 +194,11 @@ struct level_batch
 	int16_t minimum[3], maximum[3];
 } __attribute__((packed));
 
+/* the geometry stream cache's size and regions (draw_batch) */
+#define GEOMETRY_CACHE_BYTES (64 * 1024)
+#define GEOMETRY_REGIONS 4
+#define GEOMETRY_REGION_BYTES (GEOMETRY_CACHE_BYTES / GEOMETRY_REGIONS)
+
 static struct
 {
 	uint8_t *data;
@@ -207,11 +212,21 @@ static struct
 	/* each batch's triangle strips (draw_batch), chunks of tiny3d index
 	buffers converted in place */
 	uint8_t *indices;
-	/* Large maps keep tables in RAM and stream visible geometry into a
-	bounded cache. A fence precedes reuse while the RSP may still read it. */
-	uint32_t geometry_rom, geometry_used;
+	/* A version-4 level streamed from the cartridge keeps its tables in RAM
+	and its visible geometry in a cache of GEOMETRY_REGIONS regions
+	(draw_batch): a region is filled in turn, and when it is full the region
+	used longest ago is emptied for it, once the RSP has passed the commands
+	that read it (its syncpoint). geometry_offsets: by batch, its place in the
+	cache (GEOMETRY_PLACE) and its region's emptying count when it was read
+	from the cartridge, or NONE */
+	uint32_t geometry_rom;
 	uint8_t *geometry_cache;
 	uint32_t *geometry_offsets, *index_sizes;
+	uint32_t geometry_used[GEOMETRY_REGIONS], geometry_emptied[GEOMETRY_REGIONS];
+	unsigned long geometry_last_use[GEOMETRY_REGIONS], geometry_uses;
+	rspq_syncpoint_t geometry_passed[GEOMETRY_REGIONS];
+	uint8_t geometry_read_since[GEOMETRY_REGIONS];
+	int geometry_region;
 	sprite_t **sprites;
 	/* a view's batches in view, then in material order (draw_level) */
 	uint16_t *visible, *sorted;
@@ -3680,7 +3695,7 @@ int n64_render_load_level(const char *map_name, int low)
 	else if (streamed)
 	{
 		level.geometry_rom = dfs_rom_addr(path + 5);
-		level.geometry_cache = memalign(16, 64 * 1024);
+		level.geometry_cache = memalign(16, GEOMETRY_CACHE_BYTES);
 		level.geometry_offsets = malloc(level.header->batch_count * sizeof(uint32_t));
 		level.index_sizes = malloc(level.header->batch_count * sizeof(uint32_t));
 		if (!level.geometry_rom || !level.geometry_cache || !level.geometry_offsets || !level.index_sizes)
@@ -4404,6 +4419,78 @@ static struct
 } geometry_profile;
 static int geometry_profile_enabled = -1;
 
+/* The geometry stream cache (a version-4 level streamed from the cartridge,
+level.geometry_*): 64 KB in GEOMETRY_REGIONS regions. Of the RSP and the RDP
+only the RSP reads it, by DMA, in a batch's vertex load and strip commands: a
+region may be filled again once the RSP has passed the last command queued
+that reads it (a syncpoint; rspq_wait also waited for the RDP), and only its
+batches are lost. A batch's entry: its place in 16-byte units and its region's
+emptying count when it was read from the cartridge (another count: a miss). */
+#define GEOMETRY_PLACE(entry) (((entry) & 0xFFF) << 4)
+#define GEOMETRY_ENTRY(place, count) (((uint32_t)(count) << 12) | ((place) >> 4))
+/* (only a count of 0xFFFFF, with the cache's last place, makes an entry NONE:
+a region's count never gets there -- at GEOMETRY_COUNT_LAST its entries are
+cleared and its count starts again at 0) */
+#define GEOMETRY_COUNT_LAST 0xFFFFE
+_Static_assert(GEOMETRY_REGIONS >= 2 && GEOMETRY_CACHE_BYTES % (GEOMETRY_REGIONS * 16) == 0 &&
+	GEOMETRY_PLACE(0xFFFFFFFFu) >= GEOMETRY_CACHE_BYTES - 16, "the entry's 12-bit place must reach the cache's end");
+/* the batch's place in the cache, or -1 (not read, or its region emptied
+since) */
+static long geometry_place(int b)
+{
+	uint32_t entry = level.geometry_offsets[b];
+	unsigned long place = GEOMETRY_PLACE(entry);
+
+	if (entry == 0xffffffff || (entry >> 12) != level.geometry_emptied[place / GEOMETRY_REGION_BYTES])
+		return -1;
+	return (long)place;
+}
+
+/* a region read by commands queued from now on (its syncpoint is made at
+the next region change) */
+static void geometry_region_read(int region)
+{
+	level.geometry_read_since[region] = 1;
+	level.geometry_last_use[region] = ++level.geometry_uses;
+}
+
+/* the region being filled has no room for bytes: the one used longest ago
+emptied for it, once the RSP has passed the commands that read it */
+static void geometry_next_region(void)
+{
+	int read = 0, next = -1;
+
+	for (int r = 0; r < GEOMETRY_REGIONS; r++)
+		read |= level.geometry_read_since[r];
+	if (read)
+	{
+		/* (one syncpoint after every command queued so far: the regions
+		read since their last one take it) */
+		rspq_syncpoint_t now = rspq_syncpoint_new();
+
+		for (int r = 0; r < GEOMETRY_REGIONS; r++)
+			if (level.geometry_read_since[r])
+			{
+				level.geometry_passed[r] = now;
+				level.geometry_read_since[r] = 0;
+			}
+	}
+	for (int r = 0; r < GEOMETRY_REGIONS; r++)
+		if (r != level.geometry_region && (next < 0 || level.geometry_last_use[r] < level.geometry_last_use[next]))
+			next = r;
+	rspq_syncpoint_wait(level.geometry_passed[next]);
+	if (++level.geometry_emptied[next] >= GEOMETRY_COUNT_LAST)
+	{
+		for (int b = 0; b < level.header->batch_count; b++)
+			if (level.geometry_offsets[b] != 0xffffffff &&
+				GEOMETRY_PLACE(level.geometry_offsets[b]) / GEOMETRY_REGION_BYTES == (unsigned long)next)
+				level.geometry_offsets[b] = 0xffffffff;
+		level.geometry_emptied[next] = 0;
+	}
+	level.geometry_used[next] = 0;
+	level.geometry_region = next;
+}
+
 static void draw_batch(int b)
 {
 	const struct level_batch *batch = &level.batches[b];
@@ -4413,33 +4500,36 @@ static void draw_batch(int b)
 	if (level.geometry_cache)
 	{
 		unsigned long profile_start = 0;
+		long place = geometry_place(b);
 		if (geometry_profile_enabled < 0)
 			geometry_profile_enabled = n64_debug_flag("debug_geometry_profile");
 		if (geometry_profile_enabled)
 		{
 			geometry_profile.requests++;
-			if (level.geometry_offsets[b] != 0xffffffff) geometry_profile.hits++;
+			if (place >= 0) geometry_profile.hits++;
 			else geometry_profile.misses++;
 		}
 		unsigned long vertex_bytes = ((batch->vertex_count + 1) / 2) * sizeof(T3DVertPacked);
 		unsigned long index_bytes = level.index_sizes[b];
 		unsigned long bytes = (vertex_bytes + index_bytes + 15) & ~15UL;
-		if (bytes > 64 * 1024) n64_fatal("native geometry batch exceeds stream cache");
-		if (level.geometry_offsets[b] == 0xffffffff)
+		if (bytes > GEOMETRY_REGION_BYTES) n64_fatal("native geometry batch exceeds stream cache");
+		if (place < 0)
 		{
-			if (level.geometry_used + bytes > 64 * 1024)
+			int region;
+
+			if (level.geometry_used[level.geometry_region] + bytes > GEOMETRY_REGION_BYTES)
 			{
 				if (geometry_profile_enabled) profile_start = TICKS_READ();
-				rspq_wait();
+				geometry_next_region();
 				if (geometry_profile_enabled)
 				{
 					geometry_profile.wraps++;
 					geometry_profile.wait_ticks += TICKS_READ() - profile_start;
 				}
-				level.geometry_used = 0;
-				memset(level.geometry_offsets, 0xff, level.header->batch_count * sizeof(uint32_t));
 			}
-			uint8_t *to = level.geometry_cache + level.geometry_used;
+			region = level.geometry_region;
+			place = (long)(region * GEOMETRY_REGION_BYTES + level.geometry_used[region]);
+			uint8_t *to = level.geometry_cache + place;
 			data_cache_hit_writeback_invalidate(to, bytes);
 			if (geometry_profile_enabled) profile_start = TICKS_READ();
 			dma_read(to, level.geometry_rom + level.header->vertices_offset + batch->vertex_pair_offset * sizeof(T3DVertPacked), vertex_bytes);
@@ -4454,10 +4544,11 @@ static void draw_batch(int b)
 				n64_fatal("invalid streamed level strip");
 			data_cache_hit_writeback(to + vertex_bytes, index_bytes);
 			if (geometry_profile_enabled) geometry_profile.convert_ticks += TICKS_READ() - profile_start;
-			level.geometry_offsets[b] = level.geometry_used;
-			level.geometry_used += bytes;
+			level.geometry_offsets[b] = GEOMETRY_ENTRY((unsigned long)place, level.geometry_emptied[region]);
+			level.geometry_used[region] += bytes;
 		}
-		vertices = (T3DVertPacked *)(level.geometry_cache + level.geometry_offsets[b]);
+		geometry_region_read((int)(place / GEOMETRY_REGION_BYTES));
+		vertices = (T3DVertPacked *)(level.geometry_cache + place);
 		chunk = (uint8_t *)vertices + vertex_bytes;
 	}
 	else if (level.stream)
