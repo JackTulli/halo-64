@@ -979,7 +979,14 @@ struct n64_map_header
 	unsigned long relocation_count;
 	unsigned long tag_header_offset;
 	unsigned long structure_bsp_header_offset;
-	unsigned long reserved[2];
+	unsigned long reserved[1];
+	/* the bytes the converter left out of the image as data the game never
+	reads (tools/n64/convert.py): the image was image_size + image_left_out
+	before. The maps' home, each map's arena and the part of the home past
+	the image are sized for that, so that the display and the level are made
+	as they were for it; the bytes are the heap's once they are made
+	(n64_map_give_back) */
+	unsigned long image_left_out;
 };
 
 #define N64_MAP_VERSION 2
@@ -995,7 +1002,7 @@ typedef char n64_map_header_kind_offset_assert[offsetof(struct n64_map_header, r
 static boolean n64_map_header_compatible(struct n64_map_header const *header)
 {
 	return !memcmp(header->magic, "H64M", 4) && header->version == N64_MAP_VERSION &&
-		header->reserved[0] == N64_MAP_FORMAT_KIND && header->reserved[1] == 0;
+		header->reserved[0] == N64_MAP_FORMAT_KIND && header->image_left_out < header->image_size;
 }
 
 static struct
@@ -1008,6 +1015,11 @@ static struct
 	boot (the largest image) */
 	byte *home;
 	unsigned long home_size, home_reserved;
+	/* the end of the home kept for the map's image as it was before the
+	converter's savings, until n64_map_give_back */
+	unsigned long held;
+	/* ... and given to the heap: taken back at the game's end */
+	unsigned long given;
 } n64_map;
 
 /* The maps' images have a home of their own, made at boot (n64_main.c) from
@@ -1037,8 +1049,8 @@ void n64_map_home_reserve(
 		if (file < 0)
 			continue;
 		if (n64_file_read(file, &header, sizeof(header)) == (long)sizeof(header) &&
-			n64_map_header_compatible(&header) && header.image_size > largest)
-			largest = header.image_size;
+			n64_map_header_compatible(&header) && header.image_size + header.image_left_out > largest)
+			largest = header.image_size + header.image_left_out;
 		n64_file_close(file);
 	}
 	if (!largest)
@@ -1065,10 +1077,81 @@ void *n64_map_home_free_part(
 	if (!n64_map.home)
 		return NULL;
 	used = n64_map.image == n64_map.home ? (n64_map.image_size + 63) & ~63UL : 0;
-	if (used >= n64_map.home_size)
+	if (used + n64_map.held >= n64_map.home_size)
 		return NULL;
-	*size = n64_map.home_size - used;
+	*size = n64_map.home_size - n64_map.held - used;
 	return n64_map.home + used;
+}
+
+/* the end of the home held for the map's image as it was before the
+converter's savings, given to the heap (the models'): once the map's display
+and level are made (n64_render.c, the first frame after them), as they were
+made for that image -- its buffers, the HUD's width, the level's detail. The
+next map's load grows the arena back, as after a smaller map */
+void n64_map_give_back(void)
+{
+	void *home;
+
+	if (!n64_map.held)
+		return;
+	home = (realloc)(n64_map.home, n64_map.home_size - n64_map.held);
+	if (home != n64_map.home)
+		n64_fatal("map arena moved while shrinking");
+	n64_map.home_size -= n64_map.held;
+	n64_map.given += n64_map.held;
+	n64_map.held = 0;
+	n64_display_set_home(home, n64_map.home_size);
+}
+
+/* where the bytes given to the heap (n64_map_give_back) lie, and how many
+(*size): the HUD's images decide on the room without them
+(n64_heap_has_held). NULL and 0 where none are given */
+void *n64_map_given(unsigned long *size)
+{
+	*size = n64_map.given;
+	return n64_map.given ? n64_map.home + n64_map.home_size : NULL;
+}
+
+/* what was given to the heap taken back into the home at the game's end,
+the map's level, models and HUD sprites freed: the menu and the next map's
+load find the home as they did before the converter's savings (small blocks
+of the menu's in a released tail stopped an arena growing back). Tried in
+n64_game_free_map, and again as the menu's display is made
+(n64_render_set_menu_display: the game's display closed, before the menu's
+first block), as display buffers in the home -- a 640 HUD's surfaces -- keep
+it from the home until then. The uncached blocks' reserve is let go first:
+taken again after the give-back, it can lie in those bytes. last: the menu's
+try, which says so in the log where a block after the home (one that
+outlived its game) stops it; the next map's load tries again. Only where
+the home grows where it is (n64_heap_grows_in_place): realloc would
+otherwise move it, copied, to wherever a piece the size of the whole home
+was free, and the home must stay where boot made it, below the blocks a
+menu or a game leaves (n64_map_home_reserve) */
+void n64_map_take_back(int last)
+{
+	void *home = NULL;
+
+	if (!n64_map.given || n64_render_home_in_use())
+		return;
+	n64_uncached_reserve_release();
+	if (n64_heap_grows_in_place(n64_map.home, n64_map.home_size + n64_map.given))
+		home = (realloc)(n64_map.home, n64_map.home_size + n64_map.given);
+	if (home)
+	{
+		n64_map.home = home;
+		n64_map.home_size += n64_map.given;
+		n64_map.given = 0;
+		n64_display_set_home(home, n64_map.home_size);
+	}
+	else if (last)
+	{
+		char line[96];
+
+		snprintf(line, sizeof(line), "n64: %lu KB of the maps' home not taken back (a block after it)",
+			n64_map.given / 1024);
+		n64_log(line);
+	}
+	n64_uncached_reserve_take();
 }
 
 void n64_map_boot_complete(void)
@@ -1137,12 +1220,32 @@ static void *n64_map_load(
 	unsigned long arena_size = 3 * 1024 * 1024;
 	if (arena_size > n64_map.home_reserved)
 		arena_size = n64_map.home_reserved;
-	if (arena_size < n64_map.header.image_size)
-		arena_size = n64_map.header.image_size;
+	if (arena_size < n64_map.header.image_size + n64_map.header.image_left_out)
+		arena_size = n64_map.header.image_size + n64_map.header.image_left_out;
 	arena_size = (arena_size + 63) & ~63UL;
 	if (n64_map.home_size != arena_size)
 	{
-		void *home = (realloc)(n64_map.home, arena_size);
+		/* (grown only where it is (n64_heap_grows_in_place), as the
+		take-back: realloc would otherwise copy the home to a piece
+		elsewhere) */
+		void *home = arena_size > n64_map.home_size && !n64_heap_grows_in_place(n64_map.home, arena_size) ? NULL :
+			(realloc)(n64_map.home, arena_size);
+		/* (the home short of the image before the converter's savings -- a
+		block that outlived its game after it, where the bytes the savings
+		left out were the heap's -- while the image itself fits: the image in
+		the home as it is, the display and the level made on the room there
+		is) */
+		if (!home && n64_map.header.image_left_out && arena_size > n64_map.home_size &&
+			n64_map.header.image_size <= n64_map.home_size)
+		{
+			char line[128];
+
+			snprintf(line, sizeof(line), "n64: the maps' home %lu KB short of %s's image before the savings "
+				"(a block after it): the image in it as it is", (arena_size - n64_map.home_size) / 1024, name);
+			n64_log(line);
+			arena_size = n64_map.home_size;
+			home = n64_map.home;
+		}
 		if (!home)
 		{
 			char pieces[200], message[320];
@@ -1155,6 +1258,9 @@ static void *n64_map_load(
 		n64_map.home = home; n64_map.home_size = arena_size;
 		n64_display_set_home(home, arena_size);
 	}
+	/* (the arena as the image before the savings wants it: what was given
+	to the heap is the home's again) */
+	n64_map.given = 0;
 	n64_uncached_reserve_take();
 	file = n64_file_open(path);
 	struct n64_map_header reopened_header;
@@ -1165,8 +1271,16 @@ static void *n64_map_load(
 		n64_fatal("map header changed while reopening stream");
 
 	/* in the home (if it is not lent to the display), else from the heap */
+	n64_map.held = 0;
 	if (n64_map.home && n64_map.header.image_size <= n64_map.home_size && !n64_render_home_in_use())
+	{
 		n64_map.image = n64_map.home;
+		/* (what of the home the image takes as it was, less what it takes) */
+		n64_map.held = ((n64_map.header.image_size + n64_map.header.image_left_out + 63) & ~63UL) -
+			((n64_map.header.image_size + 63) & ~63UL);
+		if (n64_map.held > n64_map.home_size - ((n64_map.header.image_size + 63) & ~63UL))
+			n64_map.held = n64_map.home_size - ((n64_map.header.image_size + 63) & ~63UL);
+	}
 	else
 		n64_map.image = memalign(16, n64_map.header.image_size);
 	if (!n64_map.image)
@@ -1251,6 +1365,11 @@ void n64_game_free_map(
 			(free)(n64_map.image);
 		n64_map.image = NULL;
 	}
+	/* (what was given to the heap taken back into the home, the map's
+	level, models and HUD sprites freed: n64_map_take_back; the menu's
+	display tries again) */
+	n64_map.held = 0;
+	n64_map_take_back(0);
 	n64_map.name[0] = 0;
 	n64_memory.tag_cache = NULL;
 	n64_uncached_reserve_settle();

@@ -41,8 +41,11 @@ the arena -- on the cartridges whose maps have HUD images larger than
 256x256 for the converter to pack (tools/n64/hud.py): the PC Expansion's
 and the Custom Edition's (the PC's HUD bitmaps); there, only on the maps
 whose HUD the converter packed (n64_hud_packed). The Xbox maps -- every
-cartridge's -- have none, and no HUD sprite was refused there: their HUD
-is v0.6.6's */
+cartridge's -- have none. On the other cartridges their HUD is v0.6.6's;
+on these two a map with no packed sprite has v0.6.6's HUD but for one rule
+(hud_sprite): a view whose recording left an image out is drawn live the
+next time, and an image left out of a live view is asked for again
+HUD_RETRY_VIEWS views later */
 #if defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS)
 #define HUD_PACKING 1
 #else
@@ -73,6 +76,18 @@ commands come in pieces that double in size (rdpq's up to ~16 KB), and the
 sprites and uploads it loads come out of it too */
 #define RECORDING_ROOM_PIECE (18 * 1024)
 #define RECORDING_ROOM_PIECES 3
+/* the largest image (the room asset_load takes for it, and 1 KB) that
+decides on the whole heap's room: a 128x128 image at 2 bytes a texel -- its
+texels, its sprite headers and the room left for decompressing it where it
+lies, within 1 KB -- and 1 KB. A larger one, a 256x256 image of 64 or
+128 KB, decides on the room the map had before the converter's savings
+(n64_heap_has_held, n64_heap_free_held): those bytes are not counted for
+it, as for the display's other choices. Smaller images keep the whole
+heap's room: where the model cache has filled the bytes given back, the
+free total less them leaves a small image no room that it has before
+the savings (in a test match on a Custom Edition map, four of its 1 to
+5 KB images) */
+#define HUD_LARGE_IMAGE (128 * 128 * 2 + 1024 + 1024)
 /* the heap a HUD sprite leaves free for the game besides its own bytes: for
 the HUD's critical sprites (hud_n64_load_critical_first) the most the game
 itself took in play with no HUD sprites at all, 27088 bytes (Death Island,
@@ -88,6 +103,19 @@ memory of the weapon they replace (swap_critical) */
 /* the HUD views after which a sprite left out for want of room is asked for
 again */
 #define HUD_RETRY_VIEWS 32
+/* the largest image (the room asset_load takes for it and 1 KB) for which a
+view's HUD may push models out (n64_render_push_out_for_hud): a 128x128
+image at 2 bytes a texel -- its texels, its sprite headers and the room left
+for decompressing it where it lies, within 1 KB (the PC Expansion maps'
+three such images take 32,938-32,961 bytes) -- and 1 KB. The HUD's 256x256
+images (64 or 128 KB), which v0.6.6 too loads only where the heap has room
+for them, do not: on Death Island the push-out dropped the ground weapons'
+models again and again for them */
+#define PUSH_OUT_LARGEST HUD_LARGE_IMAGE
+/* the push-outs an image may ask for in a map, counted for the image across
+its views, whatever each one did (an image whose push-out pushed models out
+and still found no room asks no more) */
+#define PUSH_OUT_TRIES 3
 
 /* the float helpers the quads need, inline: newlib's fminf and fmaxf asked
 __fpclassifyf about every argument, and floorf and ceilf were calls */
@@ -147,6 +175,17 @@ static struct
 	int point;
 	/* n64_hud_inset; -1 before it is first asked for */
 	int inset;
+	/* by view, the room the last image without room asked for (hud_sprite),
+	sought before that view's next recording (n64_render_push_out_for_hud),
+	and the image's number; 0: none */
+	unsigned long push_need[MAXIMUM_VIEWS], push_image[MAXIMUM_VIEWS];
+	int push_pieces[MAXIMUM_VIEWS];
+	int push_sprite[MAXIMUM_VIEWS];
+	/* an image whose push-out pushed models out and still found no room, or
+	that asked PUSH_OUT_TRIES times: not asked for again until the map's end
+	(release_sprites); the push-outs it asked for */
+	unsigned char push_gave_up[MAXIMUM_SPRITES];
+	unsigned char push_tries[MAXIMUM_SPRITES];
 #if HUD_PACKING
 	/* hud.views when each sprite was last left out for want of room (+1,
 	its low 16 bits; 0 never): asked for again HUD_RETRY_VIEWS views later */
@@ -215,6 +254,27 @@ static inline int live_next_take(int view)
 #define live_next_pending(view) 0
 #define live_next_take(view) 0
 #endif
+
+/* the HUD's push-out requests let go: every view's (the views laid out
+again: a view's request is for its own room), and with sprites set every
+image's tries and give-up too (the map's end: the next map's image of that
+number is another). Both HUD loaders' release_sprites and
+n64_hud_set_view_count */
+static void push_out_reset(int sprites)
+{
+	for (int i = 0; i < MAXIMUM_VIEWS; i++)
+	{
+		hud.push_need[i] = 0;
+		hud.push_image[i] = 0;
+		hud.push_pieces[i] = 0;
+		hud.push_sprite[i] = 0;
+	}
+	if (sprites)
+	{
+		memset(hud.push_gave_up, 0, sizeof(hud.push_gave_up));
+		memset(hud.push_tries, 0, sizeof(hud.push_tries));
+	}
+}
 
 /* A quad's texture upload was rdpq_tex_upload_sub's work on the CPU every
 time the HUD was recorded: the texture loader's plans and a dozen commands.
@@ -405,6 +465,7 @@ static void release_sprites(void)
 		hud.carried[i] = 0;
 	}
 	memset(hud.live_next, 0, sizeof(hud.live_next));
+	push_out_reset(1);
 	hud.swap_failed_at = 0;
 	arena_top = arena_start;
 	hud.arena_refill = 0;
@@ -594,6 +655,44 @@ static int is_carried(int number)
 	return hud.carried[number] && pass_age(hud.carried[number]) <= (unsigned)(hud.view_count > 1 ? hud.view_count : 1);
 }
 
+/* whether the heap has a sprite's room: its bytes in one piece and, while
+a recording is open, the recording's room, with the reserve besides. On the
+PC Expansion cartridge an image of at most PUSH_OUT_LARGEST has the whole
+heap's room, the given bytes too, and the recording's room is looked for
+as the pieces n64_render_make_room begins it with, besides the image's
+piece: its chunks are made one at a time. With the view model kept on the
+big maps the free room is seldom one piece: on Infinity, in one program
+layout, the HUD's small images found none for 2,400 frames. A larger image,
+which the HUD's push-out does not serve either, decides on the room the
+map had before the converter's savings (n64_heap_has_held,
+n64_heap_free_held), on every cartridge; a small image on the other
+cartridges keeps the one-piece test on the whole heap */
+static unsigned long hud_free(unsigned long bytes)
+{
+#ifdef HALO_N64_PC_EXPANSION
+	if (bytes <= PUSH_OUT_LARGEST)
+		return n64_heap_free();
+#else
+	if (bytes <= HUD_LARGE_IMAGE)
+		return n64_heap_free();
+#endif
+	return n64_heap_free_held();
+}
+
+static int hud_room(unsigned long bytes, unsigned long reserve)
+{
+	int pieces = hud.recording >= 0 ? RECORDING_ROOM_PIECES : 0;
+
+#ifdef HALO_N64_PC_EXPANSION
+	if (bytes <= PUSH_OUT_LARGEST)
+		return n64_heap_has_pieces(bytes, pieces, RECORDING_ROOM_PIECE) && n64_heap_free() >= bytes + reserve;
+#else
+	if (bytes <= HUD_LARGE_IMAGE)
+		return n64_heap_has(bytes + (unsigned long)pieces * RECORDING_ROOM_PIECE) && n64_heap_free() >= bytes + reserve;
+#endif
+	return n64_heap_has_held(bytes + (unsigned long)pieces * RECORDING_ROOM_PIECE) && n64_heap_free_held() >= bytes + reserve;
+}
+
 static sprite_t *hud_sprite(int number);
 
 /* Critical sprites the heap has no room for (too few bytes over
@@ -726,10 +825,11 @@ static void swap_critical(void)
 }
 
 /* whether this map's HUD is packed: the critical pass (n64_render_game.c),
-and with it the reserve, the retry windows, live_next, the swap and the
-meter places by size, only there; a map with no packed sprite -- the Xbox
-maps, on every cartridge, and the Custom Edition maps the converter did
-not pack -- has v0.6.6's HUD */
+and with it the reserve, the swap and the meter places by size, only there;
+a map with no packed sprite -- the Xbox maps, on every cartridge, and the
+Custom Edition maps the converter did not pack -- has v0.6.6's HUD, but for
+live_next and the HUD_RETRY_VIEWS window (hud_sprite; it has no critical
+pass) */
 int n64_hud_packed(void)
 {
 	return hud.packed_count > 0;
@@ -815,6 +915,7 @@ static void release_sprites(void)
 		hud.missing[i] = 0;
 		hud.sprite_wide[i] = 0;
 	}
+	push_out_reset(1);
 	for (int i = 0; i < MAXIMUM_VIEWS; i++)
 	{
 		if (hud.recordings[i])
@@ -1101,6 +1202,8 @@ static sprite_t *hud_sprite(int number)
 	if (!hud.sprites[number])
 	{
 		int found = 0, critical = is_critical(number);
+		unsigned long asked = 0;
+		int asked_pieces = hud.recording >= 0 ? RECORDING_ROOM_PIECES : 0;
 
 		/* the full-width set's sprite where it is in use, else -- or
 		without room for it -- the half-size set's */
@@ -1128,7 +1231,11 @@ static sprite_t *hud_sprite(int number)
 			own allocation is the check. So is a critical sprite asked for in
 			the critical pass, outside a recording, that the heap's free bytes
 			have room for over the reserve where no piece of its size + 1 KB
-			is free: the 1 KB is for asset_load's unchecked allocation) */
+			is free: the 1 KB is for asset_load's unchecked allocation. The
+			room is the map's before the converter's savings: the bytes its
+			image left out, the heap's once the map's display is made, are not
+			counted (n64_heap_has_held, n64_heap_free_held): the HUD is part of
+			the display) */
 			bytes = sprite_bytes(file) + 1024;
 			if (hud.swapping)
 			{
@@ -1136,11 +1243,10 @@ static sprite_t *hud_sprite(int number)
 				file = NULL;
 			}
 			reserve = !hud.packed_count ? 0 : critical ? HUD_HEAP_RESERVE : HUD_HEAP_RESERVE_REST;
-			room = hud.swapping ? hud.recording < 0 :
-				n64_heap_has(bytes + (hud.recording >= 0 ? RECORDING_ROOM_PIECE * RECORDING_ROOM_PIECES : 0)) &&
-				n64_heap_free() >= bytes + reserve;
+			asked = bytes;
+			room = hud.swapping ? hud.recording < 0 : hud_room(bytes, reserve);
 			exact = !room && !hud.swapping && critical && hud.critical_pass && hud.recording < 0 &&
-				n64_heap_free() >= bytes + reserve;
+				hud_free(bytes) >= bytes + reserve;
 			if (file)
 				fclose(file);
 			if (exact)
@@ -1173,9 +1279,31 @@ static sprite_t *hud_sprite(int number)
 			sprite_clear(number, SPRITE_WANTED);
 			hud.wanted_count--;
 		}
-		if (!hud.sprites[number] && hud.packed_count && hud.recording >= 0 && hud.recording < MAXIMUM_VIEWS)
+		/* (none had room: the smallest set's room asked for before this
+		view's next recording, n64_hud_begin -- of the images refused, the
+		one that asks least, which the push-out may make room for where a
+		larger one could not; only an image of at most PUSH_OUT_LARGEST) */
+		if (!hud.sprites[number] && asked && asked <= PUSH_OUT_LARGEST && !hud.push_gave_up[number] && !hud.swapping &&
+			hud.view >= 0 && hud.view < MAXIMUM_VIEWS &&
+			(!hud.push_need[hud.view] || asked + (unsigned long)asked_pieces * RECORDING_ROOM_PIECE < hud.push_need[hud.view]))
+		{
+			hud.push_need[hud.view] = asked + (unsigned long)asked_pieces * RECORDING_ROOM_PIECE;
+			hud.push_image[hud.view] = asked;
+			hud.push_pieces[hud.view] = asked_pieces;
+			hud.push_sprite[hud.view] = number;
+		}
+		/* (left out of the view's recording: the view drawn live the next
+		time, where the image needs no recording's room; left out of a live
+		view: asked for again HUD_RETRY_VIEWS views later, in a packed map's
+		critical pass HUD_RETRY_VIEWS_CRITICAL. On every map: with the room the
+		map image's savings leave, a view's recording finds its room where
+		v0.6.7 drew the view live, and an image beside that room seldom finds
+		its own -- on the Custom Edition cartridge the image and the
+		recording's room in one piece, on the PC Expansion cartridge the
+		image's piece and the recording's pieces besides it (hud_room)) */
+		if (!hud.sprites[number] && hud.recording >= 0 && hud.recording < MAXIMUM_VIEWS)
 			hud.live_next[hud.recording] = 1;
-		else if (!hud.sprites[number] && hud.packed_count)
+		else if (!hud.sprites[number])
 			hud.refused_at[number] = (unsigned short)(hud.views + 1);
 		if (hud.sprites[number] && n64_debug_flag("debug_hud_sprites"))
 			debugf("hud sprite %d: %dx%d format %d%s\n", number, hud.sprites[number]->width,
@@ -1279,6 +1407,8 @@ static sprite_t *hud_sprite(int number)
 	if (!hud.sprites[number])
 	{
 		int found = 0;
+		unsigned long need = 0, image = 0;
+		unsigned long recording_room = hud.recording >= 0 ? RECORDING_ROOM_PIECE * RECORDING_ROOM_PIECES : 0;
 
 		/* the full-width set's sprite where it is in use, else -- or
 		without room for it -- the half-size set's */
@@ -1298,9 +1428,13 @@ static sprite_t *hud_sprite(int number)
 			/* (asset_load doesn't check its allocation: the sprite's room
 			is looked for first, its quads left out until there is some --
 			and the room a recording began with kept for it: its chunks are
-			made as it goes) */
-			room = n64_heap_has(sprite_bytes(file) + 1024 +
-				(hud.recording >= 0 ? RECORDING_ROOM_PIECE * RECORDING_ROOM_PIECES : 0));
+			made as it goes. For an image larger than HUD_LARGE_IMAGE the
+			room is the map's before the converter's savings: the bytes its
+			image left out, the heap's once the map's display is made, are not
+			counted (n64_heap_has_held)) */
+			image = sprite_bytes(file) + 1024;
+			need = image + recording_room;
+			room = image > HUD_LARGE_IMAGE ? n64_heap_has_held(need) : n64_heap_has(need);
 			fclose(file);
 			if (!room)
 				continue;
@@ -1311,6 +1445,19 @@ static sprite_t *hud_sprite(int number)
 		{
 			hud.missing[number] = 1;
 			return NULL;
+		}
+		/* (none had room: the smallest set's room asked for before this
+		view's next recording, n64_hud_begin -- of the images refused, the
+		one that asks least, which the push-out may make room for where a
+		larger one could not; only an image of at most PUSH_OUT_LARGEST) */
+		if (!hud.sprites[number] && need - recording_room <= PUSH_OUT_LARGEST && !hud.push_gave_up[number] &&
+			hud.view >= 0 && hud.view < MAXIMUM_VIEWS &&
+			(!hud.push_need[hud.view] || need < hud.push_need[hud.view]))
+		{
+			hud.push_need[hud.view] = need;
+			hud.push_image[hud.view] = image;
+			hud.push_pieces[hud.view] = recording_room ? RECORDING_ROOM_PIECES : 0;
+			hud.push_sprite[hud.view] = number;
 		}
 		if (hud.sprites[number] && n64_debug_flag("debug_hud_sprites"))
 			debugf("hud sprite %d: %dx%d format %d%s\n", number, hud.sprites[number]->width,
@@ -1347,12 +1494,16 @@ void n64_hud_forget_recordings(void)
 /* (each frame, render_frame) */
 void n64_hud_set_view_count(int count)
 {
+	if (count != hud.view_count)
+		push_out_reset(0);
 	hud.view_count = count;
 	hud_frame++;
 }
 #else
 void n64_hud_set_view_count(int count)
 {
+	if (count != hud.view_count)
+		push_out_reset(0);
 	hud.view_count = count;
 }
 #endif
@@ -1422,6 +1573,18 @@ int n64_hud_begin(int view, int x0, int y0, int x1, int y1)
 	}
 	hud.dump = hud.views == 600 || hud.views == 601;
 	n64_profile_zone = 1;
+	/* (an image that found no room in this view's last recording: room for
+	it made now, lower-tier models pushed out where they may be, before this
+	one begins) */
+	if (hud.push_need[view])
+	{
+		int sprite = hud.push_sprite[view];
+
+		if (n64_render_push_out_for_hud(hud.push_image[view], hud.push_pieces[view], RECORDING_ROOM_PIECE) < 0 ||
+			++hud.push_tries[sprite] >= PUSH_OUT_TRIES)
+			hud.push_gave_up[sprite] = 1;
+		hud.push_need[view] = 0;
+	}
 	if (live_next_take(view))
 		hud.live = 1;
 	else if (n64_render_make_room(RECORDING_ROOM_PIECE, RECORDING_ROOM_PIECES))

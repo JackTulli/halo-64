@@ -198,6 +198,8 @@ class HudExporter:
         for tag in self.map.tags:
             if tag.group_name in HUD_GROUPS:
                 walker.walk(tag, on_dependency=on_dependency)
+        # (every bitmap a HUD tag reaches, its images converted or not: convert.py's bitmap_stubs keeps them)
+        self.reached = {t.index for t in bitmaps}
         out = self.out_dir / "hud" / f".{self.map_name}"
         out.mkdir(parents=True, exist_ok=True)
         bf = {fl.name: o for o, fl in self.defs.fields("Bitmap")}

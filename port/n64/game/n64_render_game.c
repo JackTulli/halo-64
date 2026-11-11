@@ -31,6 +31,7 @@ renderer's (port/n64/src/n64_render.c).
 #include "items/weapon_definitions.h"
 #include "tag_files/tag_groups.h"
 #include "scenario/scenario.h"
+#include "game/game_globals.h"
 #include "scenario/scenario_definitions.h"
 #include "items/item_definitions.h"
 #include "game/game_engine.h"
@@ -263,6 +264,7 @@ void render_initialize_for_new_map(
 	n64_fog_for_new_map();
 	/* Keep room for the held weapon and player models on the largest maps,
 	using the existing lighter geometry/model set under the 8 MiB ceiling. */
+	n64_render_set_players(player_spawn_count);
 	n64_render_load_level(n64_loaded_map_name(), player_spawn_count > 2 || n64_heap_free() < 1024 * 1024);
 	n64_hud_set_map(n64_loaded_map_name());
 	n64_particles_load(n64_loaded_map_name());
@@ -413,6 +415,30 @@ static void gather_frame_objects(
 		n64->model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(definition->object.model.index);
 		n64->node_count = (short)model_definition_get(definition->object.model.index)->nodes.count;
 		n64->node_matrices = (const float *)object_get_node_matrices(iterator.index);
+		n64->obstacle_definition = TEST_FLAG(_object_mask_scenery | _object_mask_device, object->object.type) &&
+			definition->object.collision_model.index != NONE ?
+			(unsigned short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(object->definition_index) + 1) : 0;
+		/* the model's tier: bipeds, vehicles, projectiles and whatever a unit
+		carries (its parent is not itself) are actors; weapons, equipment and
+		garbage on the ground, items; scenery and devices (machines, controls,
+		light fixtures) with a collision model, obstacles, and without one,
+		decoration, with the rest */
+		switch (object->object.type)
+		{
+		case _object_type_biped:
+		case _object_type_vehicle:
+		case _object_type_projectile:
+			n64->tier = N64_TIER_ACTOR;
+			break;
+		case _object_type_weapon:
+		case _object_type_equipment:
+		case _object_type_garbage:
+			n64->tier = entry->ultimate_parent != iterator.index ? N64_TIER_ACTOR : N64_TIER_ITEM;
+			break;
+		default:
+			n64->tier = definition->object.collision_model.index != NONE ? N64_TIER_OBSTACLE : N64_TIER_DECORATION;
+			break;
+		}
 		n64->head_node = -1;
 		n64->head_mask[0] = n64->head_mask[1] = 0;
 		if (n64_big_head_enabled() && object->object.type == _object_type_biped)
@@ -555,9 +581,25 @@ void n64_first_person_model_draw(
 	n64.model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(model_index);
 	n64.node_count = (short)model_definition_get(model_index)->nodes.count;
 	n64.node_matrices = (const float *)node_matrices;
+	n64.tier = N64_TIER_FIRST_PERSON;
+#ifdef HALO_N64_PC_EXPANSION
+	{
+		/* the arms (the game's first-person hands) rank last, with
+		decoration, and are not kept as the view models are: they are the
+		least the player needs to see in a first-person view, the weapon is
+		not (n64_render.c load_model) */
+		struct game_globals *globals = scenario_get_game_globals();
+		struct game_globals_first_person_interface *interface = globals && globals->first_person_interface.count ?
+			TAG_BLOCK_GET_ELEMENT(&globals->first_person_interface, 0, struct game_globals_first_person_interface) : NULL;
+
+		if (interface && interface->hands.index == model_index)
+			n64.tier = N64_TIER_DECORATION;
+	}
+#endif
 	n64.head_node = -1;
 	n64.head_mask[0] = n64.head_mask[1] = 0;
 	n64.key = 0;
+	n64.obstacle_definition = 0;
 	n64.region_permutations = no_permutations;
 	n64.region_count = 0;
 	n64.center[0] = render.camera.position.x;

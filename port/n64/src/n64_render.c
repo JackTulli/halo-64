@@ -14,6 +14,8 @@ units" everything here is drawn in), already lit.
 #include <malloc.h>
 #include <math.h>
 #include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <rspq_constants.h>
 #include <stdio.h>
 #include <string.h>
@@ -412,6 +414,15 @@ uses it: each batch's texture and render mode are recorded with it. */
 #define MODEL_CACHE_BYTES (448 * 1024)
 /* heap a model load leaves free (the game's own allocations, rspq's) */
 #define MODEL_HEAP_MARGIN (96 * 1024)
+/* the heap the local player's view model's load leaves free on the PC
+Expansion cartridge with one or two players (load_model): the gun is kept
+once loaded, but on Infinity its load found the heap short where the
+program was a few KB larger. What came after such a load with no margin
+of its own (the HUD's images and recordings, libdragon's uncached blocks,
+which have N64_UNCACHED_RESERVE besides) took at most 32 KB of the heap in
+test runs: the free heap stayed at 55 KB or more, near the least that
+MODEL_HEAP_MARGIN left in the long test runs (58 KB) */
+#define VIEW_MODEL_HEAP_MARGIN (80 * 1024)
 
 struct loaded_model
 {
@@ -423,6 +434,35 @@ struct loaded_model
 	unsigned long last_drawn;
 	/* the frame it was last drawn in a first-person view (0: never) */
 	unsigned long first_person_drawn;
+	/* the frame from which load_model may try it again (0: any): the frame
+	+ 1 where one of its textures, or its push-out, found no room in a frame,
+	and ARMS_HOLD_FRAMES on where it is the arms and was pushed out */
+	unsigned long texture_refused;
+	/* its tier (n64.h N64_TIER_*): the highest a view drew it at in the
+	frames in flight, and the frame that set it */
+	unsigned char tier;
+	/* drawn as the first-person arms (render_object) */
+	unsigned char arms;
+	/* (the heap its load took besides the textures it read, in 16-byte
+	units, rounded up: push_out_can) */
+	uint16_t cost16;
+	unsigned long tier_drawn;
+	/* the frame until which its load pushes out no model, for the room or
+	for a piece: PUSH_HOLD_FRAMES after a push-out that found no room, and
+	after a piece's search that found no stretch to drop (nothing pushed
+	out then: push_out_for_piece) */
+	unsigned long push_held;
+	/* its loads told apart: one more each time it is dropped (a draw or
+	stand-in queued against one load is not another's) */
+	uint16_t generation;
+	/* drawn at its tier only as an obstacle at the actors' rank with
+	OBSTACLE STAND-INS off, in the frames in flight: the local player's
+	view model's load may push it out (load_model, render_object,
+	push_out_may) */
+	unsigned char gun_first;
+	/* the view that last drew it in first person (first_person_drawn;
+	switched_view_model) */
+	unsigned char first_person_view;
 };
 
 static struct
@@ -451,6 +491,13 @@ static struct
 	struct model_record **by_tag;
 	int tag_count;
 	unsigned long reads, texture_reads;
+	/* model loads refused for want of room for a texture (load_model) */
+	unsigned long texture_refusals;
+	/* models pushed out (push_out_drop): item, obstacle and decoration
+	models, for a higher tier's room (load_model) or its piece
+	(push_out_for_piece), and for the HUD's images
+	(n64_render_push_out_for_hud) */
+	unsigned long pushed_out;
 	/* by batch: the batches alike from it on (RUN_LENGTH) and whether a run
 	starts there (RUN_HEAD) -- see mark_batch_runs */
 	uint8_t *runs;
@@ -517,6 +564,8 @@ static struct
 	color_t clear_color;
 	T3DMat4FP *matrices[FRAMES_IN_FLIGHT];
 	int matrix_count;
+	/* the game's local players (n64_render_set_players) */
+	int players;
 	T3DViewport *viewport;
 	int current_texture;
 	float fov;
@@ -561,6 +610,8 @@ void n64_render_set_clear_color(unsigned long rgb)
 
 static void load_models(const char *map_name);
 static void flush_draws(void);
+static void standin_load(const char *map_name);
+static void standin_unload(void);
 
 static int view_model_quality;
 /* Settings: VIEW MODEL "OFF IN SPLIT": the low models, not drawn with three
@@ -1226,6 +1277,11 @@ void n64_render_set_menu_display(int on)
 	if (on)
 	{
 		unsigned long home_size;
+
+		/* (what the map gave to the heap taken back into the home, the
+		game's display closed: before the title gets the map's tail and
+		before the menu's first block) */
+		n64_map_take_back(1);
 		/* All borrowed display buffers have closed. Give the title the
 		unused tail of a large map back before its transient allocations. */
 		n64_map_boot_complete();
@@ -1351,6 +1407,15 @@ static void record_rdp_output_park(void);
 
 static unsigned long hud_detail_models_room(void);
 
+/* the heap blocks of this branch that v0.6.7's program does not have (the
+stand-ins' block, the model records' larger table): counted back as free
+for the display's choices, which decide on the heap's totals -- the HUD's
+width, the high and ultra detail modes, the room for the HUD's full-width
+sprites -- so that the display is made as v0.6.7 with the base commit makes
+it. (The program's own larger code and data are not counted: they are not
+known here) */
+static unsigned long display_own_blocks(void);
+
 /* (high and ultra detail, the models' cache emptied: the heap's free total
 less the blocks must hold the models' room as the HUD's width counts it,
 hud_detail_models_room; then the blocks are looked for in the pieces there
@@ -1375,7 +1440,7 @@ static int display_fits(int width, int height, int count)
 	int fits = 1;
 
 	count = count < 4 ? count : 4;
-	if (n64_heap_free() < (unsigned long)count * (size + 8) + hud_detail_models_room() +
+	if (n64_heap_free() + display_own_blocks() < (unsigned long)count * (size + 8) + hud_detail_models_room() +
 		(height > 240 ? INTERLACED_HEADROOM : 0))
 		return 0;
 	for (int i = 0; i < count && fits; i++)
@@ -1397,7 +1462,7 @@ interlaced it cost some on both (Beaver Creek, 36 KB short; Hang 'Em High,
 are drawn, each with its own room test. 0 where it may not */
 static unsigned long hud_sprite_room(int lines)
 {
-	unsigned long free_bytes = n64_heap_free(), need = hud_detail_models_room();
+	unsigned long free_bytes = n64_heap_free() + display_own_blocks(), need = hud_detail_models_room();
 
 	return lines <= 240 && free_bytes >= need ? free_bytes - need + 1 : 0;
 }
@@ -1480,7 +1545,8 @@ static int try_hud_detail(void)
 	{
 		/* (the models' room first, on the totals: what the surfaces that
 		the home cannot hold take from the heap, and malloc's 8 bytes each) */
-		unsigned long on_heap = 0, left = room, free_bytes = n64_heap_free(), need = hud_detail_models_room();
+		unsigned long on_heap = 0, left = room, free_bytes = n64_heap_free() + display_own_blocks(),
+			need = hud_detail_models_room();
 
 		for (int i = 0; i < 4; i++)
 		{
@@ -1553,7 +1619,7 @@ static int hud_detail_may_fit(void)
 	unsigned long needed = 2 * (640UL * 240 * 2 + 256) + 2 * (320UL * 240 * 2 + 256) + hud_detail_models_room();
 
 	n64_map_home_free_part(&home_size);
-	return n64_heap_free() + models.loaded_bytes + models.texture_bytes + (home_in_use ? 0 : GAME_DISPLAY_BYTES) +
+	return n64_heap_free() + display_own_blocks() + models.loaded_bytes + models.texture_bytes + (home_in_use ? 0 : GAME_DISPLAY_BYTES) +
 		home_size >= needed;
 }
 
@@ -1775,6 +1841,48 @@ void n64_render_initialize(void)
 	}
 }
 
+/* a model texture's sprite, its buffer allocated first, of the size the
+asset needs (asset_loadf_into with no buffer): memalign answers NULL where
+the heap has no piece for it, where sprite_load (asset_load) would stop the
+game. The buffer is aligned to 32 bytes, as asset_load aligns it, so the
+heap is laid out as with sprite_load. The sprite owns the buffer, as
+sprite_load's. NULL: no room for the buffer. A file that is missing or
+cannot be read stops the game, as with sprite_load */
+static sprite_t *load_texture_checked(const char *path)
+{
+	FILE *file = fopen(path, "rb");
+	struct stat st;
+	int sz, size = 0;
+	void *buf;
+	sprite_t *sprite;
+	int ok;
+
+	/* (the calls outside assertf, which is empty under NDEBUG) */
+	assertf(file, "File not found: %s", path);
+	ok = fstat(fileno(file), &st) == 0 && st.st_size > 0;
+	assertf(ok, "Cannot read %s", path);
+	sz = (int)st.st_size;
+	asset_loadf_into(file, &sz, NULL, &size);
+	assertf(size > 0, "Not an asset: %s", path);
+	buf = memalign(32, size);
+	if (!buf)
+	{
+		fclose(file);
+		return NULL;
+	}
+	ok = lseek(fileno(file), 0, SEEK_SET) == 0;
+	ok = ok && asset_loadf_into(file, &sz, buf, &size);
+	assertf(ok, "Cannot read %s", path);
+	(void)ok;
+	fclose(file);
+	sprite = sprite_load_buf(buf, sz);
+	if ((void *)sprite != buf)
+		free(buf);
+	else
+		sprite->flags |= SPRITE_FLAGS_OWNEDBUFFER;
+	return sprite;
+}
+
 /* a model texture: read when a model that uses it is loaded, freed (once
 the RSP is done with it) when the last such model is dropped */
 static sprite_t *acquire_texture(int texture)
@@ -1786,7 +1894,7 @@ static sprite_t *acquire_texture(int texture)
 	if (!models.sprites[texture])
 	{
 		snprintf(path, sizeof(path), "rom:/tex/%.24s.sprite", models.textures[texture].name);
-		models.sprites[texture] = sprite_load(path);
+		models.sprites[texture] = load_texture_checked(path);
 		if (!models.sprites[texture])
 			return NULL;
 		surface_t pixels = sprite_get_pixels(models.sprites[texture]);
@@ -1874,6 +1982,12 @@ void n64_render_park_rdp_output(void)
 	rspq_block_run(rdp_output_park);
 }
 
+static void drop_queued_draws(int model_index);
+static int queued_draws_of(int model_index);
+/* (an obstacle drawn in this view that standin_pending had no room for: no
+model drawn in the frame is pushed out until the flush, load_model) */
+static int standin_pending_lost;
+
 static void drop_model(int index)
 {
 	struct loaded_model *loaded = &models.loaded[index];
@@ -1882,6 +1996,22 @@ static void drop_model(int index)
 
 	if (!loaded->data)
 		return;
+	/* (a model drawn in this frame -- the tiers' push-out, load_model --
+	with draws of it queued: the queue drawn first, so that those draws are
+	drawn, and the model's memory freed (a deferred call) once the RSP has
+	drawn them. A flush in the middle of a view, as a full queue makes one
+	(queue_draw): load_model runs before render_object queues the asking
+	object's draws and sets its matrices, so the flush has only the draws
+	queued before it. Should any still be queued, they are not drawn,
+	whatever the model's slot holds by the flush (drop_queued_draws); its
+	next load told from this one) */
+	if (loaded->last_drawn == renderer.frame_index)
+	{
+		if (queued_draws_of(index))
+			flush_draws();
+		drop_queued_draws(index);
+	}
+	loaded->generation++;
 	release = malloc(sizeof(*release));
 	if (!release)
 		release = &fallback;
@@ -1946,6 +2076,8 @@ the models drawn longest ago are dropped (none drawn in the frames still in
 flight: their memory comes back once the RSP is done with them), up to
 MAKE_ROOM_LIMIT of them a call; 0 if that isn't enough. Not while recording
 a block (rspq_wait) */
+static int first_person_model(int index);
+
 int n64_render_make_room(unsigned long size, int count)
 {
 	unsigned long dropped = 0;
@@ -1963,8 +2095,9 @@ int n64_render_make_room(unsigned long size, int count)
 
 			for (int i = 0; i < models.header->model_count; i++)
 			{
+				/* (nor a view model drawn lately: first_person_model) */
 				if (models.loaded[i].data && models.loaded[i].last_drawn + FRAMES_IN_FLIGHT < renderer.frame_index &&
-					(oldest < 0 || models.loaded[i].last_drawn < models.loaded[oldest].last_drawn))
+					!first_person_model(i) && (oldest < 0 || models.loaded[i].last_drawn < models.loaded[oldest].last_drawn))
 					oldest = i;
 			}
 			if (oldest < 0)
@@ -2182,10 +2315,10 @@ static unsigned long model_texture_allocation(int texture)
 	return models.texture_allocation[texture];
 }
 
-static unsigned long model_allocation(struct model_record const *model)
+static unsigned long model_allocation(struct model_record const *model, unsigned long margin)
 {
 	int count = model->far_first + model->far_count;
-	unsigned long needed = model->vertex_bytes + model->index_bytes + count * 768 + MODEL_HEAP_MARGIN;
+	unsigned long needed = model->vertex_bytes + model->index_bytes + count * 768 + margin;
 	for (int b = 0; b < count; b++)
 	{
 		int texture = models.batches[model->first_batch + b].texture;
@@ -2198,18 +2331,28 @@ static unsigned long model_allocation(struct model_record const *model)
 	return needed;
 }
 
-/* a first-person model (the arms, the weapon) drawn as one lately. On the
-custom cartridge: a Custom Edition map (Foundry: its warehouse is machine
+/* a first-person model drawn as one lately (on the PC Expansion cartridge
+the weapon's only: the arms rank with decoration there, n64_render_game.c,
+and render_object does not mark them). On the custom cartridge: a Custom Edition map (Foundry: its warehouse is machine
 models, ~1.5 MB of them) filled the heap with world models drawn in the
 frames in flight, and the view models, drawn last, found no room. There
 they are kept once loaded, take room first (n64_render_frame_begin) and may
-push out a world model from an earlier frame */
+push out a world model from an earlier frame. On the PC Expansion cartridge
+they are kept and may push out so too: on Infinity a world model's request
+dropped the gun while the player was dead, and with the heap's margin the
+gun found no room again for the next 1,500 frames */
 #define FIRST_PERSON_FRAMES 60
 static int first_person_model(int index)
 {
-#ifdef HALO_N64_CUSTOM_MAPS
+#if defined(HALO_N64_CUSTOM_MAPS) || defined(HALO_N64_PC_EXPANSION)
 	unsigned long drawn = models.loaded[index].first_person_drawn;
 
+#ifdef HALO_N64_PC_EXPANSION
+	/* (there with one or two players, as the tiers: with four, Death Island
+	drew fewer ground weapons than v0.6.6 in a part of a test match) */
+	if (renderer.players > 2)
+		return 0;
+#endif
 	return drawn && drawn + FIRST_PERSON_FRAMES >= renderer.frame_index;
 #else
 	(void)index;
@@ -2217,27 +2360,394 @@ static int first_person_model(int index)
 #endif
 }
 
-static int load_model(int index)
+#ifdef HALO_N64_PC_EXPANSION
+/* the kept view model a weapon switch left: one the view drawing now drew
+in first person before this frame but not in it (first_person_view), while
+another view model of that view asks for room. The keep held it for
+FIRST_PERSON_FRAMES more, and on Infinity the new gun was drawn as nothing
+for those 60 frames at each switch; -1: none */
+static int switched_view_model(int index)
+{
+	for (int i = 0; i < models.header->model_count; i++)
+	{
+		struct loaded_model *other = &models.loaded[i];
+
+		if (i != index && other->data && first_person_model(i) && other->first_person_drawn < renderer.frame_index &&
+			other->first_person_view == renderer.view_count - 1)
+			return i;
+	}
+	return -1;
+}
+#endif
+
+/* a model load given up at batch "failed": its data and the blocks recorded
+so far freed, the textures its batches took given back (none of it was
+drawn yet), and the model not tried again in this frame */
+static void refuse_model_load(int index, int failed)
+{
+	struct model_record *model = &models.models[index];
+	struct loaded_model *loaded = &models.loaded[index];
+
+	/* (the data and recordings first: giving a texture back takes heap for
+	the deferred call's record, as in drop_model) */
+	for (int b = 0; b <= failed; b++)
+	{
+		if (loaded->setups[b])
+			rspq_block_free(loaded->setups[b]);
+		if (loaded->blocks[b])
+			rspq_block_free(loaded->blocks[b]);
+	}
+	free(loaded->data);
+	free(loaded->setups);
+	free(loaded->blocks);
+	loaded->data = NULL;
+	loaded->setups = NULL;
+	loaded->blocks = NULL;
+	for (int b = 0; b < failed; b++)
+		release_texture(models.batches[model->first_batch + b].texture);
+	loaded->texture_refused = renderer.frame_index + 1;
+	models.loaded_bytes -= model->vertex_bytes + model->index_bytes;
+	models.missing++;
+	models.texture_refusals++;
+}
+
+/* whether the push-out may drop model i, loaded, for model index of the given
+tier, in the given pass (push_out_choice: queued, drawn in this frame): a
+model of a lower tier than the one asking and than the actors -- and, for
+the local player's view models with OBSTACLE STAND-INS off, the obstacles,
+which rank with the actors then (render_object: OFF puts the gun first) */
+static int push_out_may(int i, int index, int tier, int queued)
+{
+	struct loaded_model *other = &models.loaded[i];
+
+	return other->data && i != index && !first_person_model(i) &&
+		(other->tier > (tier > N64_TIER_ACTOR ? tier : N64_TIER_ACTOR) ||
+		(tier == N64_TIER_FIRST_PERSON && other->gun_first && other->tier == N64_TIER_ACTOR)) &&
+		(other->last_drawn == renderer.frame_index) == queued && !(queued && standin_pending_lost);
+}
+
+/* the set of loaded model i in each half of the piece's push-out
+(push_out_for_piece): 0 decoration, 1 obstacles, 2 items, 3 the obstacles
+at the actors' rank with OBSTACLE STAND-INS off; -1: none */
+static int piece_set_of(int i)
+{
+	struct loaded_model *loaded = &models.loaded[i];
+
+	if (loaded->gun_first && loaded->tier == N64_TIER_ACTOR)
+		return 3;
+	return loaded->tier >= N64_TIER_ITEM && loaded->tier <= N64_TIER_DECORATION ?
+		N64_TIER_DECORATION - loaded->tier : -1;
+}
+
+/* whether model index (-1: none) has a batch with the given texture */
+static int model_uses_texture(int index, int texture)
+{
+	struct model_record *model = index >= 0 ? &models.models[index] : NULL;
+
+	for (int b = 0; model && b < model->far_first + model->far_count; b++)
+	{
+		if (models.batches[model->first_batch + b].texture == texture)
+			return 1;
+	}
+	return 0;
+}
+
+/* whether the tiers' push-out could make the room for a model of the given
+tier at all: the free total, what each model it may push out took at its
+load besides its textures (cost16), and each texture all of whose users are
+such models, once -- not one that the model asking uses, which it would read
+again -- cover what the model needs. Where they do not, pushing out models
+only drops them for nothing. (Each such model's batches are taken off its
+textures' users while they are counted, so that a texture is counted where
+its count comes to 0, and given back after) */
+static int push_out_can(int index, int tier, unsigned long needed)
+{
+	unsigned long room = n64_heap_free();
+	int last = -1;
+
+	for (int i = 0; i < models.header->model_count && room < needed; i++)
+	{
+		struct model_record *model = &models.models[i];
+
+		if (!push_out_may(i, index, tier, 0) && !push_out_may(i, index, tier, 1))
+			continue;
+		room += 16UL * models.loaded[i].cost16;
+		for (int b = 0; b < model->far_first + model->far_count; b++)
+		{
+			int texture = models.batches[model->first_batch + b].texture;
+
+			if (texture >= 0 && texture < models.header->texture_count && models.sprites[texture] &&
+				!--models.texture_users[texture] && !model_uses_texture(index, texture))
+				room += model_texture_allocation(texture);
+		}
+		last = i;
+	}
+	for (int i = 0; i <= last; i++)
+	{
+		struct model_record *model = &models.models[i];
+
+		if (!push_out_may(i, index, tier, 0) && !push_out_may(i, index, tier, 1))
+			continue;
+		for (int b = 0; b < model->far_first + model->far_count; b++)
+		{
+			int texture = models.batches[model->first_batch + b].texture;
+
+			if (texture >= 0 && texture < models.header->texture_count && models.sprites[texture])
+				models.texture_users[texture]++;
+		}
+	}
+	return room >= needed;
+}
+
+/* whether the push-out drops model i before model oldest (-1: none yet) */
+static int push_out_before(int i, int oldest)
+{
+	return oldest < 0 || models.loaded[i].tier > models.loaded[oldest].tier ||
+		(models.loaded[i].tier == models.loaded[oldest].tier && models.loaded[i].last_drawn < models.loaded[oldest].last_drawn);
+}
+
+/* the model the tiers' push-out drops for a model of the given tier (one of
+the first three): of the tiers below it and below the actors (and the
+obstacles at the actors' rank for a view model with OBSTACLE STAND-INS off,
+push_out_may: so after the items), the lowest tier first, the one drawn
+longest ago first, the models not drawn in this frame before those drawn in
+it -- and those only while standin_pending
+holds every obstacle of the view; -1: none */
+static int push_out_choice(int index, int tier)
+{
+	int oldest = -1;
+
+	for (int queued = 0; queued < 2 && oldest < 0; queued++)
+	{
+		for (int i = 0; i < models.header->model_count; i++)
+		{
+			if (push_out_may(i, index, tier, queued) && push_out_before(i, oldest))
+				oldest = i;
+		}
+	}
+	return oldest;
+}
+
+/* (frames for which the first-person arms, once pushed out, are not loaded
+again: they rank last, and loaded again at once they were pushed out again,
+in test runs up to 11 times in 300 frames with two players on Death Island,
+a visible flicker of the hands) */
+#define ARMS_HOLD_FRAMES 300
+
+/* a model the tiers' push-out drops */
+static void push_out_drop(int index)
+{
+	models.pushed_out++;
+	if (models.loaded[index].arms)
+		models.loaded[index].texture_refused = renderer.frame_index + ARMS_HOLD_FRAMES;
+	drop_model(index);
+}
+
+/* The free total is not one piece (load_model): the models the push-out may
+drop whose data lies in the stretch of free room and droppable models' data
+that holds a piece for the model's data with the fewest of them in it
+(n64_heap_window: one stretch, in one run), all dropped -- at most
+PIECE_DROPS; none where more would be needed or there is no such run, as
+dropping any would be for nothing. The models it may drop are tried in sets
+that grow in the room push-out's order (push_out_choice): of the models not
+drawn in this frame, decoration, then obstacles too, then items too, then
+the obstacles at the actors' rank with OBSTACLE STAND-INS off too (of
+those, the ones push_out_may lets the model drop: the last set only for the
+local player's view models), then the models drawn in this frame too, in
+the same order. The first set with such a stretch is the one dropped from:
+a model drawn in this frame, or of a higher tier, is dropped only where
+the models before it in that order hold no such stretch. Returns how many
+were dropped. memalign(16, size) asks malloc for request2size(size) + 32
+bytes (newlib's mallocr.c: the padded size, the alignment and MINSIZE),
+which takes a chunk of request2size(size) + 40: size + 11 rounded down to
+a multiple of 8, >= 16 */
+#define PIECE_CANDIDATES 128
+#define PIECE_DROPS 3
+/* (the sets: 0-3 the models not drawn in this frame, 4-7 those drawn in it;
+in each, decoration, then obstacles, then items, then the obstacles at the
+actors' rank with OBSTACLE STAND-INS off: piece_set_of) */
+#define PIECE_SETS 8
+/* (frames in which a model pushes out nothing more, for the room or for a
+piece, after its push-out or its piece's drops found no room, or its
+piece's search found no stretch it may drop (nothing pushed out then). It
+still loads as soon as the heap has the room, as it still tries each frame.
+In test runs on Death Island and Ice Fields the piece's tries failed in 15
+streaks, one try a frame, of up to 82 frames, and 11 of those models loaded
+17 to 740 frames after the streak began: this cuts a long streak's tries,
+each a walk of the heap, to one in 30 frames) */
+#define PUSH_HOLD_FRAMES 30
+static int push_out_for_piece(int index, int tier, unsigned long size)
+{
+	void *blocks[PIECE_CANDIDATES], *in_set[PIECE_CANDIDATES];
+	short owners[PIECE_CANDIDATES];
+	unsigned char sets[PIECE_CANDIDATES], from[PIECE_CANDIDATES], chosen[PIECE_CANDIDATES];
+	unsigned long padded = (size + 11) & ~7UL;
+	int count = 0, drops = -1, n = 0;
+
+	for (int set = 0; set < PIECE_SETS; set++)
+	{
+		for (int i = 0; i < models.header->model_count && count < PIECE_CANDIDATES; i++)
+		{
+			if (piece_set_of(i) != set % 4 || !push_out_may(i, index, tier, set >= 4))
+				continue;
+			/* (in the order of their addresses) */
+			int k = count++;
+
+			for (; k > 0 && (char *)blocks[k - 1] > (char *)models.loaded[i].data; k--)
+			{
+				blocks[k] = blocks[k - 1];
+				owners[k] = owners[k - 1];
+				sets[k] = sets[k - 1];
+			}
+			blocks[k] = models.loaded[i].data;
+			owners[k] = (short)i;
+			sets[k] = (unsigned char)set;
+		}
+	}
+	/* (the first set whose stretch takes at most PIECE_DROPS: a set with no
+	model of its own answers as the one before it, and 0, a free piece there
+	already, answers so for every set) */
+	for (int set = 0; set < PIECE_SETS && (drops < 1 || drops > PIECE_DROPS); set++)
+	{
+		int added = 0;
+
+		n = 0;
+		for (int k = 0; k < count; k++)
+		{
+			if (sets[k] <= set)
+			{
+				added |= sets[k] == set;
+				in_set[n] = blocks[k];
+				from[n++] = (unsigned char)k;
+			}
+		}
+		if (added)
+			drops = n64_heap_window(in_set, n, (padded > 16 ? padded : 16) + 40, chosen);
+		if (!drops)
+			break;
+	}
+	if (drops < 1 || drops > PIECE_DROPS)
+		return 0;
+	for (int k = 0; k < n; k++)
+	{
+		if (chosen[k])
+			push_out_drop(owners[from[k]]);
+	}
+	rspq_wait(); /* the dropped models' memory comes back once the RSP is done with them */
+	return drops;
+}
+
+/* room for a HUD image (n64_hud.c: one that found none in a view's HUD,
+asked for before the view's next recording begins -- not inside one: a
+model's release is a deferred call, which a recording cannot hold). On the
+PC Expansion cartridge with one or two players the tiers' push-out drops
+item, obstacle and decoration models for it -- never a view model or an
+actor -- the lowest tier first, the one drawn longest ago first, until the
+heap has a piece of image bytes and, besides it, pieces pieces of piece
+bytes (the recording's room); none where all of them could not make the
+room (push_out_can). The view's draws were flushed before its HUD, so none
+of this frame's is lost: an obstacle pushed out is drawn as its stand-in
+from the next frame. 1: room; 0: none, nothing pushed out; -1: none,
+though models were pushed out (the free total is not those pieces) */
+int n64_render_push_out_for_hud(unsigned long image, int pieces, unsigned long piece)
+{
+	if (n64_heap_has_pieces(image, pieces, piece))
+		return 1;
+#ifdef HALO_N64_PC_EXPANSION
+	int pushed = 0;
+
+	if (!models.header || !models.loaded || renderer.players > 2 ||
+		!push_out_can(-1, N64_TIER_ACTOR, image + (unsigned long)pieces * piece))
+		return 0;
+	while (!n64_heap_has_pieces(image, pieces, piece))
+	{
+		int other = push_out_choice(-1, N64_TIER_ACTOR);
+
+		if (other < 0)
+			return pushed ? -1 : 0;
+		pushed++;
+		push_out_drop(other);
+		rspq_wait(); /* the dropped model's memory comes back once the RSP is done with it */
+	}
+	return 1;
+#else
+	return 0;
+#endif
+}
+
+static int load_model(int index, int tier, int gun_first)
 {
 	struct model_record *model = &models.models[index];
 	struct loaded_model *loaded = &models.loaded[index];
 	unsigned long size = model->vertex_bytes + model->index_bytes;
 	int priority = first_person_model(index);
+	/* (on the PC Expansion cartridge with one or two players a model may
+	push out the models of the tiers below it -- the local player's own
+	view models and the actors push out decoration, obstacles and items,
+	an item pushes out decoration and obstacles; with OBSTACLE STAND-INS
+	off the view models also the obstacles, after the items -- so that
+	where the heap is short they are what gives way; none while its push-outs are held,
+	PUSH_HOLD_FRAMES: after a push-out that found no room, or a piece's
+	search that found no stretch to drop) */
+#ifdef HALO_N64_PC_EXPANSION
+	int tiers = renderer.players <= 2 && renderer.frame_index >= loaded->push_held;
+#else
+	int tiers = 0;
+#endif
+	unsigned long margin = MODEL_HEAP_MARGIN;
 	FILE *file;
+	int pushing = 0;
 
+#ifdef HALO_N64_PC_EXPANSION
+	/* (the local player's view model, kept: VIEW_MODEL_HEAP_MARGIN) */
+	if (priority && tier == N64_TIER_FIRST_PERSON)
+		margin = VIEW_MODEL_HEAP_MARGIN;
+#endif
 	loaded->last_drawn = renderer.frame_index;
+	/* (its tier: the highest a view drew it at in the frames in flight;
+	at the actors' rank a draw the gun may not push out, an actor's, above
+	one it may, gun_first) */
+	if (!loaded->tier_drawn || tier * 2 + !!gun_first <= loaded->tier * 2 + loaded->gun_first ||
+		loaded->tier_drawn + FRAMES_IN_FLIGHT < renderer.frame_index)
+	{
+		loaded->tier = (unsigned char)tier;
+		loaded->gun_first = (unsigned char)!!gun_first;
+		loaded->tier_drawn = renderer.frame_index;
+	}
 	if (loaded->data)
 		return 1;
+	/* (a model refused in this frame -- a texture or its push-out found no
+	room -- is not tried again until the next, the arms once pushed out not
+	for ARMS_HOLD_FRAMES: each try reads the model and its textures again) */
+	if (renderer.frame_index < loaded->texture_refused)
+	{
+		models.missing++;
+		return 0;
+	}
 	/* room: drop the models drawn longest ago, none drawn in the frames
-	still in flight (their textures go with the last model using them),
-	past the cache's size or while the heap is short: the model, its
-	recordings (~1 KB a batch), its textures (~2 KB each) and a margin, and
-	the model's data in one piece */
+	still in flight (their textures go with the last model using them; for
+	a kept view model, see below), past the cache's size or while the heap
+	is short: the model, its recordings (~1 KB a batch), its textures (~2 KB
+	each) and a margin, and the model's data in one piece. Where every model left was drawn in the
+	frames in flight and the total is short, a model of the first three
+	tiers pushes out a model of a lower tier all the same -- the lowest tier
+	first (decoration, then obstacles, whose stand-ins still show them, then
+	items), the one drawn longest ago first, one not drawn in this frame
+	before one drawn in it -- and never one of the first two tiers (but for
+	a view model with OBSTACLE STAND-INS off, the obstacles, which rank
+	with the actors then, after the items: render_object).
+	Decoration and obstacles pushed out push nothing out and keep the full
+	margin, so they come back only once the heap has room for them; an item
+	pushed out comes back where it can push out an obstacle's or
+	decoration's model, which cannot push it out in turn. Where only the
+	piece is short, such a model goes on to the piece's push-out below
+	(push_out_for_piece), which drops only the models in the one stretch that
+	would make it */
 	for (;;)
 	{
 		/* Count each shared texture once, using its actual asset buffer size.
 		Painted-panel subdivisions reuse textures across many batches. */
-		unsigned long needed = model_allocation(model);
+		unsigned long needed = model_allocation(model, margin);
 		/* (the total alone passed on a heap cut up by models loaded and
 		dropped: memalign then found no piece the model's size, nothing was
 		dropped for it, and the model was drawn as nothing frame after
@@ -2245,37 +2755,146 @@ static int load_model(int index)
 		memalign(16, size) needs: newlib's dlmalloc asks malloc for
 		request2size(size) + 16 + MINSIZE (16) bytes, a chunk of
 		(size + 51) & ~7 -- what malloc(size + 40) takes too) */
-		int short_of_heap = n64_heap_free() < needed || !n64_heap_has(size + 40);
+		int short_of_room = n64_heap_free() < needed;
+		int short_of_heap = short_of_room || !n64_heap_has(size + 40);
 
 		if (models.loaded_bytes + models.texture_bytes + size <= MODEL_CACHE_BYTES && !short_of_heap)
 			break;
-		int oldest = -1;
+		int oldest = -1, in_flight = -1;
+
+#ifdef HALO_N64_PC_EXPANSION
+		/* (a weapon switch: the view's previous view model gives way to the
+		new one at once, before any other model, switched_view_model) */
+		if (priority && tier == N64_TIER_FIRST_PERSON && (oldest = switched_view_model(index)) >= 0)
+		{
+			drop_model(oldest);
+			if (short_of_heap)
+				rspq_wait(); /* the dropped model's memory comes back once the RSP is done with it */
+			continue;
+		}
+#endif
 
 		for (int i = 0; i < models.header->model_count; i++)
 		{
 			if (!models.loaded[i].data || i == index || first_person_model(i))
 				continue;
-			if ((priority ? models.loaded[i].last_drawn < renderer.frame_index :
-				models.loaded[i].last_drawn + FRAMES_IN_FLIGHT < renderer.frame_index) &&
-				(oldest < 0 || models.loaded[i].last_drawn < models.loaded[oldest].last_drawn))
-				oldest = i;
+			if (models.loaded[i].last_drawn + FRAMES_IN_FLIGHT < renderer.frame_index)
+			{
+				if (oldest < 0 || models.loaded[i].last_drawn < models.loaded[oldest].last_drawn)
+					oldest = i;
+			}
+			/* (a kept view model's load: also a model drawn in the frames in
+			flight but not in this one. On the PC Expansion cartridge only one
+			the tiers' push-out may drop for it (push_out_may: items,
+			obstacles with a stand-in, decoration, and with OBSTACLE
+			STAND-INS off the obstacles), in the push-out's order;
+			on the custom cartridge the one drawn longest ago, as before) */
+			else if (priority && models.loaded[i].last_drawn < renderer.frame_index)
+			{
+#ifdef HALO_N64_PC_EXPANSION
+				if (push_out_may(i, index, tier, 0) && push_out_before(i, in_flight))
+#else
+				if (in_flight < 0 || models.loaded[i].last_drawn < models.loaded[in_flight].last_drawn)
+#endif
+					in_flight = i;
+			}
+		}
+#ifdef HALO_N64_PC_EXPANSION
+		/* (a model drawn in the frames in flight is taken for a kept view
+		model as the tiers' push-out would take it: only where the total is
+		short and all the models the push-out may drop for it make the room
+		(push_out_can); then the load is pushing, and if it is still short
+		after them its push-outs are held (PUSH_HOLD_FRAMES). Where only the
+		piece is short, the piece's push-out below drops the one stretch) */
+		if (in_flight >= 0 && oldest < 0 && !(tiers && short_of_room && push_out_can(index, tier, needed)))
+			in_flight = -1;
+		/* (and dropped as the tiers' push-out drops a model: counted with
+		the push-outs, and the arms not loaded again for ARMS_HOLD_FRAMES) */
+		int from_flight = oldest < 0 && in_flight >= 0;
+
+		if (from_flight)
+			pushing = 1;
+#endif
+		if (oldest < 0)
+			oldest = in_flight;
+		if (oldest < 0 && short_of_room && tiers && tier <= N64_TIER_ITEM)
+		{
+			/* (none pushed out where all of them could not make the room) */
+			if (!pushing && !push_out_can(index, tier, needed))
+			{
+				/* (not asked again in this frame, for another object or
+				view with this model: the answer would be the same) */
+				loaded->texture_refused = renderer.frame_index + 1;
+				models.missing++;
+				return 0;
+			}
+			pushing = 1;
+			oldest = push_out_choice(index, tier);
+			if (oldest >= 0)
+			{
+				push_out_drop(oldest);
+				if (short_of_heap)
+					rspq_wait(); /* the dropped model's memory comes back once the RSP is done with it */
+				continue;
+			}
 		}
 		if (oldest < 0)
 		{
-			if (short_of_heap)
+			/* (only the piece short, with the tiers: the piece's push-out
+			below) */
+			if (short_of_heap && (short_of_room || !tiers || tier > N64_TIER_ITEM))
 			{
+				/* (a push-out that dropped what it could and still found
+				the room short: the model not tried again in this frame, and
+				its push-outs held) */
+				if (pushing)
+				{
+					loaded->texture_refused = renderer.frame_index + 1;
+					loaded->push_held = renderer.frame_index + PUSH_HOLD_FRAMES;
+				}
 				models.missing++;
 				return 0;
 			}
 			break;
 		}
+#ifdef HALO_N64_PC_EXPANSION
+		if (from_flight)
+			push_out_drop(oldest);
+		else
+#endif
 		drop_model(oldest);
 		if (short_of_heap)
 			rspq_wait(); /* the dropped model's memory comes back once the RSP is done with it */
 	}
-	loaded->data = memalign(16, size);
-	loaded->setups = calloc(model->far_first + model->far_count, sizeof(rspq_block_t *));
-	loaded->blocks = calloc(model->far_first + model->far_count, sizeof(rspq_block_t *));
+	/* (the free total is not one piece: where the model's data finds none
+	its size, a model of the first three tiers pushes out the models whose
+	data lies in the one stretch of the heap that would hold it with the
+	fewest of them, at most PIECE_DROPS (push_out_for_piece), and tries once
+	more; none where there is no such stretch. Where it still finds none,
+	the model is not tried again in this frame, and pushes out nothing for
+	PUSH_HOLD_FRAMES) */
+	unsigned long heap_before;
+
+	for (int tries = 0;; tries++)
+	{
+		heap_before = n64_heap_free();
+		loaded->data = memalign(16, size);
+		loaded->setups = calloc(model->far_first + model->far_count, sizeof(rspq_block_t *));
+		loaded->blocks = calloc(model->far_first + model->far_count, sizeof(rspq_block_t *));
+		if ((loaded->data && loaded->setups && loaded->blocks) || !tiers || tier > N64_TIER_ITEM)
+			break;
+		free(loaded->data);
+		free(loaded->setups);
+		free(loaded->blocks);
+		loaded->data = NULL;
+		loaded->setups = NULL;
+		loaded->blocks = NULL;
+		if (tries || !push_out_for_piece(index, tier, size))
+		{
+			loaded->push_held = renderer.frame_index + PUSH_HOLD_FRAMES;
+			break;
+		}
+	}
 	char path[48];
 
 	snprintf(path, sizeof(path), "rom:/mdl/%.16s.bin", model->data_name);
@@ -2290,6 +2909,9 @@ static int load_model(int index)
 		loaded->data = NULL;
 		loaded->setups = NULL;
 		loaded->blocks = NULL;
+		/* (not tried again in this frame: the next try would find what this
+		one did) */
+		loaded->texture_refused = renderer.frame_index + 1;
 		models.missing++;
 		return 0;
 	}
@@ -2297,11 +2919,26 @@ static int load_model(int index)
 	data_cache_hit_writeback_invalidate(loaded->data, size);
 	models.loaded_bytes += size;
 	models.reads++;
+	unsigned long textures_read = 0;
 	for (int b = 0; b < model->far_first + model->far_count; b++)
 	{
 		struct model_batch *batch = &models.batches[model->first_batch + b];
+		/* (the heap a texture read here takes: not the model's own, cost16) */
+		int fresh = batch->texture >= 0 && batch->texture < models.header->texture_count && !models.sprites[batch->texture];
+		unsigned long before_texture = fresh ? n64_heap_free() : 0;
 		sprite_t *sprite = acquire_texture(batch->texture);
 		int run = models.runs ? models.runs[model->first_batch + b] : RUN_HEAD | 1;
+
+		if (fresh && sprite && before_texture > n64_heap_free())
+			textures_read += before_texture - n64_heap_free();
+
+		/* (a texture the heap had no piece for: the model refused, as one
+		that found no room -- asset_load would have stopped the game) */
+		if (!sprite && batch->texture >= 0 && batch->texture < models.header->texture_count)
+		{
+			refuse_model_load(index, b);
+			return 0;
+		}
 
 		/* (a run's batches all in its first's block: the rest have none,
 		mark_batch_runs) */
@@ -2343,6 +2980,11 @@ static int load_model(int index)
 			t3d_tri_sync();
 		}
 		loaded->blocks[b] = rspq_block_end();
+	}
+	{
+		unsigned long used = heap_before > n64_heap_free() + textures_read ? heap_before - n64_heap_free() - textures_read : 0;
+
+		loaded->cost16 = (uint16_t)((used + 15) / 16 < 0xFFFF ? (used + 15) / 16 : 0xFFFF);
 	}
 	return 1;
 }
@@ -2525,6 +3167,7 @@ static void load_models(const char *map_name)
 
 void n64_render_unload_level(void)
 {
+	standin_unload();
 	if (level.data)
 	{
 		rspq_wait();
@@ -2800,6 +3443,12 @@ static void build_level_groups(void)
 	debugf("n64: level batches in %d groups\n", group_count);
 }
 
+/* the game's local players, before its level loads (load_model's tiers) */
+void n64_render_set_players(int count)
+{
+	renderer.players = count;
+}
+
 int n64_render_load_level(const char *map_name, int low)
 {
 	char path[64];
@@ -2996,6 +3645,7 @@ int n64_render_load_level(const char *map_name, int low)
 		if (!models.data)
 			load_models(map_name);
 	}
+	standin_load(map_name);
 	debugf("n64: level %s: %d clusters, %d batches, %lu KB, %lu KB of heap left\n", map_name,
 		level.header->cluster_count, level.header->batch_count, (unsigned long)size / 1024,
 		n64_heap_free() / 1024);
@@ -3116,6 +3766,11 @@ void n64_render_frame_begin(void)
 			n64_heap_free() / 1024, largest / 1024, pieces);
 		n64_fatal(message);
 	}
+	/* (the map's display and level made, and the frame's z-buffer -- made
+	when first asked for: the bytes the converter left out of its image
+	are the heap's) */
+	if (level.data && display_mode != DISPLAY_MENU && (tried_high_detail || !(want_high_detail || want_hud_detail)))
+		n64_map_give_back();
 	if (debug_rdpq_log_frame)
 	{
 		/* (rdpq_debug_log counts: on once, off once) */
@@ -3151,7 +3806,7 @@ void n64_render_frame_begin(void)
 		for (int i = 0; i < models.header->model_count; i++)
 		{
 			if (first_person_model(i))
-				load_model(i);
+				load_model(i, N64_TIER_FIRST_PERSON, 0);
 		}
 	}
 #endif
@@ -4422,8 +5077,38 @@ static struct queued_draw
 } queued_draws[MAXIMUM_QUEUED_DRAWS];
 static uint16_t queued_order[MAXIMUM_QUEUED_DRAWS];
 static int queued_count;
+/* (a draw whose model was dropped after it was queued: drop_queued_draws) */
+#define DRAW_DROPPED 0xFFFF
 
 static void flush_draws(void);
+/* the obstacle render_object is queueing the draws of, in standin_pending
+(NULL: none) */
+static const struct n64_object *standin_queueing;
+static void standin_pending_add(const struct n64_object *object, int model_index);
+
+/* a model dropped with draws of it still queued in this frame (drop_model
+flushes the queue first, so none should be): those draws are not drawn,
+whatever the model's slot holds by the flush -- an obstacle's are its
+stand-in (standin_pending) */
+static void drop_queued_draws(int model_index)
+{
+	for (int i = 0; i < queued_count; i++)
+	{
+		if (queued_draws[i].model == model_index)
+			queued_draws[i].model = DRAW_DROPPED;
+	}
+}
+
+/* whether a draw of the model is queued (drop_model) */
+static int queued_draws_of(int model_index)
+{
+	for (int i = 0; i < queued_count; i++)
+	{
+		if (queued_draws[i].model == model_index)
+			return 1;
+	}
+	return 0;
+}
 
 /* the batches drawn from a run's first batch (global index): its run */
 static inline int batch_run_length(int b)
@@ -4442,7 +5127,13 @@ static void queue_draw(int model_index, int b, unsigned long color, T3DMat4FP *m
 	struct queued_draw *draw;
 
 	if (queued_count == MAXIMUM_QUEUED_DRAWS)
+	{
 		flush_draws();
+		/* (the obstacle being queued is one the push-out may still drop in
+		this view: kept in standin_pending past the flush, which emptied it) */
+		if (standin_queueing)
+			standin_pending_add(standin_queueing, model_index);
+	}
 	draw = &queued_draws[queued_count];
 	draw->order = ((uint32_t)!(batch->flags & MATERIAL_SKY) << 31) | ((uint32_t)mode << 26) |
 		((uint32_t)(batch->texture & 0xFFFF) << 10) | (batch->flags & 0x3FF);
@@ -4519,16 +5210,459 @@ static void sort_draws(void)
 		memcpy(queued_order, from, n * sizeof(queued_order[0]));
 }
 
+/* Obstacle stand-ins (tools/n64/standins.py): an obstacle -- scenery, a
+machine, a control or a light fixture with a collision model -- whose model
+has no room in the cache is drawn as hulls of its collision, in its
+model's average colour, so that nothing a player runs into is unseen. A
+hull per collision node and BSP (one per permutation of the node's region:
+a boulder's five shapes), the one the object collides as; a tree's canopy
+("leaves" surfaces) see-through, as it stops players, vehicles and shots
+but not sight. Read with the level (levels/<map>.sti), freed with it. */
+#define STANDIN_ALPHA 112
+#define STANDIN_QUEUE 64
+/* (the most parts a type has: a queued stand-in's parts are a 32-bit mask; tools/n64/standins.py writes no more) */
+#define STANDIN_TYPE_PARTS 32
+struct standin_type
+{
+	uint16_t definition, first_part, part_count, unused;
+};
+struct standin_part
+{
+	uint16_t first_pair, first_triangle;
+	uint8_t node;
+	int8_t region;
+	uint8_t bsp, bsp_count, flags, vertex_count, triangle_count, unused;
+};
+static struct
+{
+	int type_count;
+	const struct standin_type *types;
+	const struct standin_part *parts;
+	const T3DVertPacked *pairs;
+	const uint8_t *triangles;
+	void *block;
+	unsigned long block_bytes;
+} standins;
+static struct
+{
+	short type, node_count;
+	uint32_t parts;
+	T3DMat4FP *matrices;
+} standin_queued[STANDIN_QUEUE];
+static int standin_queued_count;
+/* (flush_draws is drawing: a full queue is drawn as it is) */
+static int standin_flushing;
+/* the obstacles whose models were drawn in this view, until the flush,
+while the tiers' push-out can drop a model drawn in the frame: one whose
+model it dropped after its draws were queued (its generation since moved
+on) is drawn as its stand-in at the flush instead, once
+(standin_pending_flush) */
+static struct
+{
+	const struct n64_object *object;
+	uint16_t model, generation;
+} standin_pending[STANDIN_QUEUE];
+static int standin_pending_count;
+static void standin_flush(void);
+
+static unsigned long display_own_blocks(void)
+{
+	/* (and the model records' fields this branch adds after v0.6.7's, from
+	texture_refused on) */
+	return standins.block_bytes + (models.header && models.loaded ? (unsigned long)models.header->model_count *
+		(sizeof(struct loaded_model) - offsetof(struct loaded_model, texture_refused)) : 0);
+}
+
+static void standin_unload(void)
+{
+	if (standins.block)
+		rspq_wait(); /* (the RSP done with its vertices) */
+	free(standins.block);
+	memset(&standins, 0, sizeof(standins));
+	standin_queued_count = 0;
+}
+
+static unsigned standin_u16(const uint8_t *p)
+{
+	return (p[0] << 8) | p[1];
+}
+
+/* (each type's parts, each part's vertices and triangles, and each
+triangle's vertex numbers within the file's tables and tiny3d's vertex
+cache) */
+static int standin_valid(const uint8_t *type_table, const uint8_t *part_table, const uint8_t *triangle_table,
+	int types, int parts, int vertices, int triangles)
+{
+	for (int t = 0; t < types; t++)
+	{
+		if (standin_u16(type_table + 8 * t + 4) > STANDIN_TYPE_PARTS ||
+			standin_u16(type_table + 8 * t + 2) + standin_u16(type_table + 8 * t + 4) > parts)
+			return 0;
+	}
+	for (int p = 0; p < parts; p++)
+	{
+		const uint8_t *e = part_table + 16 * p;
+		int count = e[5], first_triangle = standin_u16(e + 10);
+
+		if (count > T3D_VERTEX_CACHE_SIZE || standin_u16(e + 8) + count > vertices || first_triangle + e[6] > triangles)
+			return 0;
+		for (int k = 0; k < 3 * e[6]; k++)
+		{
+			if (triangle_table[3 * first_triangle + k] >= count)
+				return 0;
+		}
+	}
+	return 1;
+}
+
+/* OBSTACLE STAND-INS (SETTINGS, default on): off, standin_load reads no
+map's stand-ins, so none is drawn and none takes the heap */
+static int standins_on = 1;
+
+void n64_render_set_standins(int on)
+{
+	standins_on = on != 0;
+}
+
+static void standin_load(const char *map_name)
+{
+	char path[64];
+	FILE *file;
+	long size;
+	uint8_t *raw;
+
+	standin_unload();
+	if (!standins_on)
+	{
+		debugf("n64: stand-ins off (OBSTACLE STAND-INS)\n");
+		return;
+	}
+	snprintf(path, sizeof(path), "rom:/levels/%s.sti", map_name);
+	file = open_direct(path);
+	if (!file)
+		return;
+	fseek(file, 0, SEEK_END);
+	size = ftell(file);
+	fseek(file, 0, SEEK_SET);
+	raw = size >= 16 ? malloc(size) : NULL;
+	if (!raw || fread(raw, 1, size, file) != (size_t)size || memcmp(raw, "H64S", 4) || standin_u16(raw + 4) != 1)
+	{
+		debugf("n64: %s left out: not this build's stand-ins (tools/n64/standins.py)\n", path);
+		free(raw);
+		fclose(file);
+		return;
+	}
+	fclose(file);
+	int types = standin_u16(raw + 6), parts = standin_u16(raw + 8), triangles = standin_u16(raw + 12);
+	const uint8_t *type_table = raw + 16, *part_table = type_table + 8 * types;
+	const uint8_t *vertex_table = part_table + 16 * parts, *triangle_table = vertex_table + 8 * standin_u16(raw + 10);
+	int pairs = 0;
+
+	/* (the tables within the file and consistent before any is read) */
+	if ((long)(triangle_table + triangles * 3 - raw) > size ||
+		!standin_valid(type_table, part_table, triangle_table, types, parts, standin_u16(raw + 10), triangles))
+	{
+		debugf("n64: %s left out: damaged\n", path);
+		free(raw);
+		return;
+	}
+	for (int p = 0; p < parts; p++)
+		pairs += (part_table[16 * p + 5] + 1) / 2;
+	/* one block: the types, the parts, the vertices as tiny3d loads them
+	(16-byte aligned: a table that was not cost an emulated exception for
+	each of its pointers), the triangles */
+	unsigned long parts_at = (types * sizeof(struct standin_type) + 15) & ~15UL;
+	unsigned long pairs_at = (parts_at + parts * sizeof(struct standin_part) + 15) & ~15UL;
+	unsigned long bytes = pairs_at + pairs * sizeof(T3DVertPacked) + triangles * 3;
+	uint8_t *block = memalign(16, bytes);
+
+	if (!block)
+	{
+		free(block);
+		free(raw);
+		return;
+	}
+	struct standin_type *type = (struct standin_type *)block;
+	struct standin_part *part = (struct standin_part *)(block + parts_at);
+	T3DVertPacked *pair = (T3DVertPacked *)(block + pairs_at);
+	uint8_t *triangle = block + pairs_at + pairs * sizeof(T3DVertPacked);
+	int next_pair = 0;
+
+	for (int t = 0; t < types; t++)
+	{
+		type[t].definition = standin_u16(type_table + 8 * t);
+		type[t].first_part = standin_u16(type_table + 8 * t + 2);
+		type[t].part_count = standin_u16(type_table + 8 * t + 4);
+		type[t].unused = 0;
+	}
+	/* (in the order of their definitions: standin_type_of) */
+	for (int t = 1; t < types; t++)
+	{
+		struct standin_type moved = type[t];
+		int u = t;
+
+		for (; u > 0 && type[u - 1].definition > moved.definition; u--)
+			type[u] = type[u - 1];
+		type[u] = moved;
+	}
+	for (int p = 0; p < parts; p++)
+	{
+		const uint8_t *e = part_table + 16 * p;
+		const uint8_t *v = vertex_table + 8 * standin_u16(e + 8);
+		int count = e[5];
+
+		part[p] = (struct standin_part){
+			.first_pair = (uint16_t)next_pair, .first_triangle = (uint16_t)standin_u16(e + 10), .node = e[0],
+			.region = (int8_t)e[1], .bsp = e[2], .bsp_count = e[3], .flags = e[4], .vertex_count = (uint8_t)count,
+			.triangle_count = e[6],
+		};
+		/* (vertices in 8 bytes, x y z and a shade, made tiny3d's 16 in
+		pairs, coloured with the part's colour) */
+		for (int k = 0; k < count; k++, v += 8)
+		{
+			T3DVertPacked *q = &pair[next_pair + k / 2];
+			int16_t x = (int16_t)standin_u16(v), y = (int16_t)standin_u16(v + 2), z = (int16_t)standin_u16(v + 4);
+			uint32_t rgba = ((uint32_t)(e[12] * v[6] / 255) << 24) | ((uint32_t)(e[13] * v[6] / 255) << 16) |
+				((uint32_t)(e[14] * v[6] / 255) << 8) | 0xFF;
+
+			if (k % 2 == 0)
+			{
+				*q = (T3DVertPacked){.posA = {x, y, z}, .rgbaA = rgba, .posB = {x, y, z}, .rgbaB = rgba};
+			}
+			else
+			{
+				q->posB[0] = x, q->posB[1] = y, q->posB[2] = z;
+				q->rgbaB = rgba;
+			}
+		}
+		next_pair += (count + 1) / 2;
+	}
+	memcpy(triangle, triangle_table, triangles * 3);
+	data_cache_hit_writeback(block, bytes);
+	free(raw);
+	standins.block = block;
+	standins.block_bytes = bytes;
+	standins.types = type;
+	standins.parts = part;
+	standins.pairs = pair;
+	standins.triangles = triangle;
+	standins.type_count = types;
+	debugf("n64: stand-ins for %d obstacle kinds: %d parts, %d triangles, %lu bytes\n", types, parts, triangles, bytes);
+}
+
+/* an obstacle kind's stand-in (n64_object's obstacle_definition); NULL: none
+(no stand-ins for this map, or none for this kind) */
+static const struct standin_type *standin_type_of(unsigned obstacle_definition)
+{
+	int low = 0, high = standins.type_count - 1;
+
+	while (low <= high)
+	{
+		int middle = (low + high) / 2;
+		unsigned definition = standins.types[middle].definition + 1u;
+
+		if (definition == obstacle_definition)
+			return standins.types[middle].part_count ? &standins.types[middle] : NULL;
+		if (definition < obstacle_definition)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	return NULL;
+}
+
+/* the parts of an obstacle's stand-in that the object collides as (each
+part's region's permutation pinned to the node's BSPs, as
+collision_models.c does), one bit each, and the nodes they need; 0: none
+(no stand-in for its kind, or no part for its permutations and nodes) */
+static uint32_t standin_parts(const struct n64_object *object, const struct standin_type *type, int *node_total)
+{
+	uint32_t chosen = 0;
+	int nodes = 0;
+
+	for (int p = 0; type && p < type->part_count && p < STANDIN_TYPE_PARTS; p++)
+	{
+		const struct standin_part *part = &standins.parts[type->first_part + p];
+
+		if (part->node >= object->node_count)
+			continue;
+		if (part->region >= 0)
+		{
+			int permutation = part->region < object->region_count ? object->region_permutations[part->region] : 0;
+
+			if (permutation == 0xFF)
+				continue;
+			if (permutation >= part->bsp_count)
+				permutation = part->bsp_count - 1;
+			if (permutation != part->bsp)
+				continue;
+		}
+		chosen |= 1UL << p;
+		if (part->node + 1 > nodes)
+			nodes = part->node + 1;
+	}
+	*node_total = nodes;
+	return chosen;
+}
+
+/* an obstacle whose model was not drawn: its stand-in's parts that the
+object collides as (standin_parts) queued with its nodes' matrices; 0: none */
+static int standin_queue(const struct n64_object *object)
+{
+	const struct standin_type *type = standin_type_of(object->obstacle_definition);
+	int nodes = 0;
+	uint32_t chosen = standin_parts(object, type, &nodes);
+
+	if (!chosen || renderer.matrix_count + nodes > MATRICES_PER_FRAME)
+		return 0;
+	/* (a full queue drawn first, with the models queued before it: in a
+	flush, the models are drawn already) */
+	if (standin_queued_count == STANDIN_QUEUE)
+	{
+		if (standin_flushing)
+			standin_flush();
+		else
+			flush_draws();
+	}
+	T3DMat4FP *matrices = renderer.matrices[renderer.frame_index % FRAMES_IN_FLIGHT] + renderer.matrix_count;
+
+	renderer.matrix_count += nodes;
+	for (int n = 0; n < nodes; n++)
+	{
+		/* (as render_object converts a node's matrix) */
+		const float *m = object->node_matrices + n * 13;
+		float axes = m[0] * (WORLD_SCALE / MODEL_SCALE * 65536.0f);
+		float rows[4][3] = {
+			{m[1] * axes, m[2] * axes, m[3] * axes},
+			{m[4] * axes, m[5] * axes, m[6] * axes},
+			{m[7] * axes, m[8] * axes, m[9] * axes},
+			{m[10] * (WORLD_SCALE * 65536.0f), m[11] * (WORLD_SCALE * 65536.0f), m[12] * (WORLD_SCALE * 65536.0f)},
+		};
+
+		for (int y = 0; y < 4; y++)
+		{
+			typedef uint64_t __attribute__((may_alias)) fixed_words;
+			uint32_t fixed0 = (uint32_t)(int32_t)rows[y][0];
+			uint32_t fixed1 = (uint32_t)(int32_t)rows[y][1];
+			uint32_t fixed2 = (uint32_t)(int32_t)rows[y][2];
+			uint64_t integers = (fixed0 & 0xFFFF0000) | (fixed1 >> 16);
+			uint64_t fractions = (fixed0 << 16) | (fixed1 & 0xFFFF);
+
+			integers <<= 32;
+			integers |= (fixed2 & 0xFFFF0000) | (y == 3);
+			fractions <<= 32;
+			fractions |= fixed2 << 16;
+			*(fixed_words *)matrices[n].m[y].i = integers;
+			*(fixed_words *)matrices[n].m[y].f = fractions;
+		}
+	}
+	standin_queued[standin_queued_count].type = (short)(type - standins.types);
+	standin_queued[standin_queued_count].node_count = (short)nodes;
+	standin_queued[standin_queued_count].parts = chosen;
+	standin_queued[standin_queued_count].matrices = matrices;
+	standin_queued_count++;
+	return 1;
+}
+
+static void standin_pending_add(const struct n64_object *object, int model_index)
+{
+	if (standin_pending_count == STANDIN_QUEUE)
+	{
+		standin_pending_lost = 1;
+		return;
+	}
+	standin_pending[standin_pending_count].object = object;
+	standin_pending[standin_pending_count].model = (uint16_t)model_index;
+	standin_pending[standin_pending_count].generation = models.loaded[model_index].generation;
+	standin_pending_count++;
+}
+
+/* (the view's models drawn: an obstacle whose model was dropped after its
+draws were queued, its stand-in) */
+static void standin_pending_flush(void)
+{
+	standin_flushing = 1;
+	for (int i = 0; i < standin_pending_count; i++)
+	{
+		const struct loaded_model *loaded = &models.loaded[standin_pending[i].model];
+
+		if (!loaded->data || loaded->generation != standin_pending[i].generation)
+			standin_queue(standin_pending[i].object);
+	}
+	standin_flushing = 0;
+	standin_pending_count = 0;
+	standin_pending_lost = 0;
+}
+
+/* the queued stand-ins after the view's models: the solid parts, then the
+see-through ones (depth tested, not written); the models' mode and texture
+set again after them */
+static void standin_flush(void)
+{
+	if (!standin_queued_count)
+		return;
+	record_model_modes(0);
+	for (int see_through = 0; see_through < 2; see_through++)
+	{
+		int begun = 0;
+
+		for (int i = 0; i < standin_queued_count; i++)
+		{
+			const struct standin_type *type = &standins.types[standin_queued[i].type];
+
+			for (int p = 0; p < type->part_count && p < STANDIN_TYPE_PARTS; p++)
+			{
+				const struct standin_part *part = &standins.parts[type->first_part + p];
+
+				if (!(standin_queued[i].parts & (1UL << p)) || (part->flags & 1) != see_through)
+					continue;
+				if (!begun)
+				{
+					rspq_block_run(model_modes[model_mode(NULL, 0, see_through ? STANDIN_ALPHA : 255)]);
+					if (see_through)
+						rdpq_set_prim_color(RGBA32(255, 255, 255, STANDIN_ALPHA));
+					t3d_state_set_drawflags(T3D_FLAG_SHADED | T3D_FLAG_DEPTH);
+					t3d_matrix_push_pos(1);
+					begun = 1;
+				}
+				t3d_matrix_set(&standin_queued[i].matrices[part->node], true);
+				t3d_vert_load(standins.pairs + part->first_pair, 0, part->vertex_count);
+				for (int k = 0; k < part->triangle_count; k++)
+				{
+					const uint8_t *t = standins.triangles + 3 * (part->first_triangle + k);
+
+					t3d_tri_draw(t[0], t[1], t[2]);
+				}
+				t3d_tri_sync();
+				renderer.triangles += part->triangle_count;
+			}
+		}
+		if (begun)
+			t3d_matrix_pop(1);
+	}
+	standin_queued_count = 0;
+	current_model_mode = -1;
+	renderer.current_texture = -2;
+	current_color = 0xFFFFFFFF;
+}
+
 static void flush_draws(void)
 {
 	T3DMat4FP *current_matrices = NULL;
 
 	if (!queued_count)
+	{
+		standin_pending_flush();
+		standin_flush();
 		return;
+	}
 	sort_draws();
 	for (int i = 0; i < queued_count; i++)
 	{
 		struct queued_draw *draw = &queued_draws[queued_order[i]];
+
+		if (draw->model == DRAW_DROPPED)
+			continue;
 		struct model_record *model = &models.models[draw->model];
 		struct loaded_model *loaded = &models.loaded[draw->model];
 		struct model_batch *batch = &models.batches[model->first_batch + draw->batch];
@@ -4558,6 +5692,8 @@ static void flush_draws(void)
 	if (current_matrices)
 		t3d_matrix_pop(1);
 	queued_count = 0;
+	standin_pending_flush();
+	standin_flush();
 }
 
 static void render_object(const struct n64_object *object)
@@ -4616,12 +5752,63 @@ static void render_object(const struct n64_object *object)
 		return;
 	object_in_view = 1;
 	node_count = object->node_count < model->node_count ? object->node_count : model->node_count;
+	standin_queueing = NULL;
 	if (node_count <= 0 || renderer.matrix_count + model->node_count > MATRICES_PER_FRAME)
 		return;
-	if (renderer.first_person)
+	/* (the view models kept: the weapon, not the arms, n64_render_game.c;
+	on the PC Expansion cartridge only the arms rank with decoration in a
+	first-person view) */
+	if (renderer.first_person && object->tier == N64_TIER_FIRST_PERSON)
+	{
 		models.loaded[model - models.models].first_person_drawn = renderer.frame_index;
-	if (!load_model(model - models.models))
+		models.loaded[model - models.models].first_person_view = (unsigned char)(renderer.view_count - 1);
+	}
+	models.loaded[model - models.models].arms = renderer.first_person && object->tier == N64_TIER_DECORATION;
+	int tier = object->tier;
+#ifdef HALO_N64_PC_EXPANSION
+	/* (an obstacle with no stand-in to show -- none for this map (the
+	converter made none, or OBSTACLE STAND-INS is off: every obstacle then),
+	none for its kind: no hull, or none the converter could make, or no part
+	for the object's permutations and nodes -- ranks with the actors:
+	pushed out, nothing would show it. With OBSTACLE STAND-INS on, no
+	push-out drops its model, not the gun's, an actor's or the HUD's, and
+	an obstacle is always shown. With the row off, which puts the gun
+	first, the local player's view model's load may push it out, after
+	decoration and items (gun_first, push_out_may; kept with the tier,
+	load_model: not where a view drew the model as an actor in the frames
+	in flight), and it is drawn as nothing until it loads again; no other
+	push-out drops it, not an actor's, an item's or the HUD's. Its own load
+	may push out items, obstacles and decoration, as an actor's) */
+	int gun_first = 0;
+
+	if (tier == N64_TIER_OBSTACLE)
+	{
+		int nodes;
+
+		if (!standin_parts(object, standin_type_of(object->obstacle_definition), &nodes))
+		{
+			tier = N64_TIER_ACTOR;
+			gun_first = !standins_on;
+		}
+	}
+#else
+	int gun_first = 0;
+#endif
+	if (!load_model(model - models.models, tier, gun_first))
+	{
+		if (object->obstacle_definition)
+			standin_queue(object);
 		return;
+	}
+#ifdef HALO_N64_PC_EXPANSION
+	/* (an obstacle whose model the tiers' push-out may yet drop in this
+	frame, load_model) */
+	if (object->obstacle_definition && standins.type_count && renderer.players <= 2)
+	{
+		standin_pending_add(object, model - models.models);
+		standin_queueing = object;
+	}
+#endif
 	/* an object seen in an earlier view of this frame has its matrices */
 	matrices = NULL;
 	if (object->key)
@@ -4726,6 +5913,7 @@ converted_already:
 		{
 			queue_draw(model - models.models, b, color, matrices);
 		}
+		standin_queueing = NULL;
 		return;
 	}
 	for (int r = 0; r < model->region_count; r++)
@@ -4746,6 +5934,7 @@ converted_already:
 		for (int b = geometry->first_batch; b < geometry->first_batch + geometry->batch_count; b += batch_run_length(b))
 			queue_draw(model - models.models, b - model->first_batch, color, matrices);
 	}
+	standin_queueing = NULL;
 }
 
 /* without the game's HUD (debug_no_hud), a crosshair in the middle of
@@ -4934,11 +6123,12 @@ void n64_render_frame_end(void)
 
 			sys_get_heap_stats(&heap);
 			debugf("render: frame %lu, per frame %lu clusters, %lu batches, %lu objects, %lu triangles; heap %d KB free, stack %lu KB used; "
-				"models %lu KB (%lu reads), textures %lu KB (%lu reads); %lu exceptions emulated\n",
+				"models %lu KB (%lu reads), textures %lu KB (%lu reads), %lu refused for a texture, %lu pushed out; "
+				"%lu exceptions emulated\n",
 				renderer.frame_index, renderer.clusters / 120, renderer.batches / 120, renderer.objects / 120,
 				renderer.triangles / 120, heap.free / 1024, n64_stack_used() / 1024,
 				models.loaded_bytes / 1024, models.reads, models.texture_bytes / 1024, models.texture_reads,
-				n64_exceptions_emulated - exceptions_before);
+				models.texture_refusals, models.pushed_out, n64_exceptions_emulated - exceptions_before);
 			if (level.stream)
 				debugf("render: level clusters %lu KB in memory, %lu read\n", level.resident_bytes / 1024,
 					level.stream_reads);

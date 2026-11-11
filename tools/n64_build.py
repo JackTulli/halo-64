@@ -379,7 +379,8 @@ def main(argv=None):
         for name in maps:
             out_map = fsdir / "maps" / f"{name}.map"
             outputs = [posix(out_map), posix(fsdir / "levels" / f"{name}.lvl"), posix(fsdir / "maps" / f"{name}.anims"),
-                       posix(variant_dir / "sound" / f"{name}.slist"), posix(fsdir / "fx" / f"{name}.fx")]
+                       posix(variant_dir / "sound" / f"{name}.slist"), posix(fsdir / "fx" / f"{name}.fx"),
+                       posix(fsdir / "levels" / f"{name}.sti")]
             if campaign:
                 outputs.append(posix(fsdir / "levels" / f"{name}.enc"))
             else:
