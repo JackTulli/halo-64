@@ -31,6 +31,7 @@ them, ogg2wav or ffmpeg); the input maps are only read.
 """
 
 import argparse
+import array
 import json
 import os
 from pathlib import Path
@@ -40,6 +41,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import types
 import wave
 
 from . import pc_prepare
@@ -310,10 +312,252 @@ def silent_sound(space, name):
     space.fixed(f"stand-in: a silent sound for {name}.sound")
 
 
+# a sound's formats (SoundFormat): 16-bit PCM (big-endian in a tag file),
+# Xbox ADPCM (36-byte blocks a channel), IMA ADPCM, Ogg Vorbis
+PCM, XBOX_ADPCM, OGG_VORBIS = 0, 1, 3
+FORMAT_NAMES = {0: "16-bit PCM", 1: "Xbox ADPCM", 2: "IMA ADPCM", 3: "Ogg Vorbis"}
+
+
+def _big_endian(pcm):
+    """little-endian 16-bit samples made big-endian (a tag file's)"""
+    samples = array.array("h")
+    samples.frombytes(pcm)
+    if sys.byteorder == "little":
+        samples.byteswap()
+    return samples.tobytes()
+
+
+# what a repair that fails raises (a tag file that doesn't match its
+# definition, a stream that won't decode, a file not there): the stand-in
+# is made instead
+REPAIR_ERRORS = (OSError, ValueError, KeyError, IndexError, struct.error, wave.Error, CEPrepareError)
+
+
+def _failure(error):
+    return f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
+
+
+def repair_sound(space, tag):
+    """a sound tag the Xbox build won't take, made whole: a permutation of a
+    size no whole number of samples (Xbox ADPCM: blocks) makes cut to its
+    last whole one; permutations of other formats than the sound's, all
+    decoded to 16-bit PCM, the sound's too. (True, what was done), or
+    (False, why it can't be): any failure of the repair is the second, and
+    the caller makes the silent stand-in"""
+    try:
+        return _repair_sound(space, tag)
+    except REPAIR_ERRORS as error:
+        return False, _failure(error)
+
+
+def _repair_sound(space, tag):
+    from .sounds import decode_xbox_adpcm
+    from .tagfile import TagFile
+    sound = TagFile(space.tags / tag)
+    root = sound.root
+    channels = 2 if root.get("channel count") == 1 else 1
+    permutations = [p for r in root.blocks("pitch ranges") for p in r.blocks("permutations")]
+    formats = {p.get("format") for p in permutations}
+    unit = {PCM: 2 * channels, XBOX_ADPCM: 36 * channels}
+    if formats == {root.get("format")} and root.get("format") in unit:
+        size = unit[root.get("format")]
+        cut = 0
+        for permutation in permutations:
+            samples = permutation.data("samples")
+            if len(samples) % size:
+                permutation.set_data("samples", samples[:len(samples) - len(samples) % size])
+                if root.get("format") == PCM:
+                    permutation.set("buffer size", len(samples) - len(samples) % size)
+                cut += 1
+        if not cut:
+            return False, "no permutation to cut"
+        sound.save()
+        return True, (f"{cut} of {len(permutations)} permutation{'s' if len(permutations) != 1 else ''} of {tag} "
+                      f"cut to {'its' if cut == 1 else 'their'} last whole "
+                      f"{'sample' if root.get('format') == PCM else 'block'}")
+    for i, permutation in enumerate(permutations):
+        kind, samples = permutation.get("format"), permutation.data("samples")
+        if kind == PCM:
+            pcm = samples[:len(samples) - len(samples) % unit[PCM]]
+        elif kind == XBOX_ADPCM:
+            pcm = _big_endian(decode_xbox_adpcm(samples[:len(samples) - len(samples) % unit[XBOX_ADPCM]], channels))
+        elif kind == OGG_VORBIS:
+            decoded = space.audio / "decoded" / f"{i}.wav"
+            decoded.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                space.decode_ogg(samples, decoded)
+                with wave.open(str(decoded), "rb") as stream:
+                    if stream.getnchannels() != channels or stream.getsampwidth() != 2:
+                        return False, f"permutation #{i}'s Ogg Vorbis stream has {stream.getnchannels()} channels"
+                    pcm = _big_endian(stream.readframes(stream.getnframes()))
+            finally:
+                decoded.unlink(missing_ok=True)
+        else:
+            return False, f"permutation #{i} is {FORMAT_NAMES.get(kind, f'format {kind}')}"
+        permutation.set("format", PCM)
+        permutation.set_data("samples", pcm)
+        permutation.set("buffer size", len(pcm))
+    old = sorted(FORMAT_NAMES.get(f, str(f)) for f in formats | {root.get("format")})
+    root.set("format", PCM)
+    sound.save()
+    return True, (f"{len(permutations)} permutation{'s' if len(permutations) != 1 else ''} of {tag} "
+                  f"({', '.join(old)}) made 16-bit PCM")
+
+
+# the Xbox's largest images (Invader's limits for the Xbox build), by
+# BitmapDataType: 2D textures 2048x2048, 3D textures 256x256x256, cube maps
+# 512x512 (each face), "white" 2048x2048
+BITMAP_LIMITS = {0: 2048, 1: 256, 2: 512, 3: 2048}
+# BitmapDataFormat: bits a pixel, DXT1/3/5 bytes a 4x4 block
+PIXEL_BITS = {0: 8, 1: 8, 2: 8, 3: 16, 6: 16, 8: 16, 9: 16, 10: 32, 11: 32, 17: 8}
+BLOCK_BYTES = {14: 8, 15: 16, 16: 16}
+X8R8G8B8, A8R8G8B8 = 10, 11
+COMPRESSED, PALETTIZED = 1 << 1, 1 << 2
+
+
+def _image_size(kind, width, height, depth):
+    if kind in BLOCK_BYTES:
+        return max(1, (width + 3) // 4) * max(1, (height + 3) // 4) * depth * BLOCK_BYTES[kind]
+    return width * height * depth * PIXEL_BITS[kind] // 8
+
+
+def shrink_bitmap(space, tag):
+    """a bitmap tag with images bigger than the Xbox's made the Xbox's size
+    (the N64 converter makes them far smaller anyway): an image's larger
+    mipmaps dropped, or (a 2D image without mipmaps that small) the image
+    halved until it fits, 32-bit (A8R8G8B8, X8R8G8B8 kept), its mipmaps
+    dropped. (True, what was done), or (False, why it can't be): any
+    failure of the repair is the second, and the caller makes the white
+    stand-in"""
+    try:
+        return _shrink_bitmap(space, tag)
+    except REPAIR_ERRORS + (ImportError,) as error:
+        return False, _failure(error)
+
+
+def _shrink_bitmap(space, tag):
+    from PIL import Image
+    from .bitmaps import FORMATS, decode
+    from .tagfile import TagFile
+    bitmap = TagFile(space.tags / tag)
+    pixels = bitmap.root.data("processed pixel data")
+    out, done = bytearray(), []
+    for index, image in enumerate(bitmap.root.blocks("bitmap data")):
+        width, height, depth = image.get("width"), image.get("height"), image.get("depth")
+        shape, kind, mipmaps = image.get("type"), image.get("format"), image.get("mipmap count")
+        if shape not in BITMAP_LIMITS or kind not in PIXEL_BITS and kind not in BLOCK_BYTES:
+            return False, f"image #{index} is of type {shape}, format {kind}"
+        faces = 6 if shape == 2 else 1
+        sizes = [_image_size(kind, max(1, width >> m), max(1, height >> m), max(1, depth >> m)) * faces
+                 for m in range(mipmaps + 1)]
+        start = image.get("pixel data offset")
+        data = pixels[start:start + sum(sizes)]
+        if len(data) != sum(sizes):
+            return False, f"image #{index}'s pixels are past the tag's"
+        image.set("pixel data offset", len(out))
+        limit = BITMAP_LIMITS[shape]
+        drop = 0
+        while max(width >> drop, height >> drop, depth >> drop if shape == 1 else 0) > limit:
+            drop += 1
+        size = f"{width}x{height}" + (f"x{depth}" if shape == 1 else "")
+        if not drop:
+            out += data
+        elif drop <= mipmaps:
+            out += data[sum(sizes[:drop]):]
+            image.set("width", max(1, width >> drop))
+            image.set("height", max(1, height >> drop))
+            image.set("depth", max(1, depth >> drop))
+            image.set("mipmap count", mipmaps - drop)
+            done.append(f"image #{index} {size} -> {max(1, width >> drop)}x{max(1, height >> drop)}: its "
+                        f"first {drop} mipmaps dropped")
+        elif shape == 0 and depth == 1:
+            level = types.SimpleNamespace(width=width, height=height, offset=0, mipmaps=0, flags=0,
+                                          format=FORMATS[kind], data=data[:sizes[0]])
+            # (each channel averaged on its own: PIL's RGBA reduction weighs
+            # the colour by the alpha, which loses the colour where the alpha
+            # is near 0 -- a sky's top rows)
+            picture = Image.merge("RGBA", [band.reduce(1 << drop) for band in decode(None, level).split()])
+            new = X8R8G8B8 if kind == X8R8G8B8 else A8R8G8B8
+            image.set("width", picture.width)
+            image.set("height", picture.height)
+            image.set("format", new)
+            image.set("flags", image.get("flags") & ~(COMPRESSED | PALETTIZED))
+            image.set("mipmap count", 0)
+            out += picture.tobytes("raw", "BGRA")
+            done.append(f"image #{index} {size} {FORMATS[kind]} -> {picture.width}x{picture.height} "
+                        f"{FORMATS[new]} ({1 << drop}:1)")
+        else:
+            return False, f"image #{index} ({size}, type {shape}) has {mipmaps} mipmaps, {drop} needed"
+    if not done:
+        return False, "no image past the Xbox's limits"
+    bitmap.root.set_data("processed pixel data", out)
+    bitmap.save()
+    return True, f"{tag}: " + "; ".join(done)
+
+
+def keep_one_bsp(space, scenario, log):
+    """the N64 converter loads a scenario's first structure BSP only, and
+    stops on another's tags: of several (a day and a night version), the one
+    the multiplayer spawns are in is kept, as the first -- the most player
+    starting locations inside its world bounds, then the most naming it as
+    theirs; a tie, the first -- and the others erased.
+
+    The kept BSP becomes BSP 0, so the indices that name a BSP follow it:
+    the spawns name it; an encounter's or a command list's manual BSP index
+    that named the kept BSP names 0, and one that named the old BSP 0 names
+    the kept one's old index (now past the end). That leaves each index
+    either right or past the end, as erasing all but BSP 0 leaves them.
+    (The scenario's "bsp switch trigger volumes" are not tag data:
+    invader-build makes them again from the trigger volumes named
+    "bsp<from>,<to>", and stops on one that names an erased BSP, with or
+    without this choice.)"""
+    from .tagfile import TagFile, TagFileError
+    tag = scenario.lower().replace("\\", "/") + ".scenario"
+    try:
+        root = TagFile(space.tags / tag).root
+        bsps = [b.path("structure bsp").replace("\\", "/") for b in root.blocks("structure bsps")]
+        if len(bsps) < 2:
+            return
+        spawns = [(s.values("position"), s.get("bsp index")) for s in root.blocks("player starting locations")]
+        manual = [(f"{name.replace(' ', '_')}[{i}].manual_bsp_index", block.get("manual bsp index"))
+                  for name in ("encounters", "command lists") for i, block in enumerate(root.blocks(name))]
+        scores = []
+        for i, bsp in enumerate(bsps):
+            bounds = TagFile(space.tags / (bsp + ".scenario_structure_bsp")).root
+            box = [bounds.values(f"world bounds {axis}") for axis in "xyz"]
+            inside = sum(1 for point, _ in spawns if all(low <= v <= high for v, (low, high) in zip(point, box)))
+            named = sum(1 for _, index in spawns if index == i)
+            scores.append((inside, named, -i))
+            log(f"structure BSP #{i} {bsp}: {inside} of {len(spawns)} spawns inside, {named} name it")
+        keep = -max(scores)[2]
+    except (OSError, TagFileError) as error:
+        # (the tags not read: the first BSP kept)
+        count = int(space.invoke("edit", "-t", space.tags, "-C", "structure_bsps", tag))
+        if count < 2:
+            return
+        log(f"structure BSPs not compared ({error}): the first kept")
+        bsps, spawns, manual, keep = [f"#{i}" for i in range(count)], [], [], 0
+    if keep:
+        space.edit(tag, "-E", f"structure_bsps[0-{keep - 1}]")
+        for i, (_, index) in enumerate(spawns):
+            if index:
+                space.edit(tag, "-S", f"player_starting_locations[{i}].bsp_index", "0")
+        for key, index in manual:
+            if index in (0, keep):
+                space.edit(tag, "-S", key, str(keep - index))
+    if len(bsps) - keep > 1:
+        space.edit(tag, "-E", f"structure_bsps[1-{len(bsps) - keep - 1}]")
+    log(f"kept structure BSP #{keep} of {len(bsps)} ({bsps[keep]})")
+
+
 def build(space, scenario, name, log):
     """invader-build until it builds, a known repair made after each stop"""
     output = space.maps / f"{name}.map"
     last = None
+    # (invader-extract writes the tags lowercase; a map whose header names
+    # its scenario in capitals would fail "Tags may not have uppercase
+    # characters")
+    scenario = scenario.lower()
     for attempt in range(MAX_BUILDS):
         code, text = space.run([space.tools["build"], "-g", "xbox-ntsc", "-E", "-H", "-N", name, "-t", space.tags,
                                 "-o", output, scenario], check=False)
@@ -348,16 +592,30 @@ def repair(space, flat, log):
     m = re.search(r"FATAL ERROR: (.*)\n\.\.\.in (\S.*)", flat)
     if not m:
         return False
-    message, tag = m.group(1).strip(), m.group(2).strip()
+    # (a wrapped line's trailing space and its join make two)
+    message, tag = re.sub(r"\s+", " ", m.group(1)).strip(), m.group(2).strip()
     log(f"repairing: {message} ({tag})")
     s = re.match(r"Sequence #(\d+) in '(.*)' referenced by (.*) is out of bounds", message)
     if s:
         field = s.group(3).strip()
-        key = field.replace(" ", "_") + "_sequence_index"
+        keys = [field.replace(" ", "_") + "_sequence_index"]
         indexed = re.match(r"(.*) #(\d+)$", field)
         if indexed:
-            key = f"{indexed.group(1).replace(' ', '_')}[{indexed.group(2)}].sequence_index"
-        space.edit(tag, "-S", key, "0")
+            # (Invader names the element in the singular, the block in the
+            # plural: "static element #0" is static_elements[0], "meter #0"
+            # meter_elements[0])
+            name = indexed.group(1).replace(' ', '_')
+            keys = [f"{name}{suffix}[{indexed.group(2)}].sequence_index" for suffix in ("", "s", "_elements")]
+        elif field == "contrail":
+            # (a contrail's sequence is its "first sequence index")
+            keys = ["first_sequence_index"]
+        for i, key in enumerate(keys):
+            try:
+                space.edit(tag, "-S", key, "0")
+                break
+            except CEPrepareError:
+                if i == len(keys) - 1:
+                    raise
         return True
     # a crosshair overlay past the Xbox bitmap's sequences (PC added some to
     # the shared reticles): the rocket hog the rocket launcher's (9), the
@@ -410,6 +668,94 @@ def repair(space, flat, log):
     if z:
         space.edit(tag, "-S", "zoom_levels", z.group(2))
         return True
+    # a sound the Xbox build won't take (permutations of other formats than
+    # the sound's, or a permutation of a size no whole number of samples
+    # makes): made whole (repair_sound), else silent
+    if re.match(r"Sound (format does not match \d+ permutations?|permutation #\d+ has an invalid size)", message):
+        whole, text = repair_sound(space, tag)
+        if whole:
+            log(f"sound: {text}")
+            space.fixed(f"sound: {text}")
+        else:
+            log(f"stand-in: a silent sound for {tag} ({text})")
+            (space.tags / tag).unlink()
+            silent_sound(space, tag.rsplit(".", 1)[0])
+        return True
+    # a crosshair overlay flagged "not a sprite" on a sprite sheet: a sprite
+    o = re.match(r"Overlay #(\d+) of crosshair #(\d+) is marked as not a sprite, but '.*' is a sprite sheet", message)
+    if o:
+        space.edit(tag, "-S", f"crosshairs[{o.group(2)}].crosshair_overlays[{o.group(1)}].flags.not_a_sprite", "0")
+        return True
+    # an empty palette entry (no object uses it): the palette's first
+    n = re.match(r"Scenario\w*Palette::name must not be null", message)
+    f = re.search(r"Failed to compile Scenario::(\w+_palette) #(\d+)", flat)
+    if n and f:
+        first = space.invoke("edit", "-t", space.tags, "-G", f"{f.group(1)}[0].name", tag)
+        space.edit(tag, "-S", f"{f.group(1)}[{f.group(2)}].name", first)
+        return True
+    # a particle state's bitmap that isn't sprites: another state's that is
+    # (the N64 converter drops particle systems)
+    q = re.match(r"Bitmap '.*' referenced in particle state #(\d+) of particle type #(\d+) is not of type sprites",
+                 message)
+    if q:
+        type_count = int(space.invoke("edit", "-t", space.tags, "-C", "particle_types", tag))
+        for t in range(type_count):
+            states = int(space.invoke("edit", "-t", space.tags, "-C", f"particle_types[{t}].particle_states", tag))
+            for s in range(states):
+                other = space.invoke("edit", "-t", space.tags, "-G", f"particle_types[{t}].particle_states[{s}].bitmaps",
+                                     tag)
+                if other and (space.tags / other).is_file() and \
+                        space.invoke("edit", "-t", space.tags, "-G", "type", other) == "sprites":
+                    space.edit(tag, "-S", f"particle_types[{q.group(2)}].particle_states[{q.group(1)}].bitmaps",
+                               other)
+                    return True
+        return False
+    # a chicago shader with no maps (an "invisible" shader): one white map,
+    # multiplied, which draws nothing
+    if message == "ShaderTransparentChicago::maps must have at least 1 block":
+        space.edit(tag, "-I", "maps", "1", "end")
+        space.edit(tag, "-S", "maps[0].map", WHITE)
+        space.edit(tag, "-S", "framebuffer_blend_function", "multiply")
+        return True
+    # an overlay not flagged "not a sprite" on an image that isn't a sprite
+    # sheet: flagged
+    o = re.match(r"Overlay #(\d+) of crosshair #(\d+) is not marked as not a sprite, but '.*' is not a sprite sheet",
+                 message)
+    if o:
+        space.edit(tag, "-S", f"crosshairs[{o.group(2)}].crosshair_overlays[{o.group(1)}].flags.not_a_sprite", "1")
+        return True
+    # a crosshair's sequence with no images: the stock reticles
+    e = re.match(r"Sequence #\d+ in '.*' referenced in overlay #\d+ of crosshair #(\d+) has 0 bitmaps", message)
+    if e:
+        space.edit(tag, "-S", f"crosshairs[{e.group(1)}].crosshair_bitmap", "ui/hud/bitmaps/combined/hud_reticles.bitmap")
+        return True
+    # an animation's frame index past its last frame: the last frame
+    a = re.match(r"Animation #(\d+) has an invalid ([a-z ]+) index \((\d+) > (\d+)\)", message)
+    if a:
+        field = a.group(2).replace(" ", "_") + "_index"
+        space.edit(tag, "-S", f"animations[{a.group(1)}].{field}", str(max(0, int(a.group(4)) - 1)))
+        return True
+    # a camera track with fewer than 4 points: its last point repeated
+    t = re.match(r"CameraTrack::control_points must have at least (\d+) blocks", message)
+    if t:
+        count = int(space.invoke("edit", "-t", space.tags, "-C", "control_points", tag))
+        if count == 0:
+            space.edit(tag, "-I", "control_points", t.group(1), "end")
+        for _ in range(count, int(t.group(1)) if count else 0):
+            space.edit(tag, "-c", f"control_points[{count - 1}]", "end")
+        return True
+    # a bitmap with an image bigger than the Xbox's: made the Xbox's size
+    # (shrink_bitmap), else white
+    if message == "Target engine runs on a system that does not support these bitmaps" and tag.endswith(".bitmap"):
+        shrunk, text = shrink_bitmap(space, tag)
+        if shrunk:
+            log(f"bitmap: {text}")
+            space.fixed(f"bitmap: {text}")
+        else:
+            log(f"stand-in: a white bitmap for {tag} ({text})")
+            shutil.copyfile(space.tags / WHITE, space.tags / tag)
+            space.fixed(f"stand-in: white bitmap for {tag} ({text})")
+        return True
     return False
 
 
@@ -437,6 +783,7 @@ def prepare_ce_map(ce_map, xbox_maps, tools, work, name=None, log=print):
     sounds = pc_prepare._normalize_vorbis(space.tags, space.audio, space.invoke, space.decode_ogg)
     log(f"normalized: {len(hud)} HUD scales, {len(sounds)} Vorbis sounds made 16-bit PCM")
     apply_standins(space)
+    keep_one_bsp(space, scenario, log)
     output = build(space, scenario, name, log)
     try:
         pc_prepare.validate_xbox_map(output, name)
