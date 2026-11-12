@@ -141,6 +141,11 @@ symbols in this file:
 #include "sound/sound_definitions.h"
 #include "units/bipeds.h"
 #include "units/units.h"
+#ifdef HALO_N64
+#include "objects/widgets/light_volumes.h"
+#include "../../port/n64/src/n64.h"
+#include "../../port/n64/src/n64_projectiles_module.h"
+#endif
 
 /* ---------- constants */
 
@@ -384,6 +389,85 @@ void projectiles_initialize_for_new_map(
 {
 	return;
 }
+
+#ifdef HALO_N64
+/* ---------- the N64's look of a projectile: Halo draws a bullet or a bolt
+with its contrail (the tracer) and its light volume widget (a plasma bolt's,
+a needle's, a rocket's glow), and the N64 makes neither. Each tick's move of
+a projectile is handed to the projectiles' module while it is in
+(rom:/projectiles.dso: port/n64/game/n64_projectiles_game.c finds the look,
+port/n64/src/n64_projectiles.c draws it). Here: the hook, and the light
+volume and colour a dot uses too (n64_render_game.c), which the program
+keeps. Visual only */
+/* x (0 to 1) as 0 to scale, at most limit */
+static unsigned long n64_look_part(
+	real x,
+	real scale,
+	real limit)
+{
+	return (unsigned long)(int)PIN(x * scale, 0.f, limit);   /* (through int: one conversion) */
+}
+
+/* the first frame of a definition's light volume widget, else NULL (the
+glow's look here, and a dot's colour, n64_render_game.c) */
+struct light_volume_frame const *n64_projectile_volume(
+	long definition_index)
+{
+	struct object_definition const *definition = object_definition_get(definition_index);
+	short i;
+
+	for (i = 0; i < definition->object.widgets.count; i++)
+	{
+		/* (an object's widget: its reference, then padding) */
+		struct n64_widget { struct tag_reference reference; long pad[4]; };
+		struct tag_reference const *widget = &TAG_BLOCK_GET_ELEMENT(&definition->object.widgets, i,
+			struct n64_widget)->reference;
+		struct light_volume_definition *volume;
+
+		if (widget->group_tag != 'mgs2' || widget->index == NONE ||
+			(volume = light_volume_definition_get(widget->index))->frames.count <= 0)
+			continue;
+		return TAG_BLOCK_GET_ELEMENT(&volume->frames, 0, struct light_volume_frame);
+	}
+	return NULL;
+}
+
+/* a colour (0 to 1) as 0xRRGGBB, orange where it is near black (its
+brightest channel under 48 of 255): it would not show (a glow's, a dot's) */
+unsigned long n64_projectile_rgb(
+	real red,
+	real green,
+	real blue)
+{
+	real const channels[3] = { red, green, blue };
+	unsigned long rgb = 0, brightest = 0;
+	short i;
+
+	for (i = 0; i < 3; i++)
+	{
+		unsigned long channel = n64_look_part(channels[i], 255.f, 255.f);
+
+		rgb = rgb << 8 | channel;
+		if (channel > brightest)
+			brightest = channel;
+	}
+	return brightest < 48 ? 0xFF8020UL : rgb;
+}
+
+/* a projectile's move this tick, to to: handed to the projectiles' module
+while it is in (port/n64/game/n64_projectiles_game.c: its look's segment);
+one copy for its two calls (projectile_update) */
+static __attribute__((noinline)) void n64_projectile_moved(
+	long projectile_index,
+	struct projectile_runtime_datum const *projectile,
+	real_point3d const *to)
+{
+	if (n64_projectiles_entry)
+		n64_projectiles_entry->moved(projectile_index, projectile->definition_index,
+			projectile->object.owner_player_index, TEST_FLAG(projectile->projectile.flags, _projectile_tracer_bit),
+			(const float *)&projectile->object.position, (const float *)to);
+}
+#endif
 
 void projectiles_dispose_from_old_map(
 	void)
@@ -710,6 +794,9 @@ boolean projectile_update(
 	boolean detonation_timer_running;
 #ifdef HALO_N64
 	boolean n64_sniper = FALSE;
+	/* (its look, n64_projectile_moved: not the sniper round's or the
+	flamethrower's, which have their own) */
+	boolean n64_look;
 	extern void n64_sniper_ribbon(const float *, const float *);
 #endif
 
@@ -720,8 +807,10 @@ boolean projectile_update(
 	{
 		char const *name = tag_get_name(projectile->definition_index);
 		n64_sniper = name && !strncmp(name, "weapons\\sniper rifle\\", 21);
+		n64_look = !n64_sniper;
 		if (name && !strncmp(name, "weapons\\flamethrower\\", 21))
 		{
+			n64_look = FALSE;
 			extern void n64_flame_trail(const float *, const float *);
 			n64_flame_trail((const float *)&projectile->object.position,
 				(const float *)&projectile->object.translational_velocity);
@@ -990,6 +1079,7 @@ boolean projectile_update(
 			/* Capture the real collision endpoint before the handler can attach,
 			   penetrate or move the projectile. Existing impact effects stay intact. */
 			if (n64_sniper) n64_sniper_ribbon((const float *)&projectile->object.position, (const float *)&collision.point);
+			if (n64_look) n64_projectile_moved(projectile_index, projectile, &collision.point);
 #endif
 			projectile->projectile.ignore_object_index = NONE;
 			projectile_collision(
@@ -1013,6 +1103,7 @@ boolean projectile_update(
 		{
 			#ifdef HALO_N64
 			if (n64_sniper && moved) n64_sniper_ribbon((const float *)&projectile->object.position, (const float *)&new_position);
+			if (n64_look && moved) n64_projectile_moved(projectile_index, projectile, &new_position);
 #endif
 			if (collision_count == MAXIMUM_PROJECTILE_COLLISIONS_PER_UPDATE)
 				projectile_set_action(projectile_index, _projectile_action_detonate);

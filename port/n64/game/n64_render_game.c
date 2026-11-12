@@ -39,6 +39,7 @@ renderer's (port/n64/src/n64_render.c).
 #include "structures/structures.h"
 #include "structures/structure_bsp_definitions.h"
 #include "scenario/sky_definitions.h"
+#include "objects/widgets/light_volumes.h"
 
 #include "../src/n64.h"
 
@@ -150,7 +151,10 @@ char const *n64_loaded_map_name(void);
 
 void render_initialize(void) { return; }
 void render_dispose(void) { return; }
-void render_dispose_from_old_map(void) { return; }
+/* (a map changed while a game goes on, main.c main_change_map_name: the
+projectiles' module given back before the next map's load, which grows the
+maps' home in place) */
+void render_dispose_from_old_map(void) { n64_projectiles_give_back(); }
 
 /* debugging (port.json flag "debug_weapon=<weapon tag name>"): players
 spawn with that weapon first (game_engine.c's starting equipment) */
@@ -262,11 +266,23 @@ static void n64_fog_for_views(
 	n64_render_set_fog(n64_fog.color, distance * n64_fog.start, distance);
 }
 
+/* the dots' colours found, by projectile definition (n64_projectile_dot_color;
+cleared at each map's load: a definition's index is its map's) */
+#define N64_DOT_COLORS 16
+static struct
+{
+	long definition;
+	unsigned long color;
+} n64_dot_colors[N64_DOT_COLORS];
+
 void render_initialize_for_new_map(
 	void)
 {
 	extern short player_spawn_count;
+	short i;
 
+	for (i = 0; i < N64_DOT_COLORS; i++)
+		n64_dot_colors[i].definition = NONE;
 	n64_fog_for_new_map();
 	/* Keep room for the held weapon and player models on the largest maps,
 	using the existing lighter geometry/model set under the 8 MiB ceiling. */
@@ -298,6 +314,9 @@ static struct frame_object
 	struct n64_object n64;
 } frame_objects[MAXIMUM_FRAME_OBJECTS];
 static short frame_object_count;
+/* the frame's objects (a bit each) that are projectiles whose model had no
+room in the view drawn last: their dots (n64_projectile_dot_next) */
+static unsigned long frame_object_dots[MAXIMUM_FRAME_OBJECTS / 32];
 static long frame_objects_frame = -1;
 
 /* Match the translucent camouflage fallback without inventing refraction.
@@ -539,6 +558,52 @@ static boolean object_under_unit(
 	return object_index != NONE;
 }
 
+/* the colour of a projectile's dot (its model had no room in the view:
+n64_projectile_dot_next): its light volume's (a rocket's, a needle's), else
+its light's (a plasma grenade's cyan; the light's colour, its lower bound,
+56 bytes into the tag, alpha first), else orange */
+static unsigned long n64_projectile_dot_color_find(
+	long definition_index)
+{
+	struct object_definition const *definition = object_definition_get(definition_index);
+	struct light_volume_frame const *frame = n64_projectile_volume(definition_index);
+	short i;
+
+	if (frame)
+		return n64_projectile_rgb(frame->color_yon.red, frame->color_yon.green, frame->color_yon.blue);
+	for (i = 0; i < definition->object.attachments.count; i++)
+	{
+		struct tag_reference const *light = &TAG_BLOCK_GET_ELEMENT(&definition->object.attachments, i,
+			struct object_attachment_definition)->type;
+
+		if (light->group_tag == 'ligh' && light->index != NONE)
+		{
+			real const *color = (real const *)((char const *)tag_get('ligh', light->index) + 60);
+
+			return n64_projectile_rgb(color[0], color[1], color[2]);
+		}
+	}
+	return 0xFF8020;
+}
+
+/* the dot's colour, found once a map for each definition (the tag walk is
+the dot's dearest part), and orange where the found one is near black
+(its brightest channel under 48 of 255: a light whose lower bound is
+black, say) and would not show */
+static unsigned long n64_projectile_dot_color(
+	long definition_index)
+{
+	unsigned long color;
+	short slot = (short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(definition_index) % N64_DOT_COLORS);
+
+	if (n64_dot_colors[slot].definition == definition_index)
+		return n64_dot_colors[slot].color;
+	color = n64_projectile_dot_color_find(definition_index);
+	n64_dot_colors[slot].definition = definition_index;
+	n64_dot_colors[slot].color = color;
+	return color;
+}
+
 static void render_objects_for_view(
 	short local_player_index,
 	boolean third_person)
@@ -562,6 +627,8 @@ static void render_objects_for_view(
 		viewer_vehicle = object_get_ultimate_parent(viewer_unit);
 	if (frame_objects_frame != render.frame_index)
 		gather_frame_objects();
+	for (i = 0; i < MAXIMUM_FRAME_OBJECTS / 32; i++)
+		frame_object_dots[i] = 0;
 	for (i = 0; i < frame_object_count; i++)
 	{
 		struct frame_object const *entry = &frame_objects[i];
@@ -578,9 +645,45 @@ static void render_objects_for_view(
 			object_under_unit(entry->object_index, viewer_unit))
 			continue;
 		if (n64_render_object(&entry->n64))
+		{
 			n64_object_seen[DATUM_INDEX_TO_ABSOLUTE_INDEX(entry->object_index) & (N64_SEEN_SLOTS - 1)] =
 				(unsigned short)render.frame_index;
+			/* (a projectile whose model had no room -- its model ranks
+			lowest: a grenade in flight, a rocket where memory is short --
+			shown by a dot in its colour, n64_particles.c) */
+			if (entry->n64.lowest && n64_render_lowest_refused())
+				frame_object_dots[i >> 5] |= 1UL << (i & 31);
+		}
 	}
+}
+
+/* the view's dots, for n64_particles.c (n64.h): every projectile of this
+frame's objects whose model had no room in the view drawn last (32 objects
+a word: a word with none is passed at once) */
+int n64_projectile_dot_next(
+	int *cursor,
+	float position[3],
+	unsigned long *color)
+{
+	if (frame_objects_frame != render.frame_index)
+		return 0;
+	while (*cursor < frame_object_count)
+	{
+		int i = (*cursor)++;
+		struct frame_object const *entry = &frame_objects[i];
+
+		if (!frame_object_dots[i >> 5])
+			*cursor = (i | 31) + 1;
+		else if (frame_object_dots[i >> 5] & (1UL << (i & 31)))
+		{
+			position[0] = entry->n64.center[0];
+			position[1] = entry->n64.center[1];
+			position[2] = entry->n64.center[2];
+			*color = n64_projectile_dot_color(object_get(entry->object_index)->definition_index);
+			return 1;
+		}
+	}
+	return 0;
 }
 
 /* ---------- the first-person weapon (interface/first_person_weapons.c poses

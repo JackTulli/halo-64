@@ -509,6 +509,43 @@ void n64_particle_spawn(const struct n64_particle_spawn *spawn);
 void n64_flame_trail(const float *position, const float *velocity);
 /* Short visual-only segment along the actual sniper projectile movement. */
 void n64_sniper_ribbon(const float *start, const float *end);
+/* PROJECTILES (SETTINGS): 0 off, 1 light, 2 full; from the next map's load
+(n64_particles.c: bullets' tracers and bolts' glows, from
+source/items/projectiles.c) */
+void n64_projectiles_set_mode(int mode);
+/* the projectiles' module given back, before a model's or a HUD image's
+room is looked for (n64_render.c, n64_hud.c): 1 if it was in */
+int n64_projectiles_give_back(void);
+/* a projectile definition's look, found by the projectiles' module
+(n64_projectiles_game.c) and kept in it, N64_PROJECTILE_LOOKS of them by
+definition */
+struct n64_projectile_look
+{
+	/* its definition's absolute tag index + 1 (0: none) */
+	unsigned short definition;
+	/* bit 0 a trail, bit 1 a glow; bits 4-7 the glow's opacity: the light
+	volume's far alpha in 1/20, at most 14 (15: solid, alpha 1) */
+	unsigned char parts;
+	/* the glow's radius, 1/256 world units */
+	unsigned char radius;
+	/* RGB, and the glow's length in 1/32 world units in bits 26-31 */
+	unsigned long color;
+};
+#define N64_PROJECTILE_LOOKS 16
+/* a projectile definition's light volume's first frame, else NULL; a colour
+(0 to 1) as 0xRRGGBB, orange where near black (projectiles.c: the glow's and
+the dot's) */
+struct light_volume_frame;
+struct light_volume_frame const *n64_projectile_volume(long definition_index);
+unsigned long n64_projectile_rgb(float red, float green, float blue);
+/* the view's dots, drawn in its world pass whatever the module and the
+setting: the next projectile from *cursor (0 first) whose model had no room
+in the view (n64_render_game.c, n64_render_lowest_refused), its place and
+its colour; 0: none left */
+int n64_projectile_dot_next(int *cursor, float position[3], unsigned long *color);
+/* whether the last object drawn was a projectile's whose model had no room
+(n64_render.c; cleared by asking) */
+int n64_render_lowest_refused(void);
 /* explosions: the N64's own flash, fireball and smoke for the effects the
 converter marks (tools/n64/effects.py EXPLOSIONS), started by the effect
 code (source/effects/effects.c, HALO_N64) where the effect begins */
