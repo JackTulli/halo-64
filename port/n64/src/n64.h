@@ -865,6 +865,9 @@ void n64_uncached_arena_end(void);
 int n64_hud64_arena_owns(const void *block);
 void n64_hud64_arena_give_back(void *block);
 void n64_module_free(void *module);
+/* as n64_module_load, but only into room the heap has: nothing is dropped
+or given back for it (the projectiles' module, which gives way to all) */
+void *n64_module_load_spare(const char *path, const char *name, unsigned long margin, void **address);
 
 /* the pause menu (START in a game, port/n64/game/n64_game.c): the
 scoreboard over the frame's views, every player and bot a row, sorted --
