@@ -94,6 +94,9 @@ symbols in this file:
 
 #define REAL_MATH_EXTERNAL_POINT_FROM_LINE3D
 #include "cseries.h"
+#ifdef HALO_N64
+#include "n64_debug_flags.h"
+#endif
 #include "collisions.h"
 
 #include "breakable_surfaces.h"
@@ -335,7 +338,6 @@ boolean collision_test_vector(
 		/* (measuring, "debug_ray_callers": who casts rays, and how long) */
 		extern volatile int n64_profile_zone;
 		extern unsigned long n64_ray_callers[16][2];
-		int n64_debug_flag(char const *name);
 		/* (looked up once: asked for on every ray it cost more than the
 		rest of this test) */
 		static int ray_callers = -1;
@@ -1515,7 +1517,6 @@ the pill can't reach it). Objects move, so they are gathered fresh each tick
 from the kept clusters. The list is the level's geometry: it is dropped with
 the map, and when the BSP or its broken surfaces change. */
 
-int n64_debug_flag(char const *name);
 long game_time_get(void);
 
 enum

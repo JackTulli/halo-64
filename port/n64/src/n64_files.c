@@ -67,6 +67,8 @@ void n64_file_close(long handle)
 	}
 }
 
+/* (not in a release program: n64_debug_flags.h) */
+#ifndef N64_STRIP_TEST_FLAGS
 int n64_debug_flag(const char *name)
 {
 	/* (asked for in hot loops -- per object, per sound -- by literal: the
@@ -143,3 +145,4 @@ int n64_debug_text(const char *name, char *buffer, int size)
 	}
 	return buffer[0] != 0;
 }
+#endif

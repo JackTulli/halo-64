@@ -503,7 +503,13 @@ FPS COUNTER setting shows it.
 ## Debugging
 
 Cartridge flags are files on the ROM's file system, listed in `port.json`
-"flags" (keep it `[]` for a ROM to play):
+"flags" (keep it `[]` for a ROM to play). Release programs, the ones the ROM
+Builder carries, are built without them: `python3 tools/n64_build.py
+--release` folds each flag to its value with no flag file
+(`port/n64/include/n64_debug_flags.h`) and leaves the code it guards out,
+62 to 80 KB a cartridge that the game then has as heap
+(`tools/n64/package_rombuilder.py` refuses a program built without it, unless
+`--allow-test-flags`). Leave `--release` off to use the flags below:
 
 - Straight into a game, without the menu: `debug_map=<map>` (with
   `debug_players=<1-4>`, `debug_bots=<n>`, `debug_bot_skill=<0-3>`,

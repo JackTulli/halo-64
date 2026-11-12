@@ -1863,13 +1863,11 @@ void n64_render_initialize(void)
 	}
 	/* and the RDP output's park, for the same reason (n64_render_park_rdp_output) */
 	record_rdp_output_park();
-	{
-		FILE *flag;
-
-		if ((flag = fopen("rom:/debug_overview", "rb"))) { debug_overview = 1; fclose(flag); }
-		debug_gpu_time = n64_debug_flag("debug_gpu_time");
-		if ((flag = fopen("rom:/debug_untextured", "rb"))) { debug_untextured = 1; fclose(flag); }
-	}
+	if (n64_debug_flag("debug_overview"))
+		debug_overview = 1;
+	debug_gpu_time = n64_debug_flag("debug_gpu_time");
+	if (n64_debug_flag("debug_untextured"))
+		debug_untextured = 1;
 	{
 		char text[16];
 
