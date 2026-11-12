@@ -239,6 +239,10 @@ class ModelConverter:
     # BIG_STATIC_TRIANGLES): Custom Edition maps' (convert.py --custom); the
     # stock maps are converted as they always were
     reduce_open_shapes = False
+    # a Custom Edition map's models (convert.py --custom): an alpha-tested
+    # environment shader with no bump map drawn opaque, as the level's are
+    # (level.py LevelBuilder.custom)
+    custom = False
 
     def __init__(self, xmap, defs, map_name, out_dir):
         self.map = xmap
@@ -404,8 +408,11 @@ class ModelConverter:
             so = self.f("ShaderEnvironment")
             base = struct.unpack("<I", self.map.read(tag.address + so["base map"] + 12, 4))[0]
             env_flags = struct.unpack("<H", self.map.read(tag.address + so["shader environment flags"], 2))[0]
+            bump = struct.unpack("<I", self.map.read(tag.address + so["bump map"] + 12, 4))[0]
+            # (a Custom Edition map's: no bump map, nothing to cut -- custom)
+            if self.custom and bump == 0xFFFFFFFF:
+                env_flags &= ~1
             if env_flags & 1:
-                bump = struct.unpack("<I", self.map.read(tag.address + so["bump map"] + 12, 4))[0]
                 scale = struct.unpack("<f", self.map.read(tag.address + so["bump map scale"], 4))[0] or 1.0
                 texture = self.chosen_texture(base, True, (bump, scale))
                 if texture is not None:

@@ -249,6 +249,16 @@ static void n64_fog_for_new_map(
 			n64_render_set_sky(n64_skies[i].colors);
 		}
 	}
+#ifdef HALO_N64_CUSTOM_MAPS
+	/* (a map named rainbow_road, Custom Edition's Rainbow Road, in space:
+	its sky is a model of stars on black, which the N64 does not draw, and
+	it has no fog, which gave it the default grey: black fog instead, and
+	so a black clear colour, with no sky drawn over it. Not The Pillar of
+	Autumn (Space): its hull is nearly black as converted, and only the
+	grey outlines it) */
+	if (!strcmp(n64_loaded_map_name(), "rainbow_road"))
+		n64_fog.color = 0x000000;
+#endif
 }
 
 static void n64_fog_for_views(
