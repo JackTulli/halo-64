@@ -1008,12 +1008,10 @@ int main(void)
 		/* an "autotest" file on the cartridge: scripted controllers
 		(xdk_input.c) for unattended test runs */
 		extern int n64_test_input;
-		FILE *flag = fopen("rom:/autotest", "rb");
 
-		if (flag)
+		if (n64_debug_flag("autotest"))
 		{
 			n64_test_input = 1;
-			fclose(flag);
 			debugf("halo-n64: test mode, scripted controllers\n");
 		}
 	}

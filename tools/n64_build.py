@@ -130,6 +130,10 @@ def main(argv=None):
     parser.add_argument("--pc-ui-bitmap", type=Path, help="owned extracted HEK mp_map_grafix.bitmap with the PC thumbnails")
     parser.add_argument("--definitions", type=Path, default=Path(os.environ.get("INVADER_DEFINITIONS", "dependencies/invader/src/tag/hek/definition")))
     parser.add_argument("--build-dir", type=Path, default=BUILD_DIR, help="generated artifacts (default build/n64; Ninja execution uses a POSIX/MSYS shell)")
+    parser.add_argument("--release", action="store_true",
+                        help="release programs (the ROM Builder's): the test flags left out, each use folded to its "
+                             "value with no flag file (N64_STRIP_TEST_FLAGS, port/n64/include/n64_debug_flags.h); "
+                             "62 to 80 KB less program, so more heap. Developer and test builds leave it off")
     args = parser.parse_args(argv)
     os.chdir(ROOT)
     BUILD_DIR = args.build_dir
@@ -329,6 +333,13 @@ def main(argv=None):
             convert_flags = "--pc-expansion --pc-maps " + q(pc_maps)
         def map_source(name):
             return pc_maps / f"{name}.map" if pc_expansion and name in PC_MAPS else Path(f"build/xbox/disc/maps/{name}.map")
+        # (--release: every unit of the cartridge, the game's, the platform's and HUD STYLE 64's module, without the
+        # test flags; its ROM without flag files, as the ROM Builder's ROMs are: rombuilder.py removes them)
+        if args.release:
+            if flags:
+                print(f"--release: {rom or title} without its port.json flag files ({' '.join(flags)})")
+                flags = []
+            extra_defines = [*extra_defines, "N64_STRIP_TEST_FLAGS"]
         defines = base_defines + " " + " ".join(f"-D{d}" for d in extra_defines)
         game_cflags = " ".join([
             *GAME_ABI, game_opt, *lto, *GAME_FLAGS,
