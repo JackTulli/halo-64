@@ -646,6 +646,13 @@ class LevelBuilder:
         # its water was flat (the user: "fix all the water on the level like
         # we did on beaver creek"); the campaign's level only
         self.chicago_water = False
+        # a Custom Edition map's level (convert.py --custom): an alpha-tested
+        # environment shader with no bump map drawn opaque (material), as
+        # Halo draws it: its alpha test reads the bump map's alpha, and with
+        # none there is nothing to cut. The base map's alpha, the fallback
+        # elsewhere, can mean something else there (Hyrule Field's ground
+        # field.bitmap: 94% of it cut away, the fog's colour showing through)
+        self.custom = False
 
     def fields(self, struct_name):
         return {f.name: o for o, f in self.defs.fields(struct_name)}
@@ -933,6 +940,8 @@ class LevelBuilder:
                 env_flags = struct.unpack("<H", self.map.read(tag.address + f["shader environment flags"], 2))[0]
                 bump = struct.unpack("<I", self.map.read(tag.address + f["bump map"] + 12, 4))[0]
                 bump_scale = struct.unpack("<f", self.map.read(tag.address + f["bump map scale"], 4))[0] or 1.0
+                if self.custom and bump == 0xFFFFFFFF:
+                    env_flags &= ~1
                 if env_flags & 1:
                     flags |= MATERIAL_ALPHA_TEST
                 span = self.shader_span.get(shader_datum, 0.0)
