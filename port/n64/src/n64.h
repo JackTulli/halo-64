@@ -291,14 +291,18 @@ struct n64_object
 	unsigned short obstacle_definition;
 	/* its model's tier for the model cache (n64_render.c load_model), most
 	wanted first: N64_TIER_FIRST_PERSON the local player's own view models,
-	N64_TIER_ACTOR bipeds, vehicles, projectiles and what a unit carries,
+	N64_TIER_ACTOR bipeds, vehicles and what a unit carries,
 	N64_TIER_ITEM weapons, equipment and garbage on the ground (nothing
 	shows them where their model has no room), N64_TIER_OBSTACLE scenery and
 	devices that collide (their stand-ins show them where their model has no
 	room; one with no stand-in to show is drawn at N64_TIER_ACTOR,
 	n64_render.c), N64_TIER_DECORATION scenery and devices that do not
-	collide, and the rest */
+	collide, projectiles, and the rest */
 	unsigned char tier;
+	/* a projectile's (a rocket, a needle, a grenade in flight): its model
+	loaded only into room no other model and no margin uses, never by
+	dropping another model (n64_render.c load_model) */
+	unsigned char lowest;
 };
 #define N64_TIER_FIRST_PERSON 0
 #define N64_TIER_ACTOR 1

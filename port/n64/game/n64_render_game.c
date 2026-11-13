@@ -424,17 +424,21 @@ static void gather_frame_objects(
 		n64->obstacle_definition = TEST_FLAG(_object_mask_scenery | _object_mask_device, object->object.type) &&
 			definition->object.collision_model.index != NONE ?
 			(unsigned short)(DATUM_INDEX_TO_ABSOLUTE_INDEX(object->definition_index) + 1) : 0;
-		/* the model's tier: bipeds, vehicles, projectiles and whatever a unit
-		carries (its parent is not itself) are actors; weapons, equipment and
-		garbage on the ground, items; scenery and devices (machines, controls,
-		light fixtures) with a collision model, obstacles, and without one,
-		decoration, with the rest */
+		/* the model's tier: bipeds, vehicles and whatever a unit carries (its
+		parent is not itself) are actors; weapons, equipment and garbage on the
+		ground, items; scenery and devices (machines, controls, light fixtures)
+		with a collision model, obstacles, and without one, decoration, with the
+		rest and the projectiles (a rocket, a needle, a grenade in flight: their
+		models lose to every other, n64_object.lowest) */
+		n64->lowest = object->object.type == _object_type_projectile;
 		switch (object->object.type)
 		{
 		case _object_type_biped:
 		case _object_type_vehicle:
-		case _object_type_projectile:
 			n64->tier = N64_TIER_ACTOR;
+			break;
+		case _object_type_projectile:
+			n64->tier = N64_TIER_DECORATION;
 			break;
 		case _object_type_weapon:
 		case _object_type_equipment:
@@ -635,6 +639,7 @@ void n64_first_person_model_draw(
 	n64.head_mask[0] = n64.head_mask[1] = 0;
 	n64.key = 0;
 	n64.obstacle_definition = 0;
+	n64.lowest = 0;
 	n64.region_permutations = no_permutations;
 	n64.region_count = 0;
 	n64.center[0] = render.camera.position.x;
