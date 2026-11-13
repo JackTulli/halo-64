@@ -384,9 +384,38 @@ void projectiles_initialize(
 	return;
 }
 
+#ifdef HALO_N64
+/* a definition's kind in projectile_update, from its tag name, found once a
+map (it was compared each tick): 1 the sniper round (its trail,
+n64_sniper_ribbon), 2 the flamethrower's (its fire, n64_flame_trail), 3
+neither (the projectiles' look); 0 not found yet */
+#define N64_PROJECTILE_KINDS 8
+/* (the definition's absolute index + 1 in bits 2-31, its kind in bits 0-1) */
+static unsigned long n64_projectile_kinds[N64_PROJECTILE_KINDS];
+
+static long n64_projectile_kind(
+	long definition_index)
+{
+	unsigned long index = (unsigned long)DATUM_INDEX_TO_ABSOLUTE_INDEX(definition_index);
+	unsigned long *kind = &n64_projectile_kinds[index & (N64_PROJECTILE_KINDS - 1)];
+
+	if ((*kind >> 2) != index + 1)
+	{
+		char const *name = tag_get_name(definition_index);
+
+		*kind = (index + 1) << 2 | (name && !strncmp(name, "weapons\\sniper rifle\\", 21) ? 1 :
+			name && !strncmp(name, "weapons\\flamethrower\\", 21) ? 2 : 3);
+	}
+	return *kind & 3;
+}
+#endif
+
 void projectiles_initialize_for_new_map(
 	void)
 {
+#ifdef HALO_N64
+	csmemset(n64_projectile_kinds, 0, sizeof(n64_projectile_kinds));
+#endif
 	return;
 }
 
@@ -805,10 +834,10 @@ boolean projectile_update(
 	time_remaining = 1.0f;
 #ifdef HALO_N64
 	{
-		char const *name = tag_get_name(projectile->definition_index);
-		n64_sniper = name && !strncmp(name, "weapons\\sniper rifle\\", 21);
-		n64_look = !n64_sniper;
-		if (name && !strncmp(name, "weapons\\flamethrower\\", 21))
+		long kind = n64_projectile_kind(projectile->definition_index);
+		n64_sniper = kind == 1;
+		n64_look = kind == 3;
+		if (kind == 2)
 		{
 			n64_look = FALSE;
 			extern void n64_flame_trail(const float *, const float *);
