@@ -22,8 +22,9 @@ notices come from tools/n64/invader_lite.
 What goes in, beside Python and the converters (tools/n64): the payload --
 libdragon's tools for Windows (tools/n64/build_windows_tools.sh), each
 cartridge's prebuilt program (the compressed stripped ELF and its symbols
-from the N64 build: code, no Halo data; with HUD STYLE 64's module and the
-program's symbols for it), HUD STYLE 64's textures (assets/hud64,
+from the N64 build: code, no Halo data; with its modules -- HUD STYLE 64's
+and the projectiles' -- and the program's symbols for them), HUD STYLE 64's
+textures (assets/hud64,
 project-original), Invader's tag definitions (the converters read them) and
 port/n64/port.json -- and the licences of what it carries. The result is a folder (Halo64RomBuilder.exe beside its
 _internal folder) and a zip of it.
@@ -41,7 +42,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO))
-from tools.n64.rombuilder import BuildError, check_hud64_files  # noqa: E402
+from tools.n64.rombuilder import BuildError, check_module_files  # noqa: E402
 NAME = "Halo64RomBuilder"
 # (mkasset compresses every cartridge's maps: compress_map.py)
 TOOLS = ("mksprite", "audioconv64", "mkdfs", "n64tool", "ed64romconfig", "mkasset")
@@ -167,15 +168,17 @@ def main():
             target.mkdir(parents=True)
             for name in ("halo.elf.stripped", "halo.elf.sym"):
                 shutil.copy2(folder / name, target / name)
-            # (HUD STYLE 64: the module built with this program and the
-            # program's symbols for it, both or neither, the symbols checked
-            # against the link's halo.elf: rombuilder.check_hud64_files)
+            # (the modules built with this program -- HUD STYLE 64's, the
+            # projectiles' -- and the program's symbols for them, together or
+            # not at all, the symbols checked against the link's halo.elf:
+            # rombuilder.check_module_files)
             try:
-                hud64 = check_hud64_files(folder)
+                files = check_module_files(folder)
             except BuildError as error:
                 sys.exit(f"{cartridge}: {error}")
-            for path in hud64 or ():
-                shutil.copy2(path, target / path.name)
+            if files:
+                for path in [*files[0], files[1]]:
+                    shutil.copy2(path, target / path.name)
         definitions = payload / "invader" / "src" / "tag" / "hek" / "definition"
         shutil.copytree(args.invader / "src" / "tag" / "hek" / "definition", definitions)
         # bitmaps._p8_palette resolves this relative to the definitions tree.
