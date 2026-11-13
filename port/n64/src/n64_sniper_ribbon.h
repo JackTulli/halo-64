@@ -15,6 +15,11 @@ N64_SNIPER_HOLD, gone at N64_SNIPER_LIFE. */
 #define N64_SNIPER_HOLD 0.375f
 #define N64_SNIPER_LIFE 1.25f
 #define N64_SNIPER_CLIP 10
+/* (a ribbon's half width on the screen at most, in pixels; the projectiles'
+   module's long trails give their own before they include this) */
+#ifndef N64_RIBBON_HALF_MAX
+#define N64_RIBBON_HALF_MAX 1.5f
+#endif
 
 /* Retain the collision-resolved trajectory of a tick. */
 static int sniper_ribbon_segment(const float a[3], const float b[3], float start[3], float end[3])
@@ -104,7 +109,7 @@ static int sniper_ribbon_geometry(const struct n64_particle_view *view, const fl
 		int endpoint = v == 1 || v == 2;
 		float z = line[endpoint][2], width = py * half_width / z;
 		if (width < 0.5f) width = 0.5f;
-		if (width > 1.5f) width = 1.5f;
+		if (width > N64_RIBBON_HALF_MAX) width = N64_RIBBON_HALF_MAX;
 		float side = v < 2 ? -1.f : 1.f;
 		camera[v][0] = line[endpoint][0] + normal[0] * width * side * z / px;
 		camera[v][1] = line[endpoint][1] + normal[1] * width * side * z / py;

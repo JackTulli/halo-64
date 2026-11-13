@@ -510,7 +510,7 @@ void n64_flame_trail(const float *position, const float *velocity);
 /* A sniper round's move this tick, visual only: joined into its ribbon from
 the muzzle (n64_particles.c). */
 void n64_sniper_ribbon(const float *start, const float *end);
-/* PROJECTILES (SETTINGS): 0 off, 1 light, 2 full; from the next map's load
+/* PROJECTILES (SETTINGS): 0 off, 1 light, 2 heavy, 3 full; from the next map's load
 (n64_particles.c: bullets' tracers and bolts' glows, from
 source/items/projectiles.c) */
 void n64_projectiles_set_mode(int mode);

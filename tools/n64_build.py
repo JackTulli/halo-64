@@ -252,8 +252,10 @@ def main(argv=None):
     # (-G0: a module reaches the program's data by address). Each module is
     # linked on its own with its one export
     module_sources = {"port/n64/src/n64_hud64.c": "hud64", "port/n64/game/n64_hud64_game.c": "hud64",
-                      "port/n64/src/n64_projectiles.c": "projectiles", "port/n64/game/n64_projectiles_game.c": "projectiles"}
-    module_exports = {"hud64": "n64_hud64_entries", "projectiles": "n64_projectiles_entries"}
+                      "port/n64/src/n64_projectiles.c": "projectiles", "port/n64/game/n64_projectiles_game.c": "projectiles",
+                      "port/n64/src/n64_projectiles_full.c": "projectiles_full"}
+    module_exports = {"hud64": "n64_hud64_entries", "projectiles": "n64_projectiles_entries",
+                      "projectiles_full": "n64_projectiles_full_entries"}
 
     def module_flags(cflags):
         flags = [f for f in cflags.split(" ") if f not in ("-flto", "-ffat-lto-objects") and not re.fullmatch(r"-G\d+", f)]

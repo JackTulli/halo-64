@@ -3,7 +3,7 @@ N64_PROJECTILES.C
 
 The projectiles' tracers, trails and glows: a module, rom:/projectiles.dso
 (tools/n64_build.py), loaded by the program (n64_particles.c) only while the
-setting is LIGHT or FULL and the heap has its room, and given back first when
+setting is LIGHT, HEAVY or FULL and the heap has its room, and given back first when
 anything else needs memory. Its code, its looks and its segments are memory only
 while it is in; the program keeps the setting, the per-tick hook
 (source/items/projectiles.c) and the dots, with their own drawing.
@@ -16,7 +16,7 @@ here (the entry segment): one segment a projectile a frame, the moves of the
 frame's ticks joined, drawn in the world pass with the RDP's rectangles (no
 triangles: fill rectangles for the trails, soft textured ones for the
 glows): a tracer's trail, its move since the last frame as Halo's tracer
-contrail (PROJECTILE_TRACER_FRAMES), thin; a FULL bolt
+contrail (PROJECTILE_TRACER_FRAMES), thin; a HEAVY (and FULL) bolt
 trail kept for 0.125 s (bolt_life) and fading as it ages; a light volume's
 glow, in the frame after the tick that made it, wide and its length behind
 the projectile. Visual only: no game state, no random numbers.
@@ -42,7 +42,7 @@ contrail_update_points), so its tracer on the screen is the round's move
 since the last frame: solid over its newer half (the frame's newer
 points) and fading to nothing over its older half. (4 keeps each move for
 4 frames, fading with age: a round's whole path at its end; a
-compile-time option.) A FULL bolt trail's: as long as Halo's, 0.125 s
+compile-time option.) A HEAVY (and FULL) bolt trail's: as long as Halo's, 0.125 s
 (the stock tag weapons\plasma rifle\plasma's contrail: its points fade
 from white to nothing in 0.125 s; the contrail tags are not on the
 cartridge), in frames of the measured frame time: 4 frames at 30 a
@@ -66,8 +66,8 @@ one a frame of age), at most as many for its cost */
 /* the tracers' and trails' bars a frame, all views (each view its share):
 past it a trail's oldest bars are dropped, its head kept -- a tracer keeps
 at least PROJECTILE_HEAD_BARS of its newest, a bolt's trail none (its glow
-stays). Far above a fight's (bar case 4 players ~25 a frame, plasma FULL
-~50): it caps a storm's cost, ~7 ms of bars at LIGHT and ~14 at FULL
+stays). Far above a fight's (bar case 4 players ~25 a frame, plasma HEAVY
+~50): it caps a storm's cost, ~7 ms of bars at LIGHT and ~14 at HEAVY
 without it */
 #define PROJECTILE_BAR_BUDGET 256
 #define PROJECTILE_HEAD_BARS 4
@@ -99,11 +99,11 @@ static struct projectile_block
 	uint8_t slot[PROJECTILE_SLOTS];
 	uint8_t next;
 } block;
-/* a FULL bolt trail's life in frames, from the frame time smoothed over
+/* a HEAVY (and FULL) bolt trail's life in frames, from the frame time smoothed over
 about 8 frames (n64_particles_update's): it moves by one only where 0.125 s
 in frames is 0.75 past it, so it does not flicker between two */
 static uint8_t bolt_life;
-/* the map's mode: 1 LIGHT, 2 FULL */
+/* the map's mode: 1 LIGHT, 2 HEAVY, 3 FULL (HEAVY where the FULL part had no room) */
 int n64_projectiles_map_mode;
 typedef char projectile_segment_size_check[sizeof(struct projectile_segment) == 32 ? 1 : -1];
 /* (a trail's older moves are marked in 64 bits, one a segment) */
@@ -112,6 +112,11 @@ typedef char projectile_segments_check[PROJECTILE_SEGMENTS <= 64 ? 1 : -1];
 frames old: never drawn) */
 static void begin(int mode, float frame_time)
 {
+	/* (FULL: its long trails are the FULL part's, rom:/projectiles_full.dso,
+	loaded by the program with this module where the heap has its room; else
+	HEAVY) */
+	if (mode == 3 && !n64_projectiles_full_entry)
+		mode = 2;
 	n64_projectiles_map_mode = mode;
 	n64_projectiles_looks_clear();
 	memset(block.segments, 0xFF, sizeof(block.segments));
@@ -249,6 +254,8 @@ static void update(float dt, float frame_time)
 {
 	if (!(isfinite(dt) && dt > 0.f))
 		return;
+	if (n64_projectiles_full_entry)
+		n64_projectiles_full_entry->update(dt);
 	float frames = PROJECTILE_BOLT_SECONDS / frame_time;
 
 	if (frames > bolt_life + 0.75f && bolt_life < PROJECTILE_BOLT_FRAMES)
@@ -790,7 +797,7 @@ HOT static void glow(const struct n64_particle_view *view, struct projectile_seg
 setting's limit (a trail counts as one); none past the fog */
 HOT static void draw(const struct n64_particle_view *view, int views, int *mode)
 {
-	int limit = (n64_projectiles_map_mode == 2 ? 32 : 16) / views, drawn = 0;
+	int limit = (n64_projectiles_map_mode >= 2 ? 32 : 16) / views, drawn = 0;
 	int budget = PROJECTILE_BAR_BUDGET / views, glow_count = 0;
 	/* the view's glows, drawn after its trails (one mode change a view) */
 	struct projectile_glow glows[32 + PROJECTILE_MODEL_GLOWS];
@@ -834,7 +841,7 @@ HOT static void draw(const struct n64_particle_view *view, int views, int *mode)
 		if (frames < 1 || frames > life || ((used >> at) & 1))
 			continue;
 		/* the trail: a round's moves of its last life frames (a tracer's 1,
-		a FULL bolt's 4), one line (a round flies straight) from the start of
+		a HEAVY bolt's 4), one line (a round flies straight) from the start of
 		its oldest kept move to its head. A tracer's one frame: solid over
 		its newer half, fading to nothing over its older half, as Halo's
 		contrail. Kept moves fade with age (whole at the head, nothing life
@@ -900,6 +907,13 @@ HOT static void draw(const struct n64_particle_view *view, int views, int *mode)
 	for (int s = 0; s < still_count && glow_count < 32 + PROJECTILE_MODEL_GLOWS; s++)
 		if (projectile_place(view, stills[s].at, &glows[glow_count]))
 			glows[glow_count++].at = (uint8_t)(PROJECTILE_SEGMENTS + s);
+	/* (FULL's long trails, the FULL part's: its mode, then this module's
+	colour set again) */
+	if (n64_projectiles_full_entry)
+	{
+		n64_projectiles_full_entry->draw(view, views, mode);
+		projectile_prim_set = 0;
+	}
 	if (glow_count)
 		projectile_glow_begin(mode);
 	for (int g = 0; g < glow_count; g++)

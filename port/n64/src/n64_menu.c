@@ -234,7 +234,7 @@ static struct
 	int hud_standard;
 	/* OBSTACLE STAND-INS off (n64_render_set_standins) */
 	int no_standins;
-	/* PROJECTILES: 0 off, 1 light, 2 full (n64_projectiles_set_mode) */
+	/* PROJECTILES: 0 off, 1 light, 2 heavy, 3 full (n64_projectiles_set_mode) */
 	int projectiles;
 	/* HUD STYLE 64: the HUD redrawn for the N64 (n64_hud_set_style) */
 	int hud_style;
@@ -992,7 +992,7 @@ static int resolution_step(int chunky, int step)
 	return resolution_order[(i + step + RESOLUTION_COUNT) % RESOLUTION_COUNT];
 }
 static const char *const terrain_details[4] = {"FULL", "HIGH", "MEDIUM", "LOW"};
-static const char *const projectile_values[3] = {"OFF", "LIGHT", "FULL"};
+static const char *const projectile_values[4] = {"OFF", "LIGHT", "HEAVY", "FULL"};
 
 static int terrain_step(int value, int step)
 {
@@ -1050,9 +1050,10 @@ static void settings_pack(unsigned char *bytes)
 	/* (FIELD OF VIEW in degrees after the controllers', 0 in the records
 	kept before it: the default) */
 	bytes[40] = (unsigned char)menu.field_of_view;
-	/* (PROJECTILES after it, kept as 0 LIGHT, 1 FULL, 2 OFF: 0, LIGHT, in
-	the records kept before it) */
-	bytes[41] = (unsigned char)(menu.projectiles ? menu.projectiles - 1 : 2);
+	/* (PROJECTILES after it, kept as 0 LIGHT, 1 HEAVY, 2 OFF, 3 FULL: 0,
+	LIGHT, in the records kept before it; 1 was FULL before the row had four
+	values, and HEAVY draws what that FULL drew) */
+	bytes[41] = (unsigned char)(menu.projectiles == 0 ? 2 : menu.projectiles == 3 ? 3 : menu.projectiles - 1);
 	/* (a bit a controller with its Rumble Pak off: 0 in the records kept
 	before there was one, so theirs are on) */
 	for (int p = 0; p < 4; p++)
@@ -1096,7 +1097,7 @@ static int settings_unpack(const unsigned char *bytes)
 	menu.hud_style = (bytes[15] >> 4) & 1;
 	menu.field_of_view = bytes[40] >= FOV_MINIMUM && bytes[40] <= FOV_MAXIMUM && !(bytes[40] % FOV_STEP) ?
 		bytes[40] : FOV_DEFAULT;
-	menu.projectiles = bytes[41] < 2 ? bytes[41] + 1 : bytes[41] == 2 ? 0 : 1;
+	menu.projectiles = bytes[41] < 2 ? bytes[41] + 1 : bytes[41] == 2 ? 0 : bytes[41] == 3 ? 3 : 1;
 	/* (the menu's display made next takes it too) */
 	n64_render_set_dedither(menu.dedither);
 	for (int p = 0; p < 4; p++)
@@ -1607,7 +1608,7 @@ static void draw_settings(int item)
 		[SETTING_FIELD_OF_VIEW] = {"HOW WIDE YOU SEE IN FIRST PERSON, IN DEGREES", "ACROSS (70 AS IN HALO; WIDER DRAWS MORE: SLOWER)"},
 		[SETTING_ANIMATIONS] = {"HALF: POSES, YOUR GUN'S TOO, AT HALF THE RATE", "(HALVED AGAIN WITH 3 OR 4 PLAYERS)"},
 		[SETTING_PARTICLES] = {"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
-		[SETTING_PROJECTILES] = {"TRACERS AND GLOWING BOLTS; FULL: BOLT TRAILS", "TOO (NONE WHERE MEMORY IS SHORT; FULL: SLOWER)"},
+		[SETTING_PROJECTILES] = {"TRACERS AND GLOWING BOLTS; HEAVY: SHORT TRAILS,", "FULL: LONG TRAILS TOO (SLOWER; LESS IF NO ROOM)"},
 		[SETTING_DECALS] = {"BULLET HOLES, BLOOD AND SCORCH MARKS ON", "WALLS AND FLOORS (OFF: A LITTLE FASTER)"},
 		[SETTING_VIEW_MODEL] = {"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES;", "OFF IN SPLIT: LOW, NONE WITH 3-4 PLAYERS (FASTER)"},
 		[SETTING_TERRAIN] = {"FULL: GROUND DETAIL AT EVERY DISTANCE; HIGH: IT", "FADES; MEDIUM: LESS ON ROCK; LOW: NONE (FASTER)"},
@@ -2469,8 +2470,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				if (setting == SETTING_PARTICLES && (pad->left || pad->right || pad->pressed.a))
 					menu.no_particles = !menu.no_particles;
 				if (setting == SETTING_PROJECTILES && (pad->left || pad->right || pad->pressed.a))
-					menu.projectiles = pad->left ? (menu.projectiles ? menu.projectiles - 1 : 2) :
-						menu.projectiles < 2 ? menu.projectiles + 1 : 0;
+					menu.projectiles = pad->left ? (menu.projectiles ? menu.projectiles - 1 : 3) :
+						menu.projectiles < 3 ? menu.projectiles + 1 : 0;
 				if (setting == SETTING_DECALS && (pad->left || pad->right || pad->pressed.a))
 					menu.no_decals = !menu.no_decals;
 				if (setting == SETTING_ANTIALIAS && (pad->left || pad->right || pad->pressed.a))

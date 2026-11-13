@@ -221,10 +221,10 @@ void n64_projectiles_moved(
 	struct n64_projectile_look *look = look_get(definition_index);
 	unsigned long parts;
 
-	/* (LIGHT: a bolt's glow alone; FULL: its trail too, on its tracer
-	rounds) */
+	/* (LIGHT: a bolt's glow alone; HEAVY and FULL: its trail too, on its
+	tracer rounds) */
 	parts = look->parts & N64_LOOK_GLOW;
-	if ((look->parts & N64_LOOK_STREAK) && tracer && (n64_projectiles_map_mode == 2 || !parts))
+	if ((look->parts & N64_LOOK_STREAK) && tracer && (n64_projectiles_map_mode >= 2 || !parts))
 		parts |= N64_LOOK_STREAK;
 	if (parts)
 	{
@@ -244,5 +244,9 @@ void n64_projectiles_moved(
 		n64_projectiles_segment_record(from, to,
 			(look->color & ~N64_LOOK_GLOW_MODEL) | parts << 24, look->radius, look->parts >> 4,
 			(int)DATUM_INDEX_TO_ABSOLUTE_INDEX(projectile_index) + 1 + (owner << 13));
+		/* (FULL: its long trail too) */
+		if (n64_projectiles_full_entry)
+			n64_projectiles_full_entry->record(from, to, (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(projectile_index) + 1,
+				definition_index);
 	}
 }
