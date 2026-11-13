@@ -2123,6 +2123,9 @@ int n64_render_make_room(unsigned long size, int count)
 	{
 		unsigned long round = 0;
 
+		/* (the projectiles' module given back first, n64_particles.c) */
+		if (n64_projectiles_give_back())
+			continue;
 		if (!models.header || !models.loaded)
 			return 0;
 		/* (a round's models, then one wait for the RSP) */
@@ -2790,7 +2793,9 @@ from the next frame. 1: room; 0: none, nothing pushed out; -1: none,
 though models were pushed out (the free total is not those pieces) */
 int n64_render_push_out_for_hud(unsigned long image, int pieces, unsigned long piece)
 {
-	if (n64_heap_has_pieces(image, pieces, piece))
+	/* (the projectiles' module given back first, n64_particles.c) */
+	if (n64_heap_has_pieces(image, pieces, piece) ||
+		(n64_projectiles_give_back() && n64_heap_has_pieces(image, pieces, piece)))
 		return 1;
 #ifdef HALO_N64_PC_EXPANSION
 	int pushed = 0;
@@ -2814,6 +2819,16 @@ int n64_render_push_out_for_hud(unsigned long image, int pieces, unsigned long p
 #endif
 }
 
+/* the last projectile's model refused (n64_render_lowest_refused) */
+static int lowest_refused;
+
+int n64_render_lowest_refused(void)
+{
+	int refused = lowest_refused;
+
+	lowest_refused = 0;
+	return refused;
+}
 /* the heap a projectile's model leaves free past the models' own margin */
 #define PROJECTILE_MODEL_MARGIN (32 * 1024)
 
@@ -2886,6 +2901,11 @@ static int load_model(int index, int tier, int gun_first)
 				return 0;
 			}
 		}
+		/* (the projectiles' module given back first where a critical sprite
+		is wanted and missing: the margin then counts the heap the HUD's
+		sprites would have once it is) */
+		if (n64_hud_view_model_room(~0UL))
+			n64_projectiles_give_back();
 		margin = (loaded->arms ? MODEL_HEAP_MARGIN : CUSTOM_VIEW_MODEL_HEAP_MARGIN) +
 			n64_hud_view_model_room(n64_heap_free());
 	}
@@ -2949,6 +2969,9 @@ static int load_model(int index, int tier, int gun_first)
 			models.missing++;
 			return 0;
 		}
+		/* (the projectiles' module given back first, n64_particles.c) */
+		if (short_of_heap && n64_projectiles_give_back())
+			continue;
 		int oldest = -1, in_flight = -1;
 
 #ifdef HALO_N64_PC_EXPANSION
@@ -3119,8 +3142,25 @@ static int load_model(int index, int tier, int gun_first)
 		/* (the heap a texture read here takes: not the model's own, cost16) */
 		int fresh = batch->texture >= 0 && batch->texture < models.header->texture_count && !models.sprites[batch->texture];
 		unsigned long before_texture = fresh ? n64_heap_free() : 0;
-		sprite_t *sprite = acquire_texture(batch->texture);
+		sprite_t *sprite = NULL;
 		int run = models.runs ? models.runs[model->first_batch + b] : RUN_HEAD | 1;
+
+		/* (where it finds no piece, once more after the projectiles' module
+		is given back, n64_particles.c: one call of acquire_texture; the
+		heap the module gave back is not the model's, cost16) */
+		for (int tries = 0; tries < 2; tries++)
+		{
+			unsigned long before_back;
+
+			if ((sprite = acquire_texture(batch->texture)) || !fresh || tries)
+				break;
+			before_back = n64_heap_free();
+			if (!n64_projectiles_give_back())
+				break;
+			before_back = n64_heap_free() - before_back;
+			heap_before += before_back;
+			before_texture += before_back;
+		}
 
 		if (fresh && sprite && before_texture > n64_heap_free())
 			textures_read += before_texture - n64_heap_free();
@@ -5999,6 +6039,7 @@ static void render_object(const struct n64_object *object)
 	loading_lowest = object->lowest;
 	int loaded_now = load_model(model - models.models, tier, gun_first);
 	loading_lowest = 0;
+	lowest_refused = object->lowest && !loaded_now;
 	if (!loaded_now)
 	{
 		if (object->obstacle_definition)

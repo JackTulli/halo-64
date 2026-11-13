@@ -765,7 +765,7 @@ static unsigned long hud_free(unsigned long bytes)
 	return n64_heap_free_held();
 }
 
-static int hud_room(unsigned long bytes, unsigned long reserve)
+static int hud_room_now(unsigned long bytes, unsigned long reserve)
 {
 	int pieces = hud.recording >= 0 ? RECORDING_ROOM_PIECES : 0;
 
@@ -777,6 +777,17 @@ static int hud_room(unsigned long bytes, unsigned long reserve)
 		return n64_heap_has(bytes + (unsigned long)pieces * RECORDING_ROOM_PIECE) && n64_heap_free() >= bytes + reserve;
 #endif
 	return n64_heap_has_held(bytes + (unsigned long)pieces * RECORDING_ROOM_PIECE) && n64_heap_free_held() >= bytes + reserve;
+}
+
+/* (with the projectiles' module given back first where there is none,
+n64_particles.c: one call of hud_room_now) */
+static int hud_room(unsigned long bytes, unsigned long reserve)
+{
+	for (int tries = 0;; tries++)
+		if (hud_room_now(bytes, reserve))
+			return 1;
+		else if (tries || !n64_projectiles_give_back())
+			return 0;
 }
 
 static sprite_t *hud_sprite(int number);
@@ -802,8 +813,12 @@ with what was made from them first (drop_made_in_play) */
 static void swap_critical(void)
 {
 	unsigned char old[MAXIMUM_SPRITES];
-	unsigned long freed = 0, wanted = 0, free_bytes = n64_heap_free(), need;
+	unsigned long freed = 0, wanted = 0, free_bytes, need;
 	int count = 0, loaded = 0, reloaded = 0, failed = 0;
+
+	/* (the projectiles' module given back first, n64_particles.c) */
+	n64_projectiles_give_back();
+	free_bytes = n64_heap_free();
 
 	for (int i = 0; i < MAXIMUM_SPRITES; i++)
 	{
@@ -1671,6 +1686,9 @@ static sprite_t *hud_sprite(int number)
 			image = sprite_bytes(file) + 1024;
 			need = image + recording_room;
 			room = image > HUD_LARGE_IMAGE ? n64_heap_has_held(need) : n64_heap_has(need);
+			/* (the projectiles' module given back first, n64_particles.c) */
+			if (!room && n64_projectiles_give_back())
+				room = image > HUD_LARGE_IMAGE ? n64_heap_has_held(need) : n64_heap_has(need);
 			fclose(file);
 			if (!room)
 				continue;
