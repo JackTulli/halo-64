@@ -507,7 +507,8 @@ until the next call */
 const struct n64_fx_emitter *n64_fx_event(int effect_tag_index, int event_index, int *count);
 void n64_particle_spawn(const struct n64_particle_spawn *spawn);
 void n64_flame_trail(const float *position, const float *velocity);
-/* Short visual-only segment along the actual sniper projectile movement. */
+/* A sniper round's move this tick, visual only: joined into its ribbon from
+the muzzle (n64_particles.c). */
 void n64_sniper_ribbon(const float *start, const float *end);
 /* PROJECTILES (SETTINGS): 0 off, 1 light, 2 full; from the next map's load
 (n64_particles.c: bullets' tracers and bolts' glows, from

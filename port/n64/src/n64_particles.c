@@ -150,14 +150,16 @@ static struct
 	surface_t fireball;
 } fx;
 
-/* Eight short, independently fading shot segments: 224 bytes, no heap. */
+/* Eight fading shot ribbons, each a bullet's joined moves from the muzzle:
+224 bytes, no heap. */
 static struct { float start[3], end[3], age; } sniper_ribbons[N64_SNIPER_RIBBONS];
 static int next_sniper_ribbon;
-/* I4: soft across the ribbon, tapered at both ends, no opaque card. */
+/* I4: soft across the ribbon, even along it (a bullet's moves join into one
+line from the muzzle), no opaque card. */
 static unsigned char sniper_mask[32] __attribute__((aligned(16))) = {
     0,0,0,0,0,0,0,0,
-    0x01,0x35,0x79,0xBC,0xCB,0x97,0x53,0x10,
-    0x01,0x35,0x79,0xBC,0xCB,0x97,0x53,0x10,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
     0,0,0,0,0,0,0,0
 };
 static void reset_sniper_ribbons(void)
@@ -169,9 +171,17 @@ void n64_sniper_ribbon(const float *start, const float *end)
 {
     if (fx.disabled) return;
     int index = next_sniper_ribbon;
+    /* (a bullet's next tick joins its ribbon: one that ends where it starts
+    and is still new -- two rounds in flight keep a ribbon each) */
+    for (int i = 0; i < N64_SNIPER_RIBBONS; i++)
+        if (sniper_ribbons[i].age < N64_SNIPER_HOLD && !memcmp(start, sniper_ribbons[i].end, sizeof(sniper_ribbons[i].end)))
+        {
+            memcpy(sniper_ribbons[i].end, end, sizeof(sniper_ribbons[i].end));
+            return;
+        }
     if (!sniper_ribbon_segment(start, end, sniper_ribbons[index].start, sniper_ribbons[index].end)) return;
     sniper_ribbons[index].age = 0.f;
-    next_sniper_ribbon = (index + 1) % N64_SNIPER_RIBBONS;
+    next_sniper_ribbon = (index + 1) & (N64_SNIPER_RIBBONS - 1);
 }
 
 /* ---------- projectiles: the setting, the module, the dots. The tracers,
@@ -1237,7 +1247,11 @@ static void draw_sniper_ribbons(const struct n64_particle_view *view)
         float projected[N64_SNIPER_CLIP][6];
         float age = sniper_ribbons[i].age;
         if (age >= N64_SNIPER_LIFE) continue;
-        int count = sniper_ribbon_geometry(view, sniper_ribbons[i].start, sniper_ribbons[i].end, projected);
+        /* (how far it has faded: 0 held, 1 gone; Halo's width 0.044 world
+        units held, 0.0875 gone -- its first 0.025 is under a pixel here) */
+        float fade = age < N64_SNIPER_HOLD ? 0.f : (age - N64_SNIPER_HOLD) * (1.f / (N64_SNIPER_LIFE - N64_SNIPER_HOLD));
+        int count = sniper_ribbon_geometry(view, sniper_ribbons[i].start, sniper_ribbons[i].end, 0.022f + 0.0215f * fade,
+            projected);
         if (count < 3) continue;
         if (!started)
         {
@@ -1255,15 +1269,21 @@ static void draw_sniper_ribbons(const struct n64_particle_view *view)
             rdpq_tex_upload(TILE0, &mask, NULL);
             started = 1;
         }
-        float alpha = 1.f - age / N64_SNIPER_LIFE;
+        float alpha = 1.f - fade;
         if (view->fog_end > view->fog_start)
         {
-            float z = 1.f / projected[0][5];
+            /* (the fog at its nearest vertex: a long ribbon that passes the
+            view is as clear there as a short one, whatever its far end) */
+            float inv = projected[0][5];
+            for (int v = 1; v < count; v++) if (projected[v][5] > inv) inv = projected[v][5];
+            float z = 1.f / inv;
             if (z > view->fog_end) continue;
             if (z > view->fog_start) alpha *= 1.f - (z - view->fog_start) / (view->fog_end - view->fog_start);
         }
-        /* Pale vapor, deliberately much quieter than impact flashes. */
-        rdpq_set_prim_color(RGBA32(205, 225, 235, (int)(alpha * alpha * 76.f)));
+        /* Halo's colours: gold (242, 217, 151) at first, grey (196, 196, 196)
+        held, then fading out (its bitmap's alpha at most 0.73) */
+        int a = (int)(alpha * 186.f);
+        rdpq_set_prim_color(age < N64_SNIPER_GOLD ? RGBA32(242, 217, 151, a) : RGBA32(196, 196, 196, a));
         for (int v = 1; v < count - 1; v++) rdpq_triangle(&TRIFMT_ZBUF_TEX, projected[0], projected[v], projected[v + 1]);
     }
 }

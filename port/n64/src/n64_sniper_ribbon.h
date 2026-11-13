@@ -4,22 +4,29 @@
 #include <math.h>
 #include <string.h>
 #define N64_SNIPER_RIBBONS 8
-#define N64_SNIPER_LIFE 0.24f
-#define N64_SNIPER_LENGTH 12.f
+/* Halo's sniper contrail (weapons\sniper rifle\sniper, alpha blended, its
+bitmap's alpha at most 0.73): a straight line along the whole path, each
+point gold and 0.025 world units wide, turning grey and 0.044 wide in 0.15
+s, held 0.10-0.35 s, then fading out in 0.875 s while it widens to 0.0875:
+gone in 1.125-1.375 s. Here a bullet's moves (33 units a tick) join one
+ribbon from the muzzle: gold for N64_SNIPER_GOLD, then grey, held to
+N64_SNIPER_HOLD, gone at N64_SNIPER_LIFE. */
+#define N64_SNIPER_GOLD 0.15f
+#define N64_SNIPER_HOLD 0.375f
+#define N64_SNIPER_LIFE 1.25f
 #define N64_SNIPER_CLIP 10
 
-/* Retain the last short piece of the actual collision-resolved trajectory. */
+/* Retain the collision-resolved trajectory of a tick. */
 static int sniper_ribbon_segment(const float a[3], const float b[3], float start[3], float end[3])
 {
-	float d[3], length2 = 0.f;
+	float length2 = 0.f;
 	for (int k = 0; k < 3; k++)
 	{
 		if (!isfinite(a[k]) || !isfinite(b[k])) return 0;
-		d[k] = b[k] - a[k]; length2 += d[k] * d[k];
+		length2 += (b[k] - a[k]) * (b[k] - a[k]);
 	}
 	if (!isfinite(length2) || length2 < 0.000001f) return 0;
-	float scale = length2 > N64_SNIPER_LENGTH * N64_SNIPER_LENGTH ? N64_SNIPER_LENGTH / sqrtf(length2) : 1.f;
-	for (int k = 0; k < 3; k++) { end[k] = b[k]; start[k] = b[k] - d[k] * scale; }
+	for (int k = 0; k < 3; k++) { end[k] = b[k]; start[k] = a[k]; }
 	return 1;
 }
 
@@ -46,7 +53,8 @@ static int sniper_ribbon_clip(float in[][5], int count, const float plane[4], fl
 
 /* Output RDPQ XYZ/ST/INV_W. All geometry clips before perspective division;
    thin screen-space width stays readable in small and anamorphic viewports. */
-static int sniper_ribbon_geometry(const struct n64_particle_view *view, const float start[3], const float end[3], float out[N64_SNIPER_CLIP][6])
+static int sniper_ribbon_geometry(const struct n64_particle_view *view, const float start[3], const float end[3], float half_width,
+	float out[N64_SNIPER_CLIP][6])
 {
 	float line[2][3], xy[2][2], camera[N64_SNIPER_CLIP][5], temp[N64_SNIPER_CLIP][5];
 	float px = view->pixels_per_unit * view->x_scale, py = view->pixels_per_unit;
@@ -63,10 +71,14 @@ static int sniper_ribbon_geometry(const struct n64_particle_view *view, const fl
 			if (!isfinite(line[i][k])) return 0;
 		}
 	}
-	/* Trim the center line against depth before constructing its width. */
+	/* Trim the center line against depth before constructing its width:
+	   in front of the near plane, and short of the fog's end where there is
+	   fog (a joined ribbon is up to ~375 units long; past the fog it would
+	   show unfogged, as nothing else does). */
+	float far_cut = view->fog_end > near && view->fog_end < view->z_far ? view->fog_end : view->z_far;
 	for (int side = 0; side < 2; side++)
 	{
-		float depth = side ? view->z_far : near;
+		float depth = side ? far_cut : near;
 		float da = side ? depth - line[0][2] : line[0][2] - depth;
 		float db = side ? depth - line[1][2] : line[1][2] - depth;
 		if (da < 0.f && db < 0.f) return 0;
@@ -90,9 +102,9 @@ static int sniper_ribbon_geometry(const struct n64_particle_view *view, const fl
 	for (int v = 0; v < 4; v++)
 	{
 		int endpoint = v == 1 || v == 2;
-		float z = line[endpoint][2], width = py * 0.009f / z;
-		if (width < 0.35f) width = 0.35f;
-		if (width > 1.1f) width = 1.1f;
+		float z = line[endpoint][2], width = py * half_width / z;
+		if (width < 0.5f) width = 0.5f;
+		if (width > 1.5f) width = 1.5f;
 		float side = v < 2 ? -1.f : 1.f;
 		camera[v][0] = line[endpoint][0] + normal[0] * width * side * z / px;
 		camera[v][1] = line[endpoint][1] + normal[1] * width * side * z / py;
