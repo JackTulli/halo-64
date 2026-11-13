@@ -115,9 +115,10 @@ def elf_files(cartridge):
 
 
 # the modules a program may have beside it, each in the ROM's files as it is:
-# HUD STYLE 64's (rom:/hud64.dso) and the projectiles' tracers, trails and
-# glows (rom:/projectiles.dso)
-MODULES = ("hud64.dso", "projectiles.dso")
+# HUD STYLE 64's (rom:/hud64.dso), the projectiles' tracers, trails and
+# glows (rom:/projectiles.dso) and PROJECTILES FULL's long contrails
+# (rom:/projectiles_full.dso)
+MODULES = ("hud64.dso", "projectiles.dso", "projectiles_full.dso")
 
 
 def module_files(cartridge):

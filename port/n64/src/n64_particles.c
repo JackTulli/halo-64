@@ -156,7 +156,7 @@ static struct { float start[3], end[3], age; } sniper_ribbons[N64_SNIPER_RIBBONS
 static int next_sniper_ribbon;
 /* I4: soft across the ribbon, even along it (a bullet's moves join into one
 line from the muzzle), no opaque card. */
-static unsigned char sniper_mask[32] __attribute__((aligned(16))) = {
+unsigned char n64_sniper_mask[32] __attribute__((aligned(16))) = {
     0,0,0,0,0,0,0,0,
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
@@ -200,6 +200,7 @@ short, tracers and glows are not drawn. The dots of projectiles whose model
 had no room (n64_projectile_dot_next) are the program's, whatever the module
 and the setting. */
 #define PROJECTILES_MODULE "rom:/projectiles.dso"
+#define PROJECTILES_FULL_MODULE "rom:/projectiles_full.dso"
 /* (n64_render.c MODEL_HEAP_MARGIN) */
 #define PROJECTILE_HEAP_FREE (96 * 1024)
 #define PROJECTILE_HOLD_FRAMES 120
@@ -220,9 +221,11 @@ const unsigned char n64_projectile_glow_texels[32] __attribute__((aligned(16))) 
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x12, 0x00, 0x01, 0x23, 0x44, 0x00, 0x12, 0x45, 0x67,
 	0x00, 0x24, 0x68, 0x9A, 0x01, 0x35, 0x8A, 0xBC, 0x01, 0x46, 0x9B, 0xDE, 0x02, 0x47, 0xAC, 0xEF,
 };
-/* the module's memory, and its entry points while it is in */
-static void *projectile_module;
+/* the module's memory, and its entry points while it is in; and the FULL
+part's (rom:/projectiles_full.dso: FULL's long contrails, at FULL only) */
+static void *projectile_module, *projectile_full_module;
 const struct n64_projectiles_entries *n64_projectiles_entry;
+const struct n64_projectiles_full_entries *n64_projectiles_full_entry;
 
 void n64_projectiles_set_mode(int mode)
 {
@@ -233,6 +236,13 @@ int n64_projectiles_give_back(void)
 {
 	if (!projectile_module)
 		return 0;
+	/* (the FULL part first: the projectiles' module calls it) */
+	if (projectile_full_module)
+	{
+		n64_projectiles_full_entry = NULL;
+		n64_module_free(projectile_full_module);
+		projectile_full_module = NULL;
+	}
 	n64_projectiles_entry = NULL;
 	n64_module_free(projectile_module);
 	projectile_module = NULL;
@@ -271,6 +281,11 @@ static void projectiles_module_start(void)
 		return;
 	}
 	n64_projectiles_entry = (const struct n64_projectiles_entries *)address;
+	/* (FULL: its part too, where the heap has its room and the margin besides;
+	else the module draws HEAVY) */
+	if (projectile_map_mode == 3 && (projectile_full_module = n64_module_load_spare(PROJECTILES_FULL_MODULE,
+		N64_PROJECTILES_FULL_ENTRIES, PROJECTILE_HEAP_FREE, &address)))
+		n64_projectiles_full_entry = (const struct n64_projectiles_full_entries *)address;
 	n64_projectiles_entry->begin(projectile_map_mode, projectile_frame_time);
 }
 
@@ -1264,8 +1279,8 @@ static void draw_sniper_ribbons(const struct n64_particle_view *view)
         if (count < 3) continue;
         if (!started)
         {
-            surface_t mask = surface_make_linear(sniper_mask, FMT_I4, 16, 4);
-            data_cache_hit_writeback(sniper_mask, sizeof(sniper_mask));
+            surface_t mask = surface_make_linear(n64_sniper_mask, FMT_I4, 16, 4);
+            data_cache_hit_writeback(n64_sniper_mask, sizeof(n64_sniper_mask));
             rdpq_sync_pipe();
             rdpq_mode_begin();
             rdpq_set_mode_standard();

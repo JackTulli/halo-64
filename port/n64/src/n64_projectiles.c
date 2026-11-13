@@ -112,6 +112,11 @@ typedef char projectile_segments_check[PROJECTILE_SEGMENTS <= 64 ? 1 : -1];
 frames old: never drawn) */
 static void begin(int mode, float frame_time)
 {
+	/* (FULL: its long trails are the FULL part's, rom:/projectiles_full.dso,
+	loaded by the program with this module where the heap has its room; else
+	HEAVY) */
+	if (mode == 3 && !n64_projectiles_full_entry)
+		mode = 2;
 	n64_projectiles_map_mode = mode;
 	n64_projectiles_looks_clear();
 	memset(block.segments, 0xFF, sizeof(block.segments));
@@ -249,6 +254,8 @@ static void update(float dt, float frame_time)
 {
 	if (!(isfinite(dt) && dt > 0.f))
 		return;
+	if (n64_projectiles_full_entry)
+		n64_projectiles_full_entry->update(dt);
 	float frames = PROJECTILE_BOLT_SECONDS / frame_time;
 
 	if (frames > bolt_life + 0.75f && bolt_life < PROJECTILE_BOLT_FRAMES)
@@ -899,6 +906,13 @@ HOT static void draw(const struct n64_particle_view *view, int views, int *mode)
 	for (int s = 0; s < still_count && glow_count < 32 + PROJECTILE_MODEL_GLOWS; s++)
 		if (projectile_place(view, stills[s].at, &glows[glow_count]))
 			glows[glow_count++].at = (uint8_t)(PROJECTILE_SEGMENTS + s);
+	/* (FULL's long trails, the FULL part's: its mode, then this module's
+	colour set again) */
+	if (n64_projectiles_full_entry)
+	{
+		n64_projectiles_full_entry->draw(view, views, mode);
+		projectile_prim_set = 0;
+	}
 	if (glow_count)
 		projectile_glow_begin(mode);
 	for (int g = 0; g < glow_count; g++)

@@ -50,6 +50,10 @@ so the RDP never reads it from a module given back while a frame is in
 flight */
 extern const unsigned char n64_projectile_glow_texels[32];
 
+/* the sniper ribbon's I4 mask (n64_particles.c, the program's): the long
+trails' too */
+extern unsigned char n64_sniper_mask[32];
+
 /* (inside the module: n64_projectiles.c's and n64_projectiles_game.c's; the
 map's mode, 1 LIGHT, 2 HEAVY, 3 FULL) */
 extern int n64_projectiles_map_mode;
@@ -62,5 +66,21 @@ int n64_projectiles_model_glow(void);
 int n64_projectiles_segment_fresh(int key);
 void n64_projectiles_moved(long projectile_index, long definition_index, long owner_player_index, int tracer,
 	const float *from, const float *to);
+
+/* PROJECTILES FULL's long contrails: a module of its own, rom:/projectiles_full.dso
+(n64_projectiles_full.c), loaded by the program with the projectiles' module only at FULL and where the heap has its
+room; its entry points while it is in (else NULL), for the projectiles' module */
+#define N64_PROJECTILES_FULL_ENTRIES "n64_projectiles_full_entries"
+struct n64_projectiles_full_entries
+{
+	/* a projectile's move of this tick (one with a look), its long trail's if it has one: its key (absolute
+	index + 1) and its definition */
+	void (*record)(const float *from, const float *to, int key, long definition_index);
+	/* a frame of dt seconds */
+	void (*update)(float dt);
+	/* a view's long trails (*mode: the RDP's mode set, 3 its own) */
+	void (*draw)(const struct n64_particle_view *view, int views, int *mode);
+};
+extern const struct n64_projectiles_full_entries *n64_projectiles_full_entry;
 
 #endif

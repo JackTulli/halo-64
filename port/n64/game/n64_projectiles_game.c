@@ -230,5 +230,9 @@ void n64_projectiles_moved(
 		hides_model marks it, at most 16 a frame: the module's bit 30) */
 		n64_projectiles_segment_record(from, to, look->color | parts << 24, look->radius, look->parts >> 4,
 			(int)DATUM_INDEX_TO_ABSOLUTE_INDEX(projectile_index) + 1 + (owner << 13));
+		/* (FULL: its long trail too) */
+		if (n64_projectiles_full_entry)
+			n64_projectiles_full_entry->record(from, to, (int)DATUM_INDEX_TO_ABSOLUTE_INDEX(projectile_index) + 1,
+				definition_index);
 	}
 }
