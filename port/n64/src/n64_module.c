@@ -201,9 +201,22 @@ static int link_module(uint8_t *base, const uint8_t *link, const struct dso_symb
 heap for it, and not given back by n64_module_free) */
 static void *module_home;
 
+/* (n64_module_load_spare: only into room the heap has) */
+static int spare_only;
+
 void *n64_module_load(const char *path, const char *name, unsigned long margin, void **address)
 {
 	return n64_module_load_into(path, name, margin, address, NULL, 0, NULL);
+}
+
+void *n64_module_load_spare(const char *path, const char *name, unsigned long margin, void **address)
+{
+	void *module;
+
+	spare_only = 1;
+	module = n64_module_load_into(path, name, margin, address, NULL, 0, NULL);
+	spare_only = 0;
+	return module;
 }
 
 /* as n64_module_load, with the resident part put at home (aligned 32, size
@@ -234,8 +247,10 @@ void *n64_module_load_into(const char *path, const char *name, unsigned long mar
 		*resident = header.resident_size;
 	if (home && (header.resident_size > size || ((uintptr_t)home & 31)))
 		home = NULL;
-	if (!n64_render_room_leaving(home ? header.link_size + 4096 : header.resident_size,
-		home ? margin : margin > header.link_size + 4096 ? margin : header.link_size + 4096))
+	unsigned long need = home ? header.link_size + 4096 : header.resident_size,
+		spare = home ? margin : margin > header.link_size + 4096 ? margin : header.link_size + 4096;
+
+	if (spare_only ? n64_heap_free() < need + spare || !n64_heap_has(need) : !n64_render_room_leaving(need, spare))
 	{
 		debugf("module: %s: %lu + %lu KB wanted, %lu KB free\n", path,
 			(unsigned long)header.resident_size / 1024, margin / 1024, n64_heap_free() / 1024);
@@ -261,7 +276,9 @@ void *n64_module_load_into(const char *path, const char *name, unsigned long mar
 		*address = NULL;
 		return NULL;
 	}
-	module_home = home;
+	/* (only a module given a home has one: another's load leaves it) */
+	if (home)
+		module_home = home;
 	return base;
 }
 

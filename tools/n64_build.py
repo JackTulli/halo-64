@@ -197,11 +197,13 @@ def main(argv=None):
                     "$bin/mips64-elf-strip -s $in.stripped && "
                     "$bin/n64elfcompress -o $outdir -c $rom_elf_compression $in.stripped"),
            description="N64 PROGRAM $in")
-    # HUD STYLE 64's module (port/n64/game/n64_hud64_stub.c loads it, with
+    # a module (HUD STYLE 64's: port/n64/game/n64_hud64_stub.c loads it; the
+    # projectiles': port/n64/src/n64_particles.c; both with
     # port/n64/src/n64_module.c): linked on its own, keeping only what its
-    # one export reaches (n64_hud64_module.h), its imports kept in the
-    # program (an externs linker script), the program's symbols for them in
-    # the ROM (.msym); stored as it is (-c 0: n64_module.c reads it so)
+    # one export reaches (n64_hud64_module.h, n64_projectiles_module.h), its
+    # imports kept in the program (one externs linker script for all), the
+    # program's symbols for them in the ROM (.msym); stored as it is (-c 0:
+    # n64_module.c reads it so)
     n.rule("dso_link",
            command=("cd $root && $bin/mips64-elf-ld --emit-relocs --unresolved-symbols=ignore-all --nmagic "
                     "--gc-sections -u $export -T$libdir/dso.ld -Map=$out.map -o $out $in"),
@@ -242,10 +244,18 @@ def main(argv=None):
     # -O wins over the unit's own)
     source_flags = port.get("source_flags", {})
 
-    # HUD STYLE 64's units: its module, rom:/hud64.dso (the program keeps a
-    # stub, port/n64/game/n64_hud64_stub.c); no link-time optimisation, no
-    # small data (-G0: the module reaches the program's data by address)
-    module_sources = {"port/n64/src/n64_hud64.c", "port/n64/game/n64_hud64_game.c"}
+    # the modules' units, by module: HUD STYLE 64's, rom:/hud64.dso (the
+    # program keeps a stub, port/n64/game/n64_hud64_stub.c), and the
+    # projectiles' tracers, trails and glows, rom:/projectiles.dso (the
+    # program keeps the setting, the hook and the dots,
+    # port/n64/src/n64_particles.c); no link-time optimisation, no small data
+    # (-G0: a module reaches the program's data by address). Each module is
+    # linked on its own with its one export
+    module_sources = {"port/n64/src/n64_hud64.c": "hud64", "port/n64/game/n64_hud64_game.c": "hud64",
+                      "port/n64/src/n64_projectiles.c": "projectiles", "port/n64/game/n64_projectiles_game.c": "projectiles",
+                      "port/n64/src/n64_projectiles_full.c": "projectiles_full"}
+    module_exports = {"hud64": "n64_hud64_entries", "projectiles": "n64_projectiles_entries",
+                      "projectiles_full": "n64_projectiles_full_entries"}
 
     def module_flags(cflags):
         flags = [f for f in cflags.split(" ") if f not in ("-flto", "-ffat-lto-objects") and not re.fullmatch(r"-G\d+", f)]
@@ -266,7 +276,7 @@ def main(argv=None):
             cflags = f"{cflags} {extra}"
         if name in module_sources:
             cflags = module_flags(cflags)
-            obj_dir = obj_dir / "module"
+            obj_dir = obj_dir / "module" / module_sources[name]
         obj = obj_dir / Path(source).with_suffix(".o")
         objects.append(posix(obj))
         n.build(posix(obj), "cc", posix(source), implicit=[posix(semantics)],
@@ -383,18 +393,24 @@ def main(argv=None):
         objects += musl_objects
 
         variant_dir.mkdir(parents=True, exist_ok=True)
-        # HUD STYLE 64's module: its objects out of the program
-        module_objects = [o for o in objects if "/obj/module/" in o]
-        objects = [o for o in objects if o not in module_objects]
+        # the modules: their objects out of the program
+        module_objects = {m: [o for o in objects if f"/obj/module/{m}/" in o] for m in module_exports}
+        objects = [o for o in objects if "/obj/module/" not in o]
         libdir = N64_INST / "mips64-elf" / "lib"
-        module_elf = variant_dir / "hud64.elf"
-        module = variant_dir / "hud64.dso"
+        modules = []
+        for m, export in module_exports.items():
+            if not module_objects[m]:
+                continue
+            module_elf = variant_dir / f"{m}.elf"
+            module = variant_dir / f"{m}.dso"
+            n.build(posix(module_elf), "dso_link", module_objects[m], implicit=[posix(libdir / "dso.ld")],
+                    variables={"libdir": q(libdir), "export": export})
+            n.build(posix(module), "dso", posix(module_elf), variables={"outdir": q(variant_dir)})
+            modules.append(module)
         externs = variant_dir / "halo.externs"
         msym = variant_dir / "halo.msym"
-        n.build(posix(module_elf), "dso_link", module_objects, implicit=[posix(libdir / "dso.ld")],
-                variables={"libdir": q(libdir), "export": "n64_hud64_entries"})
-        n.build(posix(module), "dso", posix(module_elf), variables={"outdir": q(variant_dir)})
-        n.build(posix(externs), "dso_extern", posix(module))
+        # (the program keeps every module's imports: one externs script from all of them)
+        n.build(posix(externs), "dso_extern", [posix(module) for module in modules])
         # the object list, for tools/n64_link_check.py
         objlist = variant_dir / "objects.txt"
         objlist.write_text("\n".join(objects) + "\n", encoding="utf-8")
@@ -419,15 +435,17 @@ def main(argv=None):
                               for name in ("n64sym", "mips64-elf-strip", "n64elfcompress")],
                     variables={"outdir": q(variant_dir), "rom_elf_compression": str(compression)})
             # (what a ROM made from this program needs, tools/n64/rombuilder.py: the program and its symbols,
-            # HUD STYLE 64's module and the program's symbols for it, all from the same link)
-            return products + [posix(module), posix(msym)], len(game_objects), len(objects)
+            # the modules and the program's symbols for them, all from the same link)
+            return products + [posix(module) for module in modules] + [posix(msym)], len(game_objects), len(objects)
 
         fsdir = variant_dir / "filesystem"
         fs_files = []
         # (HUD STYLE 64's module, rom:/hud64.dso, and its textures, rom:/hud64/c*.bin: assets/hud64, written by
         # tools/n64/hud64/hud64_gen.py with port/n64/src/n64_hud64_data.h)
-        n.build(posix(fsdir / "hud64.dso"), "copy", posix(module))
-        fs_files.append(posix(fsdir / "hud64.dso"))
+        # (and the projectiles' module, rom:/projectiles.dso)
+        for module in modules:
+            n.build(posix(fsdir / module.name), "copy", posix(module))
+            fs_files.append(posix(fsdir / module.name))
         for texture_file in sorted(Path("assets/hud64").glob("c*.bin")):
             n.build(posix(fsdir / "hud64" / texture_file.name), "copy", posix(texture_file))
             fs_files.append(posix(fsdir / "hud64" / texture_file.name))

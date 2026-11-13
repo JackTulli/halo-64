@@ -291,14 +291,18 @@ struct n64_object
 	unsigned short obstacle_definition;
 	/* its model's tier for the model cache (n64_render.c load_model), most
 	wanted first: N64_TIER_FIRST_PERSON the local player's own view models,
-	N64_TIER_ACTOR bipeds, vehicles, projectiles and what a unit carries,
+	N64_TIER_ACTOR bipeds, vehicles and what a unit carries,
 	N64_TIER_ITEM weapons, equipment and garbage on the ground (nothing
 	shows them where their model has no room), N64_TIER_OBSTACLE scenery and
 	devices that collide (their stand-ins show them where their model has no
 	room; one with no stand-in to show is drawn at N64_TIER_ACTOR,
 	n64_render.c), N64_TIER_DECORATION scenery and devices that do not
-	collide, and the rest */
+	collide, projectiles, and the rest */
 	unsigned char tier;
+	/* a projectile's (a rocket, a needle, a grenade in flight): its model
+	loaded only into room no other model and no margin uses, never by
+	dropping another model (n64_render.c load_model) */
+	unsigned char lowest;
 };
 #define N64_TIER_FIRST_PERSON 0
 #define N64_TIER_ACTOR 1
@@ -503,8 +507,53 @@ until the next call */
 const struct n64_fx_emitter *n64_fx_event(int effect_tag_index, int event_index, int *count);
 void n64_particle_spawn(const struct n64_particle_spawn *spawn);
 void n64_flame_trail(const float *position, const float *velocity);
-/* Short visual-only segment along the actual sniper projectile movement. */
+/* A sniper round's move this tick, visual only: joined into its ribbon from
+the muzzle (n64_particles.c). */
 void n64_sniper_ribbon(const float *start, const float *end);
+/* PROJECTILES (SETTINGS): 0 off, 1 light, 2 heavy, 3 full; from the next map's load
+(n64_particles.c: bullets' tracers and bolts' glows, from
+source/items/projectiles.c) */
+void n64_projectiles_set_mode(int mode);
+/* the projectiles' module given back, before a model's or a HUD image's
+room is looked for (n64_render.c, n64_hud.c): 1 if it was in */
+int n64_projectiles_give_back(void);
+/* the frame's objects gathered again for its later views (n64_render_game.c) */
+void n64_render_gather_again(void);
+/* a projectile definition's look, found by the projectiles' module
+(n64_projectiles_game.c) and kept in it, N64_PROJECTILE_LOOKS of them by
+definition */
+struct n64_projectile_look
+{
+	/* its definition's absolute tag index + 1 (0: none) */
+	unsigned short definition;
+	/* bit 0 a trail, bit 1 a glow (bits 2-3 free); bits 4-7 the glow's
+	opacity: the light volume's far alpha in 1/20, at most 14 (15: solid,
+	alpha 1) */
+	unsigned char parts;
+	/* the glow's radius, 1/256 world units */
+	unsigned char radius;
+	/* RGB; the glow's length in 1/8 world units in bits 26-28 (at most
+	0.875; the longest stock one is 0.75); bit 29: dimmer seen end-on (the
+	light volume's parallel brightness under 1: a needle's 0.2); bit 30: its
+	model is only a glow (a needle's), drawn by the glow; bit 31: a light is
+	attached (a bright glow) */
+	unsigned long color;
+};
+#define N64_PROJECTILE_LOOKS 16
+/* a projectile definition's light volume's first frame, else NULL; a colour
+(0 to 1) as 0xRRGGBB, orange where near black (projectiles.c: the glow's and
+the dot's) */
+struct light_volume_frame;
+struct light_volume_frame const *n64_projectile_volume(long definition_index);
+unsigned long n64_projectile_rgb(float red, float green, float blue);
+/* the view's dots, drawn in its world pass whatever the module and the
+setting: the next projectile from *cursor (0 first) whose model had no room
+in the view (n64_render_game.c, n64_render_lowest_refused), its place and
+its colour; 0: none left */
+int n64_projectile_dot_next(int *cursor, float position[3], unsigned long *color);
+/* whether the last object drawn was a projectile's whose model had no room
+(n64_render.c; cleared by asking) */
+int n64_render_lowest_refused(void);
 /* explosions: the N64's own flash, fireball and smoke for the effects the
 converter marks (tools/n64/effects.py EXPLOSIONS), started by the effect
 code (source/effects/effects.c, HALO_N64) where the effect begins */
@@ -865,6 +914,9 @@ void n64_uncached_arena_end(void);
 int n64_hud64_arena_owns(const void *block);
 void n64_hud64_arena_give_back(void *block);
 void n64_module_free(void *module);
+/* as n64_module_load, but only into room the heap has: nothing is dropped
+or given back for it (the projectiles' module, which gives way to all) */
+void *n64_module_load_spare(const char *path, const char *name, unsigned long margin, void **address);
 
 /* the pause menu (START in a game, port/n64/game/n64_game.c): the
 scoreboard over the frame's views, every player and bot a row, sorted --

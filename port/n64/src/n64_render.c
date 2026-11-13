@@ -2123,6 +2123,9 @@ int n64_render_make_room(unsigned long size, int count)
 	{
 		unsigned long round = 0;
 
+		/* (the projectiles' module given back first, n64_particles.c) */
+		if (n64_projectiles_give_back())
+			continue;
 		if (!models.header || !models.loaded)
 			return 0;
 		/* (a round's models, then one wait for the RSP) */
@@ -2484,6 +2487,38 @@ static int switched_view_model(int index)
 /* a model load given up at batch "failed": its data and the blocks recorded
 so far freed, the textures its batches took given back (none of it was
 drawn yet), and the model not tried again in this frame */
+/* the model render_object asks for is a projectile's (n64_object.lowest) */
+static int loading_lowest;
+/* projectile models refused, not asked again for LOWEST_HOLD_FRAMES (half
+a second: for another object, view or frame the answer would most likely be
+the same, and each try may walk the heap or read the model again); items
+keep texture_refused, as a grenade on the ground still asks at its own tier.
+A few: a frame's refused projectile models are a map's rockets, needles and
+grenades */
+#define LOWEST_HOLDS 8
+#define LOWEST_HOLD_FRAMES 15
+/* (the model's index + 1, 0 none; the frame it is held to, its low 16 bits:
+held while that is 1 to LOWEST_HOLD_FRAMES frames ahead) */
+static struct { short index; unsigned short until; } lowest_holds[LOWEST_HOLDS];
+
+static void lowest_hold(int index)
+{
+	static int next;
+
+	lowest_holds[next].index = (short)(index + 1);
+	lowest_holds[next].until = (unsigned short)(renderer.frame_index + LOWEST_HOLD_FRAMES);
+	next = (next + 1) % LOWEST_HOLDS;
+}
+
+static int lowest_held(int index)
+{
+	for (int i = 0; i < LOWEST_HOLDS; i++)
+		if (lowest_holds[i].index == index + 1 &&
+			(unsigned short)(lowest_holds[i].until - (unsigned short)renderer.frame_index - 1) < LOWEST_HOLD_FRAMES)
+			return 1;
+	return 0;
+}
+
 static void refuse_model_load(int index, int failed)
 {
 	struct model_record *model = &models.models[index];
@@ -2506,7 +2541,13 @@ static void refuse_model_load(int index, int failed)
 	loaded->blocks = NULL;
 	for (int b = 0; b < failed; b++)
 		release_texture(models.batches[model->first_batch + b].texture);
-	loaded->texture_refused = renderer.frame_index + 1;
+	/* (a projectile's model held back for LOWEST_HOLD_FRAMES as a
+	projectile's only: an item with the same model still asks at its own
+	tier, load_model) */
+	if (!loading_lowest)
+		loaded->texture_refused = renderer.frame_index + 1;
+	else
+		lowest_hold(index);
 	models.loaded_bytes -= model->vertex_bytes + model->index_bytes;
 	models.missing++;
 	models.texture_refusals++;
@@ -2752,7 +2793,9 @@ from the next frame. 1: room; 0: none, nothing pushed out; -1: none,
 though models were pushed out (the free total is not those pieces) */
 int n64_render_push_out_for_hud(unsigned long image, int pieces, unsigned long piece)
 {
-	if (n64_heap_has_pieces(image, pieces, piece))
+	/* (the projectiles' module given back first, n64_particles.c) */
+	if (n64_heap_has_pieces(image, pieces, piece) ||
+		(n64_projectiles_give_back() && n64_heap_has_pieces(image, pieces, piece)))
 		return 1;
 #ifdef HALO_N64_PC_EXPANSION
 	int pushed = 0;
@@ -2775,6 +2818,19 @@ int n64_render_push_out_for_hud(unsigned long image, int pieces, unsigned long p
 	return 0;
 #endif
 }
+
+/* the last projectile's model refused (n64_render_lowest_refused) */
+static int lowest_refused;
+
+int n64_render_lowest_refused(void)
+{
+	int refused = lowest_refused;
+
+	lowest_refused = 0;
+	return refused;
+}
+/* the heap a projectile's model leaves free past the models' own margin */
+#define PROJECTILE_MODEL_MARGIN (32 * 1024)
 
 static int load_model(int index, int tier, int gun_first)
 {
@@ -2820,7 +2876,7 @@ static int load_model(int index, int tier, int gun_first)
 	/* (a model refused in this frame -- a texture or its push-out found no
 	room -- is not tried again until the next, the arms once pushed out not
 	for ARMS_HOLD_FRAMES: each try reads the model and its textures again) */
-	if (renderer.frame_index < loaded->texture_refused)
+	if (renderer.frame_index < loaded->texture_refused || (loading_lowest && lowest_held(index)))
 	{
 		models.missing++;
 		return 0;
@@ -2845,6 +2901,11 @@ static int load_model(int index, int tier, int gun_first)
 				return 0;
 			}
 		}
+		/* (the projectiles' module given back first where a critical sprite
+		is wanted and missing: the margin then counts the heap the HUD's
+		sprites would have once it is) */
+		if (n64_hud_view_model_room(~0UL))
+			n64_projectiles_give_back();
 		margin = (loaded->arms ? MODEL_HEAP_MARGIN : CUSTOM_VIEW_MODEL_HEAP_MARGIN) +
 			n64_hud_view_model_room(n64_heap_free());
 	}
@@ -2872,7 +2933,17 @@ static int load_model(int index, int tier, int gun_first)
 	{
 		/* Count each shared texture once, using its actual asset buffer size.
 		Painted-panel subdivisions reuse textures across many batches. */
-		unsigned long needed = model_allocation(model, margin);
+		int in_budget = models.loaded_bytes + models.texture_bytes + size <= MODEL_CACHE_BYTES;
+
+		/* (a projectile's model past the byte budget: refused before the
+		heap walks below, as it would be after them) */
+		if (loading_lowest && !in_budget)
+		{
+			lowest_hold(index);
+			models.missing++;
+			return 0;
+		}
+		unsigned long needed = model_allocation(model, margin + (loading_lowest ? PROJECTILE_MODEL_MARGIN : 0));
 		/* (the total alone passed on a heap cut up by models loaded and
 		dropped: memalign then found no piece the model's size, nothing was
 		dropped for it, and the model was drawn as nothing frame after
@@ -2883,8 +2954,24 @@ static int load_model(int index, int tier, int gun_first)
 		int short_of_room = n64_heap_free() < needed;
 		int short_of_heap = short_of_room || !n64_heap_has(size + 40);
 
-		if (models.loaded_bytes + models.texture_bytes + size <= MODEL_CACHE_BYTES && !short_of_heap)
+		if (in_budget && !short_of_heap)
 			break;
+		/* (a projectile's model: only into room that no other model, no
+		margin and PROJECTILE_MODEL_MARGIN besides use, and only while the
+		model cache's byte budget has room -- it drops no model, and nothing
+		gives way to it: the gun's, the HUD's and the obstacles' room first.
+		Held back for LOWEST_HOLD_FRAMES as a projectile's only (lowest_hold,
+		not texture_refused): an item or a carried weapon with the same
+		model, a grenade on the ground, still loads at its own tier) */
+		if (loading_lowest)
+		{
+			lowest_hold(index);
+			models.missing++;
+			return 0;
+		}
+		/* (the projectiles' module given back first, n64_particles.c) */
+		if (short_of_heap && n64_projectiles_give_back())
+			continue;
 		int oldest = -1, in_flight = -1;
 
 #ifdef HALO_N64_PC_EXPANSION
@@ -3035,8 +3122,12 @@ static int load_model(int index, int tier, int gun_first)
 		loaded->setups = NULL;
 		loaded->blocks = NULL;
 		/* (not tried again in this frame: the next try would find what this
-		one did) */
-		loaded->texture_refused = renderer.frame_index + 1;
+		one did -- a projectile's model not for LOWEST_HOLD_FRAMES, and an
+		item with the same model may still ask for it at its own tier) */
+		if (!loading_lowest)
+			loaded->texture_refused = renderer.frame_index + 1;
+		else
+			lowest_hold(index);
 		models.missing++;
 		return 0;
 	}
@@ -3051,8 +3142,25 @@ static int load_model(int index, int tier, int gun_first)
 		/* (the heap a texture read here takes: not the model's own, cost16) */
 		int fresh = batch->texture >= 0 && batch->texture < models.header->texture_count && !models.sprites[batch->texture];
 		unsigned long before_texture = fresh ? n64_heap_free() : 0;
-		sprite_t *sprite = acquire_texture(batch->texture);
+		sprite_t *sprite = NULL;
 		int run = models.runs ? models.runs[model->first_batch + b] : RUN_HEAD | 1;
+
+		/* (where it finds no piece, once more after the projectiles' module
+		is given back, n64_particles.c: one call of acquire_texture; the
+		heap the module gave back is not the model's, cost16) */
+		for (int tries = 0; tries < 2; tries++)
+		{
+			unsigned long before_back;
+
+			if ((sprite = acquire_texture(batch->texture)) || !fresh || tries)
+				break;
+			before_back = n64_heap_free();
+			if (!n64_projectiles_give_back())
+				break;
+			before_back = n64_heap_free() - before_back;
+			heap_before += before_back;
+			before_texture += before_back;
+		}
 
 		if (fresh && sprite && before_texture > n64_heap_free())
 			textures_read += before_texture - n64_heap_free();
@@ -5928,7 +6036,11 @@ static void render_object(const struct n64_object *object)
 #else
 	int gun_first = 0;
 #endif
-	if (!load_model(model - models.models, tier, gun_first))
+	loading_lowest = object->lowest;
+	int loaded_now = load_model(model - models.models, tier, gun_first);
+	loading_lowest = 0;
+	lowest_refused = object->lowest && !loaded_now;
+	if (!loaded_now)
 	{
 		if (object->obstacle_definition)
 			standin_queue(object);
