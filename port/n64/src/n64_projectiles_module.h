@@ -18,6 +18,10 @@ struct n64_particle_view;
 
 struct n64_projectiles_entries
 {
+	/* whether a projectile of the definition is drawn by its glow, not by
+	its model (a needle's: its model is only a glow); the module finds a
+	stuck one's place itself */
+	int (*hides_model)(long projectile_index, long definition_index);
 	/* the module's segments and looks new (after its load), the map's mode
 	(1 LIGHT, 2 FULL) and the frame time (n64_particles_update's, kept
 	across the module's loads) */
@@ -39,12 +43,22 @@ struct n64_projectiles_entries
 extern const struct n64_projectiles_entries *n64_projectiles_entry;
 
 
+/* the glows' texture (n64_particles.c): a soft round falloff, the top left
+quarter of 16x16 I4, mirrored in S and T where it is used; in the program,
+so the RDP never reads it from a module given back while a frame is in
+flight */
+extern const unsigned char n64_projectile_glow_texels[32];
+
 /* (inside the module: n64_projectiles.c's and n64_projectiles_game.c's; the
 map's mode, 1 LIGHT, 2 FULL) */
 extern int n64_projectiles_map_mode;
 void n64_projectiles_segment_record(const float *from, const float *to, unsigned long color, int radius, int opacity,
 	int key);
 void n64_projectiles_looks_clear(void);
+int n64_projectiles_hides_model(long projectile_index, long definition_index);
+void n64_projectiles_segment_still(const float *at, unsigned long color, int radius, int opacity, int key);
+int n64_projectiles_model_glow(void);
+int n64_projectiles_segment_fresh(int key);
 void n64_projectiles_moved(long projectile_index, long definition_index, long owner_player_index, int tracer,
 	const float *from, const float *to);
 

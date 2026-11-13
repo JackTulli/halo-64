@@ -42,6 +42,7 @@ renderer's (port/n64/src/n64_render.c).
 #include "objects/widgets/light_volumes.h"
 
 #include "../src/n64.h"
+#include "../src/n64_projectiles_module.h"
 
 /* HUD STYLE 64's game side (n64_hud64_game.c) */
 extern void n64_hud64_game_begin(int active);
@@ -318,6 +319,15 @@ static short frame_object_count;
 room in the view drawn last: their dots (n64_projectile_dot_next) */
 static unsigned long frame_object_dots[MAXIMUM_FRAME_OBJECTS / 32];
 static long frame_objects_frame = -1;
+/* (the frame's objects to gather again for its later views: the projectiles'
+module was given back while the frame's objects were drawn, so the models it
+left out for their glows are drawn) */
+static unsigned char frame_objects_stale;
+
+void n64_render_gather_again(void)
+{
+	frame_objects_stale = 1;
+}
 
 /* Match the translucent camouflage fallback without inventing refraction.
 The native unit property already fades in/out and responds to damage. */
@@ -418,6 +428,7 @@ static void gather_frame_objects(
 
 	frame_object_count = 0;
 	frame_objects_frame = render.frame_index;
+	frame_objects_stale = 0;
 	object_iterator_new(&iterator, _object_mask_all, FLAG(_object_header_visible_bit));
 	while ((object = object_iterator_next(&iterator)) != NULL && frame_object_count < MAXIMUM_FRAME_OBJECTS)
 	{
@@ -430,6 +441,13 @@ static void gather_frame_objects(
 			continue;
 		definition = object_definition_get(object->definition_index);
 		if (definition->object.model.index == NONE)
+			continue;
+		/* (a projectile whose model is only a glow -- a needle's, added to
+		the picture in Halo, solid and dark here -- is drawn by the
+		projectiles' module's glow, moving or stuck, where the frame has
+		room for its glow; else its model is drawn) */
+		if (object->object.type == _object_type_projectile && n64_projectiles_entry &&
+			n64_projectiles_entry->hides_model(iterator.index, object->definition_index))
 			continue;
 		entry->object_index = iterator.index;
 		/* (an object without a parent is its own: object_get_ultimate_parent
@@ -625,7 +643,7 @@ static void render_objects_for_view(
 	if (viewer_unit != NONE && object_get(viewer_unit)->object.parent_object_index != NONE &&
 		director_get_perspective(local_player_index) == _director_perspective_first_person)
 		viewer_vehicle = object_get_ultimate_parent(viewer_unit);
-	if (frame_objects_frame != render.frame_index)
+	if (frame_objects_frame != render.frame_index || frame_objects_stale)
 		gather_frame_objects();
 	for (i = 0; i < MAXIMUM_FRAME_OBJECTS / 32; i++)
 		frame_object_dots[i] = 0;

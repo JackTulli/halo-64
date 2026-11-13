@@ -517,6 +517,8 @@ void n64_projectiles_set_mode(int mode);
 /* the projectiles' module given back, before a model's or a HUD image's
 room is looked for (n64_render.c, n64_hud.c): 1 if it was in */
 int n64_projectiles_give_back(void);
+/* the frame's objects gathered again for its later views (n64_render_game.c) */
+void n64_render_gather_again(void);
 /* a projectile definition's look, found by the projectiles' module
 (n64_projectiles_game.c) and kept in it, N64_PROJECTILE_LOOKS of them by
 definition */
@@ -524,12 +526,17 @@ struct n64_projectile_look
 {
 	/* its definition's absolute tag index + 1 (0: none) */
 	unsigned short definition;
-	/* bit 0 a trail, bit 1 a glow; bits 4-7 the glow's opacity: the light
-	volume's far alpha in 1/20, at most 14 (15: solid, alpha 1) */
+	/* bit 0 a trail, bit 1 a glow (bits 2-3 free); bits 4-7 the glow's
+	opacity: the light volume's far alpha in 1/20, at most 14 (15: solid,
+	alpha 1) */
 	unsigned char parts;
 	/* the glow's radius, 1/256 world units */
 	unsigned char radius;
-	/* RGB, and the glow's length in 1/32 world units in bits 26-31 */
+	/* RGB; the glow's length in 1/8 world units in bits 26-28 (at most
+	0.875; the longest stock one is 0.75); bit 29: dimmer seen end-on (the
+	light volume's parallel brightness under 1: a needle's 0.2); bit 30: its
+	model is only a glow (a needle's), drawn by the glow; bit 31: a light is
+	attached (a bright glow) */
 	unsigned long color;
 };
 #define N64_PROJECTILE_LOOKS 16

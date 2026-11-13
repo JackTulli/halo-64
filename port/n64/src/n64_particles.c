@@ -214,6 +214,12 @@ loads (the FULL trails' life, n64_projectiles.c) */
 static float projectile_frame_time = 1.f / 30.f;
 /* the module's give-backs in this map (its hold doubles with each) */
 static uint8_t projectile_gives;
+/* the module's glows' texture (n64_projectiles_module.h): a soft round
+falloff, 1 - r^2 squared, the top left quarter of 16x16 I4 */
+const unsigned char n64_projectile_glow_texels[32] __attribute__((aligned(16))) = {
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x12, 0x00, 0x01, 0x23, 0x44, 0x00, 0x12, 0x45, 0x67,
+	0x00, 0x24, 0x68, 0x9A, 0x01, 0x35, 0x8A, 0xBC, 0x01, 0x46, 0x9B, 0xDE, 0x02, 0x47, 0xAC, 0xEF,
+};
 /* the module's memory, and its entry points while it is in */
 static void *projectile_module;
 const struct n64_projectiles_entries *n64_projectiles_entry;
@@ -230,6 +236,9 @@ int n64_projectiles_give_back(void)
 	n64_projectiles_entry = NULL;
 	n64_module_free(projectile_module);
 	projectile_module = NULL;
+	/* (the frame's later views gather its objects again: the needles the
+	module drew by their glows are drawn by their models) */
+	n64_render_gather_again();
 	projectile_hold = projectile_frame + ((unsigned long)PROJECTILE_HOLD_FRAMES << projectile_gives);
 	if (projectile_gives < 4)
 		projectile_gives++;
