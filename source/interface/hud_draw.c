@@ -1001,10 +1001,24 @@ void hud_calculate_point(
 	{
 		point2d window_center;
 
+#ifdef HALO_N64
+		/* (the viewport's centre, not the window's: the N64 draws a view's
+		3D about the middle of its viewport (n64_render.c), where the Xbox's
+		projection went through the middle of the window, the view's
+		title-safe part -- in split screen a few pixels nearer the screen's
+		middle. What Halo anchors at the centre -- the crosshairs, their zoom
+		labels and warnings, the Warthog driver's mark -- stays on the aim
+		point; the corners keep the window) */
+		window_center.x = (short)(
+			(render.camera.viewport_bounds.x1 + render.camera.viewport_bounds.x0) / 2);
+		window_center.y = (short)(
+			(render.camera.viewport_bounds.y1 + render.camera.viewport_bounds.y0) / 2);
+#else
 		window_center.x = (short)(
 			(render.camera.window_bounds.x1 + render.camera.window_bounds.x0) / 2);
 		window_center.y = (short)(
 			(render.camera.window_bounds.y1 + render.camera.window_bounds.y0) / 2);
+#endif
 
 		point.x = window_center.x - render.camera.viewport_bounds.x0 +
 			placement->offset.x * scale;
