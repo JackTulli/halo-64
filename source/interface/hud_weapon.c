@@ -1620,6 +1620,11 @@ static void render_weapon_hud(
 	short state_index;
 	short map_type_flags;
 	short element_index;
+#ifdef HALO_N64
+	/* (the zoom parts are laid out on the scope: zoom_parts_window) */
+	rectangle2d window_bounds = render.camera.window_bounds;
+	boolean zoom_part;
+#endif
 
 	csmemset(
 		stack_buffer,
@@ -1968,10 +1973,12 @@ static void render_weapon_hud(
 			TEST_FLAG(map_type_flags, element->header.use_on_map_type))
 		{
 #ifdef HALO_N64
+			zoom_part = hud_multitexture_overlays_follow_zoom(&element->static_element.multitexture_overlays);
 			if (weapon_hud_zoom_parts_only &&
-				(!hud_multitexture_overlays_follow_zoom(&element->static_element.multitexture_overlays) ||
-				(n64_hud64_scope_frames && weapon_hud_angle_ticks(&element->static_element))))
+				(!zoom_part || (n64_hud64_scope_frames && weapon_hud_angle_ticks(&element->static_element))))
 				continue;
+			if (zoom_part)
+				zoom_parts_window(&render.camera.window_bounds);
 #endif
 			state_index = element->header.state_type;
 			hud_draw_static_element(
@@ -1980,6 +1987,9 @@ static void render_weapon_hud(
 				&element->static_element,
 				state_flags[state_index],
 				hud_state->last_weapon_flash_time[state_index]);
+#ifdef HALO_N64
+			render.camera.window_bounds = window_bounds;
+#endif
 		}
 	}
 
@@ -1998,9 +2008,11 @@ static void render_weapon_hud(
 			byte value;
 
 #ifdef HALO_N64
-			if (weapon_hud_zoom_parts_only &&
-				!hud_multitexture_overlays_follow_zoom(&element->meter_element.multitexture_overlays))
+			zoom_part = hud_multitexture_overlays_follow_zoom(&element->meter_element.multitexture_overlays);
+			if (weapon_hud_zoom_parts_only && !zoom_part)
 				continue;
+			if (zoom_part)
+				zoom_parts_window(&render.camera.window_bounds);
 #endif
 			state_index = element->header.state_type;
 			value = (byte)number_values[state_index];
@@ -2013,6 +2025,9 @@ static void render_weapon_hud(
 				state_flags[state_index],
 				(real)hud_state->last_weapon_flash_time[state_index],
 				0.0f);
+#ifdef HALO_N64
+			render.camera.window_bounds = window_bounds;
+#endif
 		}
 	}
 
@@ -2033,8 +2048,8 @@ static void render_weapon_hud(
 			short decimal_value;
 
 #ifdef HALO_N64
-			if (weapon_hud_zoom_parts_only &&
-				!TEST_FLAG(element->number_element.number_flags, _weapon_hud_number_show_only_when_zoomed_bit))
+			zoom_part = TEST_FLAG(element->number_element.number_flags, _weapon_hud_number_show_only_when_zoomed_bit);
+			if (weapon_hud_zoom_parts_only && !zoom_part)
 				continue;
 #endif
 			if (TEST_FLAG(
@@ -2076,6 +2091,10 @@ static void render_weapon_hud(
 				decimal_value = NONE;
 			}
 
+#ifdef HALO_N64
+			if (zoom_part)
+				zoom_parts_window(&render.camera.window_bounds);
+#endif
 			hud_draw_numbers(
 				local_player_index,
 				&definition->absolute_placement,
@@ -2085,6 +2104,9 @@ static void render_weapon_hud(
 				state_flags[state_index],
 				hud_state->last_weapon_flash_time[state_index],
 				0.0f);
+#ifdef HALO_N64
+			render.camera.window_bounds = window_bounds;
+#endif
 		}
 	}
 
@@ -2283,9 +2305,6 @@ void hud_render_weapon_interface(
 			weapon->definition_index);
 		struct weapon_interface_state weapon_state;
 		long hud_index;
-#ifdef HALO_N64
-		rectangle2d window_bounds = render.camera.window_bounds;
-#endif
 
 		weapon_build_weapon_interface_state(
 			weapon_index,
@@ -2306,10 +2325,8 @@ void hud_render_weapon_interface(
 				&weapon_state);
 #ifdef HALO_N64
 			/* (HUD STYLE 64: only the zoom parts, and only zoomed -- unzoomed
-			ORIGINAL draws them faded out -- laid out on the scope) */
+			ORIGINAL draws them faded out) */
 			weapon_hud_zoom_parts_only = n64_hud64_active;
-			if (n64_hud64_active)
-				zoom_parts_window(&render.camera.window_bounds);
 			if (!n64_hud64_active || player_control_get_zoom_level(player->local_player_index) != NONE)
 #endif
 			render_weapon_hud(
@@ -2322,7 +2339,6 @@ void hud_render_weapon_interface(
 				NULL);
 #ifdef HALO_N64
 			weapon_hud_zoom_parts_only = FALSE;
-			render.camera.window_bounds = window_bounds;
 #endif
 			play_weapon_hud_sounds(
 				player->local_player_index,
@@ -2367,18 +2383,22 @@ static boolean weapon_hud_angle_ticks(
 		!strcmp(tag_get_name(bitmap_index), "weapons\\sniper rifle\\bitmaps\\angle_ticks_black");
 }
 
-/* The weapon HUD's zoom parts -- the sniper rifle's range readouts, and
-the zoom elements the style leaves to Halo -- hang from a corner of the
+/* The weapon HUD's zoom parts -- the sniper rifle's angle ticks (in HUD
+STYLE 64 only where the style draws no window of its own), its range
+readouts and a map's own zoom elements -- hang from a corner of the
 view's window, Halo's title-safe part, at the distances that line them
 up with the scope on the Xbox, whose frame is 48,36,592,444
 (rasterizer_xbox.c). The N64's frame is wider, 16,12,624,468
 (n64_render_game.c), so they stood 32 layout units left of and 24 above
-their place, the readouts on the scope's bottom edge. This gives them
+their place, the ticks off the scope's centre and the readouts on the
+scope's bottom edge. This gives them
 the window the Xbox would have for the view (compute_window_bounds with
 its frame: the views' outer edges on the frame, those between views 4
 units in, and the right edge 4 units in for a view in the left column),
 about the aim point, as hud_calculate_point centres the crosshairs: they
-keep the Xbox's distances from it. The HUD's inset does not move them */
+keep the Xbox's distances from it. The HUD's inset does not move them.
+render_weapon_hud puts it in place for each zoom part, in both styles; the
+rest of the weapon HUD keeps the view's window */
 static void zoom_parts_window(
 	rectangle2d *window)
 {
