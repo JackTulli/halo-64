@@ -29,7 +29,7 @@ loaded. Without it each does nothing, and the game draws its own HUD.
 #include <stdio.h>
 #include <stdlib.h>
 
-/* the module's file: its code, tables and state (59,800 bytes while it is
+/* the module's file: its code, tables and state (59,920 bytes while it is
 loaded, on every cartridge; n64_module.c finds it room) */
 #define HUD64_MODULE "rom:/hud64.dso"
 
@@ -56,6 +56,10 @@ int n64_hud64_active = 0;
 with no clear place for the 64 style's; set by the module's prepare, read by
 hud_unit.c before it cuts the label out of Halo's tracker) */
 int n64_hud64_label_halo = 0;
+/* (the view's sniper window drawn by the style, whose side frames stand
+for the weapon HUD's angle ticks; set by the module's scope, read by
+hud_weapon.c, which then leaves the ticks out) */
+int n64_hud64_scope_frames = 0;
 
 static int hud_style;
 /* the module's memory, its entry points; a load tried in this map */

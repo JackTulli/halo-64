@@ -48,6 +48,9 @@ whose order is within the value, so a meter needs no texture of its own.
 /* (the program's: this frame shows Halo's own small range label --
 n64_hud64_stub.c) */
 extern int n64_hud64_label_halo;
+/* (the program's: the view's sniper window drawn, its side frames standing
+for the weapon HUD's angle ticks -- n64_hud64_scope) */
+extern int n64_hud64_scope_frames;
 
 #define HUD64_MAXIMUM_TOKENS 24
 #define HUD64_MAXIMUM_LINES 6
@@ -2071,6 +2074,7 @@ static struct
 void n64_hud64_reticle_view(void)
 {
 	ret.scope = -1;
+	n64_hud64_scope_frames = 0;
 }
 
 /* a bitmap tag's kind (HUD64_RETB_*), from its name's hash (32-bit FNV-1a,
@@ -2217,8 +2221,9 @@ HOT static void ret_outside(const int view[4], int l, int tp, int r, int b, int 
 
 /* a scope's mask (interface.c, before the view's HUD: under all of it) of
 a bitmap the style draws: the pistol's and rocket launcher's soft circle,
-the sniper rifle's window with its dark lines and side frames; split: 2-4
-players (half size) */
+the sniper rifle's window with its dark lines and side frames (these
+stand for the weapon HUD's angle ticks, which cost more to draw: left out
+then, hud_weapon.c); split: 2-4 players (half size) */
 void n64_hud64_scope(int bitmap, int split)
 {
 	const struct hud64_zoom *z;
@@ -2265,6 +2270,7 @@ void n64_hud64_scope(int bitmap, int split)
 			(2 * z->top + 1) * z->step);
 	}
 	ret.scope = bitmap;
+	n64_hud64_scope_frames = !circle;
 	n64_hud_state_lost();
 }
 
