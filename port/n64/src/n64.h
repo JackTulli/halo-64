@@ -930,12 +930,14 @@ struct n64_hud64_unit_state
 };
 /* (n64_hud.c: its kept render state dropped, after HUD STYLE 64 drew) */
 void n64_hud_state_lost(void);
-/* (HUD STYLE 64's module, n64_hud64.c) its reticles: a bitmap tag's kind
-by its name, an item the style draws at some frame, a crosshair item drawn
-from the style's art (1) or not (0) */
+/* (HUD STYLE 64's module, n64_hud64.c) its reticles: a view's begun, a
+bitmap tag's kind by its name, an item the style draws at some frame, a
+crosshair item drawn from the style's art (1) or not (0), a scope's mask */
+void n64_hud64_reticle_view(void);
 int n64_hud64_reticle_bitmap(const char *name);
 int n64_hud64_reticle_taken(int bitmap, int sequence, int ox, int oy);
 int n64_hud64_reticle(int bitmap, int sequence, int frame, int ox, int oy, float gx, float gy, int split, int red);
+void n64_hud64_scope(int bitmap, int split);
 /* the textures given back (n64_hud_release); their bytes in memory */
 void n64_hud64_release(void);
 unsigned long n64_hud64_resident_bytes(void);

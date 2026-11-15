@@ -14,9 +14,9 @@ The game's HUD code still runs (port/n64/game/n64_hud64_game.c): it hands
 over the values (ammunition, grenades, shield, health, score, messages, the
 pickup prompt) and draws, as before, what the design does not cover: the
 motion tracker (Halo's own in either style), nav points, damage arrows,
-vehicles' panels. Its crosshair items come here first (the reticles,
-below): the style's own art where it has one, Halo's otherwise; the scopes
-are Halo's.
+vehicles' panels. Its crosshair items and a zoomed weapon's mask come
+here first (the reticles, below): the style's own art where it has one,
+Halo's otherwise.
 
 Modes, as the design draws them:
 - 320x240: the 240-line set, 1:1;
@@ -319,7 +319,7 @@ int n64_hud64_prepare(int views)
 
 /* ---------- drawing: one texture or cell, as the design blits it */
 
-enum { MODE_NONE, MODE_IA, MODE_IA_CUT, MODE_I, MODE_METER };
+enum { MODE_NONE, MODE_IA, MODE_IA_CUT, MODE_I, MODE_METER, MODE_I_SOFT, MODE_DARK };
 
 static struct
 {
@@ -367,6 +367,18 @@ HOT static void set_rdp_mode(int mode)
 	case MODE_I:
 		/* the primitive's colour, the texel as alpha */
 		rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
+		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+		break;
+	case MODE_I_SOFT:
+		/* MODE_I magnified with the bilinear filter (a scope's circle) */
+		rdpq_mode_filter(FILTER_BILINEAR);
+		rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
+		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+		break;
+	case MODE_DARK:
+		/* black at the primitive's alpha (fill rectangles: a zoomed view's
+		darkening) */
+		rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
 		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
 		break;
 	case MODE_METER:
@@ -2039,7 +2051,8 @@ static int view_lines(const struct n64_hud64_state *st, struct message *msgs, st
 }
 
 /* ---------- the reticles: Halo's crosshairs, their zoom labels, the
-overheat dots and the Warthog driver's mark from the style's own art (tools/n64/hud64/hud64_reticles.py), where it has one --
+overheat dots, the Warthog driver's mark and the scopes' masks from the
+style's own art (tools/n64/hud64/hud64_reticles.py), where it has one --
 Halo hands each item here before it draws it (n64_hud64_game.c). The art is
 1-bit pixel art for the 320x240 grid, a separate set for 2-4 players, each
 drawn 1:1 (2x across at 640x240, 2x both ways at 480 lines) with its centre
@@ -2048,6 +2061,17 @@ the aim point of its 3D. Opaque, in Halo's HUD blue; its red over an enemy */
 
 #define RET_BLUE 0x2896FF
 #define RET_RED 0xFF0000
+
+static struct
+{
+	int scope; /* the zoom view drawn in the view (HUD64_RETB_*), -1 none */
+} ret;
+
+/* (game_begin) a view begun */
+void n64_hud64_reticle_view(void)
+{
+	ret.scope = -1;
+}
 
 /* a bitmap tag's kind (HUD64_RETB_*), from its name's hash (32-bit FNV-1a,
 hud64_gen.py's); -1: not one the style draws */
@@ -2077,13 +2101,14 @@ static const struct hud64_ret_item *ret_item(int bitmap, int sequence, int frame
 	return NULL;
 }
 
-/* (hud_weapon.c's critical pass) an item the style draws at some frame */
+/* (hud_weapon.c's critical pass) an item the style draws at some frame,
+the sniper's dark lines among them */
 int n64_hud64_reticle_taken(int bitmap, int sequence, int ox, int oy)
 {
-	return ret_item(bitmap, sequence, -1, ox, oy) != NULL;
+	return bitmap == HUD64_RETB_LINES || bitmap == HUD64_RETB_LINES_SM || ret_item(bitmap, sequence, -1, ox, oy);
 }
 
-/* before a reticle's draws: the mode, and none of the
+/* before a reticle's or a mask's draws: the mode, and none of the
 module's own draw state kept from before Halo's draws; the canvas pixels a
 grid pixel (g), the aim pixel (canvas), the view (the HUD's display
 pixels, n64_hud_begin's) */
@@ -2101,9 +2126,11 @@ static void ret_begin(int *g, int *ax, int *ay, int view[4])
 
 /* a texture's mirrored rectangles, w x h canvas pixels each, its texels
 s0..s0 + sw and t0..t0 + th in each: the first from x, y, the second from
-r mirrored across, and (count 4) those two again from b mirrored down: a
+r mirrored across, and (count 4) those two again from b mirrored down. A
 reticle's stored half or quarter (its centre column and row drawn twice,
-the same texels) */
+the same texels), the sniper window's corners and side frames; the
+circle's quarters from its middle outward (r = x, b = y, w and h
+negative) */
 HOT static void ret_mirrored(int count, int x, int y, int r, int b, int w, int h, int s0, int t0, int sw, int th)
 {
 	for (int i = 0; i < count; i++)
@@ -2115,7 +2142,8 @@ HOT static void ret_mirrored(int count, int x, int y, int r, int b, int w, int h
 }
 
 /* a crosshair item of a bitmap the style draws (n64_hud64_reticle_bitmap):
-1 if drawn from its art, 0 for Halo's own quad. ox, oy: the item's offset in its tag; gx, gy: what
+1 if drawn from its art (the sniper's dark lines: with its zoom view), 0
+for Halo's own quad. ox, oy: the item's offset in its tag; gx, gy: what
 the Golden Style cursor adds to it, in Halo's 640x480 layout; split: 2-4
 players; red: Halo's aim state over an enemy */
 int n64_hud64_reticle(int bitmap, int sequence, int frame, int ox, int oy, float gx, float gy, int split, int red)
@@ -2125,6 +2153,8 @@ int n64_hud64_reticle(int bitmap, int sequence, int frame, int ox, int oy, float
 	const surface_t *t;
 	int g, ax, ay, x, y, view[4], ws, w, h, count;
 
+	if (bitmap == HUD64_RETB_LINES || bitmap == HUD64_RETB_LINES_SM)
+		return ret.scope >= HUD64_RETB_SNIPER_MASK;
 	if (!(it = ret_item(bitmap, sequence, frame, ox, oy)))
 		return 0;
 	ret_begin(&g, &ax, &ay, view);
@@ -2151,6 +2181,91 @@ int n64_hud64_reticle(int bitmap, int sequence, int frame, int ox, int oy, float
 	ret_mirrored(count, x, y, x + (2 * a->cx + 1) * g, y + (2 * a->cy + 1) * g, w * g, h * g, a->s, a->t, w, h);
 	n64_hud_state_lost();
 	return 1;
+}
+
+/* darkening rectangles (grid pixels from the aim pixel, x0, y0, x1, y1
+exclusive, and an alpha index: 0 the outside's, 1 the outline's, 2 the
+dark lines'), clipped by the view's scissor */
+HOT static void ret_darks(const int8_t (*q)[5], int count, int ax, int ay, int g)
+{
+	static const uint8_t alphas[3] = {HUD64_ALPHA_SNIPER_OUT, HUD64_ALPHA_SNIPER_OUTLINE, HUD64_ALPHA_SNIPER_LINES};
+	int alpha = -1;
+
+	for (int i = 0; i < count; i++)
+	{
+		if (q[i][4] != alpha)
+			rdpq_set_prim_color(RGBA32(0, 0, 0, alphas[alpha = q[i][4]]));
+		rdpq_fill_rectangle((ax + q[i][0] * g) * draw.m.xs, ay + q[i][1] * g, (ax + q[i][2] * g) * draw.m.xs,
+			ay + q[i][3] * g);
+	}
+	draw.prim_valid = 0;
+}
+
+/* the view outside a box (display pixels l, tp, r, b, exclusive) darkened
+at alpha: four bands to the view's edges */
+HOT static void ret_outside(const int view[4], int l, int tp, int r, int b, int alpha)
+{
+	const int q[4][4] = {{view[0], view[1], view[2], tp}, {view[0], b, view[2], view[3]}, {view[0], tp, l, b},
+		{r, tp, view[2], b}};
+
+	rdpq_set_prim_color(RGBA32(0, 0, 0, alpha));
+	for (int i = 0; i < 4; i++)
+		if (q[i][0] < q[i][2] && q[i][1] < q[i][3])
+			rdpq_fill_rectangle(q[i][0], q[i][1], q[i][2], q[i][3]);
+	draw.prim_valid = 0;
+}
+
+/* a scope's mask (interface.c, before the view's HUD: under all of it) of
+a bitmap the style draws: the pistol's and rocket launcher's soft circle,
+the sniper rifle's window with its dark lines and side frames; split: 2-4
+players (half size) */
+void n64_hud64_scope(int bitmap, int split)
+{
+	const struct hud64_zoom *z;
+	const surface_t *t, *c;
+	int g, ax, ay, view[4], circle = bitmap <= HUD64_RETB_PISTOL_MASK_SPLIT;
+	int l, tp, r, b;
+
+	if (bitmap < HUD64_RETB_PISTOL_MASK)
+		return;
+	ret_begin(&g, &ax, &ay, view);
+	z = &hud64_zoom[split][draw.m.set->ws];
+	t = texture(circle ? HUD64_TEX_SCOPE_CIRCLE : hud64_scope_corner[split]);
+	c = texture(HUD64_TEX_SCOPE_LADDER);
+	if (!t || !c)
+		return;
+	/* the circle: its quarter 2x with the bilinear filter at 1 player,
+	1:1 at 2-4; the window: its corners from a texture (the outside, the
+	outline) */
+	set_rdp_mode(circle && !split ? MODE_I_SOFT : MODE_I);
+	set_colours(0, 255, 0);
+	upload(t);
+	if (circle)
+		ret_mirrored(4, ax, ay, ax, ay, -z->circle[0] * g, -z->circle[1] * g, 0, 0, t->width, t->height);
+	else
+		ret_mirrored(4, ax + z->box[0] * g, ay + z->box[1] * g, ax + z->box[2] * g, ay + z->box[3] * g,
+			z->corner[0] * g, z->corner[1] * g, 0, 0, t->width, t->height);
+	/* the rest of the view outside, at the texture's outer value; the
+	window's outline edges and the dark lines */
+	l = circle ? -z->circle[0] : z->box[0], tp = circle ? -z->circle[1] : z->box[1];
+	r = circle ? z->circle[0] : z->box[2], b = circle ? z->circle[1] : z->box[3];
+	set_rdp_mode(MODE_DARK);
+	ret_outside(view, (ax + l * g) * draw.m.xs, ay + tp * g, (ax + r * g) * draw.m.xs, ay + b * g,
+		circle ? HUD64_ALPHA_CIRCLE_OUT : HUD64_ALPHA_SNIPER_OUT);
+	if (!circle)
+	{
+		ret_darks(z->rects, 10, ax, ay, g);
+		/* the side frames: the ladder's one period, wrapped down them (its
+		own upload) */
+		set_rdp_mode(MODE_I);
+		set_colours(0, HUD64_ALPHA_SNIPER_LINES, 0);
+		rdpq_tex_upload(TILE0, c, &(rdpq_texparms_t){.t.repeats = REPEAT_INFINITE});
+		draw.tmem = NULL;
+		ret_mirrored(2, ax - z->bar * g, ay - z->top * g, ax + (z->bar + 1) * g, 0, 4 * g, (2 * z->top + 1) * g, 0, 0, 4,
+			(2 * z->top + 1) * z->step);
+	}
+	ret.scope = bitmap;
+	n64_hud_state_lost();
 }
 
 /* ---------- a view */

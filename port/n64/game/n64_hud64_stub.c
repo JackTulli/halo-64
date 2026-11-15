@@ -29,9 +29,8 @@ loaded. Without it each does nothing, and the game draws its own HUD.
 #include <stdio.h>
 #include <stdlib.h>
 
-/* the module's file: its code, tables and state (54,032 bytes while it is
-loaded on the PC Expansion cartridge, 54,000 on the Multiplayer cartridge;
-n64_module.c finds it room) */
+/* the module's file: its code, tables and state (59,800 bytes while it is
+loaded, on every cartridge; n64_module.c finds it room) */
 #define HUD64_MODULE "rom:/hud64.dso"
 
 /* The heap the style leaves free once its module and textures are in (the
@@ -388,6 +387,14 @@ int n64_hud64_game_crosshair(
 	int red)
 {
 	return entry ? entry->game_crosshair(bitmap_tag, sequence, frame, offset, placed, scale, red) : FALSE;
+}
+
+void n64_hud64_game_scope(
+	long mask_tag)
+{
+	if (entry)
+		entry->game_scope(mask_tag);
+	return;
 }
 
 int n64_hud64_game_crosshair_taken(

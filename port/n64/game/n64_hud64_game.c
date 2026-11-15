@@ -6,10 +6,11 @@ the style on, interface_draw_screen still runs for each view: the parts the
 design redraws (the weapon's ammunition and grenade panels, the unit's
 shield and health, the messages and the pickup prompt) hand their values
 here instead of drawing; everything else (the motion tracker, nav points,
-damage arrows, team markers, vehicles' panels, scopes' masks) is drawn by the
-game as before, and its crosshair items come to the style's reticles first
-(n64_hud64_game_crosshair). n64_render_game.c then draws the
-view's 64 HUD from what was handed over (n64_hud64_game_end).
+damage arrows, team markers, vehicles' panels) is drawn by the game as
+before, and its crosshair items and a zoomed weapon's mask come to the
+style's reticles first (n64_hud64_game_crosshair, n64_hud64_game_scope).
+n64_render_game.c then draws the view's 64 HUD from what was handed over
+(n64_hud64_game_end).
 */
 
 #include "n64_hud64_imports.h"
@@ -65,6 +66,7 @@ void n64_hud64_game_begin(
 	n64_hud64_active = active;
 	csmemset(&view, 0, sizeof(view));
 	collecting = COLLECT_NONE;
+	n64_hud64_reticle_view();
 	return;
 }
 
@@ -781,6 +783,15 @@ int n64_hud64_game_crosshair_taken(
 	return kind >= 0 && n64_hud64_reticle_taken(kind, sequence, offset->x, offset->y);
 }
 
+/* a scope's mask (interface.c, the weapon HUD's screen effect while zoomed),
+before the view's HUD */
+void n64_hud64_game_scope(
+	long mask_tag)
+{
+	n64_hud64_scope(reticle_kind(mask_tag), local_player_count() > 1);
+	return;
+}
+
 /* the view's 64 HUD, from what its HUD code handed over */
 void n64_hud64_game_end(
 	int x0,
@@ -875,5 +886,6 @@ const struct n64_hud64_entries n64_hud64_entries =
 	n64_hud64_game_collect_string,
 	n64_hud64_game_collect_button,
 	n64_hud64_game_crosshair,
+	n64_hud64_game_scope,
 	n64_hud64_game_crosshair_taken
 };
