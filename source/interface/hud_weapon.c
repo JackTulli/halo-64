@@ -425,6 +425,9 @@ over, the design drawing them */
 extern int n64_hud64_active;
 extern void n64_hud64_game_weapon(long weapon_index, boolean heat_hot);
 extern void n64_hud64_game_grenades(long unit_index, unsigned long fill, unsigned long edge);
+extern int n64_hud64_game_crosshair(long bitmap_tag, short sequence, short frame, point2d const *offset,
+	point2d const *placed, real scale, int red);
+extern int n64_hud64_game_crosshair_taken(long bitmap_tag, short sequence, point2d const *offset);
 
 /* HUD STYLE 64 draws the ammunition itself: of the weapon HUD it keeps
 only the zoom parts -- the elements that follow the zoom level (the
@@ -1115,6 +1118,12 @@ static void n64_weapon_hud_sprites(
 					(!mark && TEST_FLAG(item->flags, _hud_crosshair_only_on_default_zoom_bit) && zoom != 0) ||
 					item->sequence_index < 0)
 					continue;
+				/* (HUD STYLE 64: an item the style draws from its own art
+				needs no sprite of Halo's -- n64_hud64_game.c) */
+				if (n64_hud64_active &&
+					n64_hud64_game_crosshair_taken(element->crosshairs.bitmap.index, item->sequence_index,
+						&item->placement.offset))
+					continue;
 				if (!TEST_FLAG(item->flags, _hud_crosshair_not_a_sprite_bit))
 				{
 					if (item->sequence_index < group->sequences.count)
@@ -1481,6 +1490,19 @@ static void crosshairs_draw(
 #endif
 #ifdef HALO_N64
                                     if (sequence && (frame_index < 0 || frame_index >= sequence->sprites.count)) continue;
+									/* (HUD STYLE 64: the style's own art for Halo's
+									reticles, their zoom labels and the overheat dots,
+									where it has one -- n64_hud64_game.c; anything else,
+									a Custom Edition map's own reticles among them, is
+									Halo's quad below. Red: the aim state's flash, over
+									an enemy) */
+									if (n64_hud64_active &&
+										n64_hud64_game_crosshair(element->crosshairs.bitmap.index, item->sequence_index,
+											frame_index, &item->placement.offset, &golden_placement.offset, scale,
+											state_index == _crosshair_state_aim &&
+												TEST_FLAG(item->flags, _hud_crosshair_flashes_bit) &&
+												state->value.reference_data > 0))
+										continue;
 #endif
 									struct bitmap_data *bitmap = TAG_BLOCK_GET_ELEMENT(
 										&bitmap_group->bitmaps,

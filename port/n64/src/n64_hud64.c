@@ -13,8 +13,10 @@ tables. This file only holds the steps of drawing.
 The game's HUD code still runs (port/n64/game/n64_hud64_game.c): it hands
 over the values (ammunition, grenades, shield, health, score, messages, the
 pickup prompt) and draws, as before, what the design does not cover: the
-crosshairs and the motion tracker (Halo's own in either style), nav points,
-damage arrows, vehicles' panels, scopes.
+motion tracker (Halo's own in either style), nav points, damage arrows,
+vehicles' panels. Its crosshair items come here first (the reticles,
+below): the style's own art where it has one, Halo's otherwise; the scopes
+are Halo's.
 
 Modes, as the design draws them:
 - 320x240: the 240-line set, 1:1;
@@ -337,11 +339,15 @@ static struct
 	float trk_l, trk_r;
 } draw;
 
+/* (the mode's changes one batch, rdpq_mode_begin's, as n64_hud.c set_mode:
+the RSP works the render mode out once, at the end, where each change did
+it again, every time a recording is shown -- the same mode in the end) */
 HOT static void set_rdp_mode(int mode)
 {
 	if (draw.rdp_mode == mode)
 		return;
 	rdpq_sync_pipe();
+	rdpq_mode_begin();
 	rdpq_set_mode_standard();
 	rdpq_mode_filter(FILTER_POINT);
 	switch (mode)
@@ -372,6 +378,7 @@ HOT static void set_rdp_mode(int mode)
 		draw.fog = -1;
 		break;
 	}
+	rdpq_mode_end();
 	draw.rdp_mode = mode;
 }
 
@@ -2029,6 +2036,121 @@ static int view_lines(const struct n64_hud64_state *st, struct message *msgs, st
 	for (int k = m > keep - n ? m - (keep - n) : 0; k < m; k++)
 		lines[n++] = more[k];
 	return n;
+}
+
+/* ---------- the reticles: Halo's crosshairs, their zoom labels, the
+overheat dots and the Warthog driver's mark from the style's own art (tools/n64/hud64/hud64_reticles.py), where it has one --
+Halo hands each item here before it draws it (n64_hud64_game.c). The art is
+1-bit pixel art for the 320x240 grid, a separate set for 2-4 players, each
+drawn 1:1 (2x across at 640x240, 2x both ways at 480 lines) with its centre
+pixel on the pixel whose top-left corner is the view's projection centre,
+the aim point of its 3D. Opaque, in Halo's HUD blue; its red over an enemy */
+
+#define RET_BLUE 0x2896FF
+#define RET_RED 0xFF0000
+
+/* a bitmap tag's kind (HUD64_RETB_*), from its name's hash (32-bit FNV-1a,
+hud64_gen.py's); -1: not one the style draws */
+int n64_hud64_reticle_bitmap(const char *name)
+{
+	uint32_t h = 2166136261u;
+
+	while (name && *name)
+		h = (h ^ (uint8_t)*name++) * 16777619u;
+	for (int i = 0; name && i < HUD64_RET_NAMES; i++)
+		if (hud64_ret_names[i] == h)
+			return hud64_ret_name_kind[i];
+	return -1;
+}
+
+/* the art standing for an item, or NULL; frame -1: any frame */
+static const struct hud64_ret_item *ret_item(int bitmap, int sequence, int frame, int ox, int oy)
+{
+	for (int i = 0; i < HUD64_RET_ITEMS; i++)
+	{
+		const struct hud64_ret_item *k = &hud64_ret_items[i];
+
+		if (k->bitmap == bitmap && k->sequence == sequence && (frame < 0 || (frame >= k->frame0 && frame <= k->frame1)) &&
+			k->ox == ox && k->oy == oy)
+			return k;
+	}
+	return NULL;
+}
+
+/* (hud_weapon.c's critical pass) an item the style draws at some frame */
+int n64_hud64_reticle_taken(int bitmap, int sequence, int ox, int oy)
+{
+	return ret_item(bitmap, sequence, -1, ox, oy) != NULL;
+}
+
+/* before a reticle's draws: the mode, and none of the
+module's own draw state kept from before Halo's draws; the canvas pixels a
+grid pixel (g), the aim pixel (canvas), the view (the HUD's display
+pixels, n64_hud_begin's) */
+static void ret_begin(int *g, int *ax, int *ay, int view[4])
+{
+	current_mode(&draw.m);
+	draw.rdp_mode = MODE_NONE;
+	draw.prim_valid = draw.env_valid = 0;
+	draw.tmem = NULL;
+	n64_hud_view_rect(view);
+	*g = draw.m.canvas_h >= 480 ? 2 : 1;
+	*ax = (view[0] + view[2]) / 2 / draw.m.xs;
+	*ay = (view[1] + view[3]) / 2;
+}
+
+/* a texture's mirrored rectangles, w x h canvas pixels each, its texels
+s0..s0 + sw and t0..t0 + th in each: the first from x, y, the second from
+r mirrored across, and (count 4) those two again from b mirrored down: a
+reticle's stored half or quarter (its centre column and row drawn twice,
+the same texels) */
+HOT static void ret_mirrored(int count, int x, int y, int r, int b, int w, int h, int s0, int t0, int sw, int th)
+{
+	for (int i = 0; i < count; i++)
+	{
+		int px = i & 1 ? r : x, py = i & 2 ? b : y, qx = i & 1 ? r - w : x + w, qy = i & 2 ? b - h : y + h;
+
+		rdpq_texture_rectangle_scaled(TILE0, px * draw.m.xs, py, qx * draw.m.xs, qy, s0, t0, s0 + sw, t0 + th);
+	}
+}
+
+/* a crosshair item of a bitmap the style draws (n64_hud64_reticle_bitmap):
+1 if drawn from its art, 0 for Halo's own quad. ox, oy: the item's offset in its tag; gx, gy: what
+the Golden Style cursor adds to it, in Halo's 640x480 layout; split: 2-4
+players; red: Halo's aim state over an enemy */
+int n64_hud64_reticle(int bitmap, int sequence, int frame, int ox, int oy, float gx, float gy, int split, int red)
+{
+	const struct hud64_ret_item *it;
+	const struct hud64_ret_art *a;
+	const surface_t *t;
+	int g, ax, ay, x, y, view[4], ws, w, h, count;
+
+	if (!(it = ret_item(bitmap, sequence, frame, ox, oy)))
+		return 0;
+	ret_begin(&g, &ax, &ay, view);
+	ws = draw.m.set->ws;
+	/* (the context's atlas: all of it at 1-2 players, the 2-4 player rows
+	at 3-4) */
+	if (!(t = texture(hud64_ret_atlas[ws][0])) && !(t = texture(hud64_ret_atlas[ws][1])))
+		return 0;
+	a = &hud64_ret_arts[split + 2 * ws][it->art];
+	w = a->w, h = a->h, count = a->how == HUD64_RET_QUARTER ? 4 : a->how == HUD64_RET_HALF ? 2 : 1;
+	/* (the overheat dots: frame k, k dots -- the first 4k - 1 columns;
+	none at 0) */
+	if (it->art == HUD64_RETA_DOTS && (w = 4 * frame - 1) <= 0)
+		return 1;
+	set_rdp_mode(MODE_IA_CUT);
+	set_colours(red ? RET_RED : RET_BLUE, 255, red ? RET_RED : RET_BLUE);
+	upload(t);
+	/* (the art's own offset in grid pixels, squeezed across with the
+	WIDESCREEN sets; the Golden Style cursor's as Halo's layout maps it,
+	n64_hud_game.c hud_x) */
+	x = ax + ((int)(it->dx * (ws ? 0.75f : 1.f)) - a->cx) * g +
+		(int)(gx * draw.m.canvas_w * (1.f / 640.f) * n64_render_hud_squeeze());
+	y = ay + (it->dy - a->cy) * g + (int)(gy * draw.m.canvas_h * (1.f / 480.f));
+	ret_mirrored(count, x, y, x + (2 * a->cx + 1) * g, y + (2 * a->cy + 1) * g, w * g, h * g, a->s, a->t, w, h);
+	n64_hud_state_lost();
+	return 1;
 }
 
 /* ---------- a view */

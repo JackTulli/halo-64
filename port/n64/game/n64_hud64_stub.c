@@ -19,6 +19,7 @@ loaded. Without it each does nothing, and the game draws its own HUD.
 #include "math/real_math.h"
 
 #include "objects/objects.h"
+#include "tag_files/tag_files.h"
 #include "tag_files/tag_groups.h"
 
 #include "../src/n64.h"
@@ -100,6 +101,11 @@ void *n64_hud64_import_tag(long group_tag, long tag_index)
 	return tag_get(group_tag, tag_index);
 }
 
+char *n64_hud64_import_tag_name(long tag_index)
+{
+	return tag_get_name(tag_index);
+}
+
 /* ---------- the module */
 
 /* the module in, where there is room; else the game's own HUD for the
@@ -116,14 +122,14 @@ does not fit in the block, and with HUD RESOLUTION HIGH DETAIL the outline
 sheets and cells of the 640-wide faces (n64_hud64.c build_outlines: 5,449
 bytes at 1-2 players, 4,776 at 3-4). While the block is lent there is no
 critical-sprite arena (n64_hud.c), so on the PC maps the critical sprites
-Halo still draws under the style (the motion sensor, the crosshair, the
-damage arrows, a zoomed weapon's parts) load on the heap, with n64_hud.c's
-own reserve (HUD_HEAP_RESERVE, 32 KB) -- on PC Infinity at 1 player about
-10 KB (81 KB free before them, 71 after) -- and the block's return gives
-them back for the arena. The module's margin check, after its first
-frame, counts all of these. HUD64_SLOTS_KEPT slots stay for any meter Halo
-still draws (a meter past them evicts the oldest). Without the block, or
-if the module does not fit, it takes the heap as before */
+Halo still draws under the style (the motion sensor, a crosshair the style
+has no art for, the damage arrows, a zoomed weapon's parts) load on the
+heap, with n64_hud.c's own reserve (HUD_HEAP_RESERVE, 32 KB) -- on PC
+Infinity at 1 player about 10 KB (81 KB free before them, 71 after) -- and
+the block's return gives them back for the arena. The module's margin check,
+after its first frame, counts all of these. HUD64_SLOTS_KEPT slots stay for
+any meter Halo still draws (a meter past them evicts the oldest). Without
+the block, or if the module does not fit, it takes the heap as before */
 #define HUD64_SLOTS_KEPT 2
 static uint8_t *arena_start, *arena_next, *arena_end;
 
@@ -370,4 +376,24 @@ int n64_hud64_game_collect_button(
 	int kind)
 {
 	return entry ? entry->game_collect_button(kind) : FALSE;
+}
+
+int n64_hud64_game_crosshair(
+	long bitmap_tag,
+	short sequence,
+	short frame,
+	point2d const *offset,
+	point2d const *placed,
+	real scale,
+	int red)
+{
+	return entry ? entry->game_crosshair(bitmap_tag, sequence, frame, offset, placed, scale, red) : FALSE;
+}
+
+int n64_hud64_game_crosshair_taken(
+	long bitmap_tag,
+	short sequence,
+	point2d const *offset)
+{
+	return entry ? entry->game_crosshair_taken(bitmap_tag, sequence, offset) : FALSE;
 }

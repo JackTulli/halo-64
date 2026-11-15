@@ -5,9 +5,10 @@ HUD STYLE 64 (port/n64/src/n64_hud64.c) fed by the game's own HUD code. With
 the style on, interface_draw_screen still runs for each view: the parts the
 design redraws (the weapon's ammunition and grenade panels, the unit's
 shield and health, the messages and the pickup prompt) hand their values
-here instead of drawing; everything else (the crosshairs and the motion
-tracker, nav points, damage arrows, team markers, vehicles' panels, scopes'
-masks) is drawn by the game as before. n64_render_game.c then draws the
+here instead of drawing; everything else (the motion tracker, nav points,
+damage arrows, team markers, vehicles' panels, scopes' masks) is drawn by the
+game as before, and its crosshair items come to the style's reticles first
+(n64_hud64_game_crosshair). n64_render_game.c then draws the
 view's 64 HUD from what was handed over (n64_hud64_game_end).
 */
 
@@ -27,6 +28,7 @@ view's 64 HUD from what was handed over (n64_hud64_game_end).
 #include "memory/data.h"
 #include "objects/objects.h"
 #include "render/render.h"
+#include "tag_files/tag_files.h"
 #include "units/units.h"
 
 #include "../src/n64.h"
@@ -714,6 +716,71 @@ static void score(
 	return;
 }
 
+/* ---------- the reticles (n64_hud64.c n64_hud64_reticle): a bitmap tag's
+kind, by its name, found once a map a tag (the module, and this table, go
+with the map) */
+#define RETICLE_TAGS 12
+
+static long reticle_tags[RETICLE_TAGS];
+static signed char reticle_kinds[RETICLE_TAGS];
+static short reticle_tag_count;
+
+static int reticle_kind(
+	long tag_index)
+{
+	short i;
+	int kind;
+
+	if (tag_index == NONE)
+		return -1;
+	for (i = 0; i < reticle_tag_count; i++)
+	{
+		if (reticle_tags[i] == tag_index)
+			return reticle_kinds[i];
+	}
+	kind = n64_hud64_reticle_bitmap(tag_get_name(tag_index));
+	if (reticle_tag_count < RETICLE_TAGS)
+	{
+		reticle_tags[reticle_tag_count] = tag_index;
+		reticle_kinds[reticle_tag_count++] = (signed char)kind;
+	}
+	return kind;
+}
+
+/* a crosshair item (hud_weapon.c crosshairs_draw) or a seat's mark
+(hud_unit.c) about to be drawn: 1 if the style drew it from its own art,
+0 for Halo's quad. offset: the item's in its tag; placed: with the Golden
+Style cursor's added (crosshairs_draw); scale: Halo's for it */
+int n64_hud64_game_crosshair(
+	long bitmap_tag,
+	short sequence,
+	short frame,
+	point2d const *offset,
+	point2d const *placed,
+	real scale,
+	int red)
+{
+	int kind = reticle_kind(bitmap_tag);
+
+	if (kind < 0)
+		return FALSE;
+	return n64_hud64_reticle(kind, sequence, frame, offset->x, offset->y, (placed->x - offset->x) * scale,
+		(placed->y - offset->y) * scale, local_player_count() > 1, red);
+}
+
+/* (hud_weapon.c's critical pass, a map whose HUD is packed) a crosshair
+item the style draws from its own art at any frame: Halo's sprite for it
+not needed */
+int n64_hud64_game_crosshair_taken(
+	long bitmap_tag,
+	short sequence,
+	point2d const *offset)
+{
+	int kind = reticle_kind(bitmap_tag);
+
+	return kind >= 0 && n64_hud64_reticle_taken(kind, sequence, offset->x, offset->y);
+}
+
 /* the view's 64 HUD, from what its HUD code handed over */
 void n64_hud64_game_end(
 	int x0,
@@ -783,10 +850,19 @@ static int prepare(
 	return ready;
 }
 
+/* the map's HUD given back: the reticles' tags forgotten too */
+static void release(
+	void)
+{
+	reticle_tag_count = 0;
+	n64_hud64_release();
+	return;
+}
+
 const struct n64_hud64_entries n64_hud64_entries =
 {
 	prepare,
-	n64_hud64_release,
+	release,
 	n64_hud64_game_begin,
 	n64_hud64_game_end,
 	n64_hud64_game_weapon,
@@ -797,5 +873,7 @@ const struct n64_hud64_entries n64_hud64_entries =
 	n64_hud64_game_prompt,
 	n64_hud64_game_collect,
 	n64_hud64_game_collect_string,
-	n64_hud64_game_collect_button
+	n64_hud64_game_collect_button,
+	n64_hud64_game_crosshair,
+	n64_hud64_game_crosshair_taken
 };

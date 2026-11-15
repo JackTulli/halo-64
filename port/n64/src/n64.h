@@ -828,8 +828,9 @@ void n64_hud_set_style(int style);
 int n64_hud_style(void);
 #define N64_HUD64_MESSAGES 4
 enum { N64_HUD64_ROUNDS, N64_HUD64_BATTERY, N64_HUD64_NO_AMMO };
-/* (the reticle and the motion tracker are Halo's own with either style:
-the player keeps the aim and the tracker they know) */
+/* (the motion tracker is Halo's own with either style: the player keeps
+the tracker they know. The reticles are the style's own art, drawn as Halo
+hands its items over: n64_hud64.c) */
 struct n64_hud64_state
 {
 	unsigned char show_ammo, show_grenades, show_shield, show_sensor, show_score;
@@ -929,6 +930,12 @@ struct n64_hud64_unit_state
 };
 /* (n64_hud.c: its kept render state dropped, after HUD STYLE 64 drew) */
 void n64_hud_state_lost(void);
+/* (HUD STYLE 64's module, n64_hud64.c) its reticles: a bitmap tag's kind
+by its name, an item the style draws at some frame, a crosshair item drawn
+from the style's art (1) or not (0) */
+int n64_hud64_reticle_bitmap(const char *name);
+int n64_hud64_reticle_taken(int bitmap, int sequence, int ox, int oy);
+int n64_hud64_reticle(int bitmap, int sequence, int frame, int ox, int oy, float gx, float gy, int split, int red);
 /* the textures given back (n64_hud_release); their bytes in memory */
 void n64_hud64_release(void);
 unsigned long n64_hud64_resident_bytes(void);
