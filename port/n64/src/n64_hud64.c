@@ -322,7 +322,8 @@ int n64_hud64_prepare(int views)
 
 /* ---------- drawing: one texture or cell, as the design blits it */
 
-enum { MODE_NONE, MODE_IA, MODE_IA_CUT, MODE_I, MODE_METER, MODE_I_SOFT, MODE_DARK };
+enum { MODE_NONE, MODE_IA, MODE_IA_CUT, MODE_I, MODE_METER, MODE_I_SOFT, MODE_DARK, MODE_DARK_ORD, MODE_I_ORD,
+	MODE_I_SOFT_ORD };
 
 static struct
 {
@@ -345,6 +346,20 @@ static struct
 /* (the mode's changes one batch, rdpq_mode_begin's, as n64_hud.c set_mode:
 the RSP works the render mode out once, at the end, where each change did
 it again, every time a recording is shown -- the same mode in the end) */
+/* ZOOM SHADE DITHER's stipple (a zoomed view's darkening without the
+blender): no blending, so the RDP does not read the picture; a pixel is
+written black or left. The alpha in eighths (0-8) plus the RDP's 4x4 alpha
+dither (0-7, by the pixel's place on the screen: the same pattern every
+frame) passes the alpha compare at 8 on a/8 of the pixels */
+static void stipple_mode(void)
+{
+	rdpq_mode_dithering(DITHER_NONE_BAYER);
+	/* (rdpq_mode_alphacompare(8), written out from libdragon's rdpq_mode.h
+	(threshold > 0): called here, the program would keep a copy for the module) */
+	__rdpq_mode_change_som(SOM_ALPHACOMPARE_MASK | SOMX_ALPHACOMPARE, SOM_ALPHACOMPARE_THRESHOLD | SOMX_ALPHACOMPARE);
+	rdpq_set_blend_color(RGBA32(0, 0, 0, 8));
+}
+
 HOT static void set_rdp_mode(int mode)
 {
 	if (draw.rdp_mode == mode)
@@ -383,6 +398,21 @@ HOT static void set_rdp_mode(int mode)
 		darkening) */
 		rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
 		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+		break;
+	case MODE_DARK_ORD:
+		/* black written where the primitive's alpha passes the stipple
+		(stipple_mode), the picture not read */
+		rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+		stipple_mode();
+		break;
+	case MODE_I_SOFT_ORD:
+		rdpq_mode_filter(FILTER_BILINEAR);
+		/* fall through */
+	case MODE_I_ORD:
+		/* black written where the texel's alpha (x the primitive's) passes
+		the stipple, the picture not read */
+		rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
+		stipple_mode();
 		break;
 	case MODE_METER:
 		/* the primitive's colour where the order map passes the threshold,
@@ -2219,17 +2249,27 @@ HOT static void ret_outside(const int view[4], int l, int tp, int r, int b, int 
 	draw.prim_valid = 0;
 }
 
+/* an alpha (0-255) as the stipple's (0-8: eighths of the pixels), as the
+combiner scales a texel by a primitive alpha of 8 */
+#define ORDERED(a) (((a) * 8 + 128) >> 8)
+
 /* a scope's mask (interface.c, before the view's HUD: under all of it) of
 a bitmap the style draws: the pistol's and rocket launcher's soft circle,
 the sniper rifle's window with its dark lines and side frames (these
 stand for the weapon HUD's angle ticks, which cost more to draw: left out
-then, hud_weapon.c); split: 2-4 players (half size) */
+then, hud_weapon.c); split: 2-4 players (half size). Its shade, ZOOM SHADE
+(n64_hud_zoom_shade): BLEND, the outside darkened by the blender (the RDP
+reads every pixel of the view); DITHER, the same darkening as an ordered
+stipple, written without reading the picture (the sniper's thin outline
+edges, dark lines and side frames stay blended: a stipple breaks a 1-pixel
+line into dots) */
 void n64_hud64_scope(int bitmap, int split)
 {
 	const struct hud64_zoom *z;
 	const surface_t *t, *c;
 	int g, ax, ay, view[4], circle = bitmap <= HUD64_RETB_PISTOL_MASK_SPLIT;
-	int l, tp, r, b;
+	int l, tp, r, b, soft = circle && !split, dither = n64_hud_zoom_shade() == N64_ZOOM_SHADE_DITHER;
+	int alpha = circle ? HUD64_ALPHA_CIRCLE_OUT : HUD64_ALPHA_SNIPER_OUT;
 
 	if (bitmap < HUD64_RETB_PISTOL_MASK)
 		return;
@@ -2241,24 +2281,25 @@ void n64_hud64_scope(int bitmap, int split)
 		return;
 	/* the circle: its quarter 2x with the bilinear filter at 1 player,
 	1:1 at 2-4; the window: its corners from a texture (the outside, the
-	outline) */
-	set_rdp_mode(circle && !split ? MODE_I_SOFT : MODE_I);
-	set_colours(0, 255, 0);
+	outline); DITHER: their alphas in eighths (a primitive alpha of 8) */
+	set_rdp_mode(dither ? (soft ? MODE_I_SOFT_ORD : MODE_I_ORD) : soft ? MODE_I_SOFT : MODE_I);
+	set_colours(0, dither ? 8 : 255, 0);
 	upload(t);
 	if (circle)
 		ret_mirrored(4, ax, ay, ax, ay, -z->circle[0] * g, -z->circle[1] * g, 0, 0, t->width, t->height);
 	else
 		ret_mirrored(4, ax + z->box[0] * g, ay + z->box[1] * g, ax + z->box[2] * g, ay + z->box[3] * g,
 			z->corner[0] * g, z->corner[1] * g, 0, 0, t->width, t->height);
-	/* the rest of the view outside, at the texture's outer value; the
-	window's outline edges and the dark lines */
+	/* the rest of the view outside, at the texture's outer value */
 	l = circle ? -z->circle[0] : z->box[0], tp = circle ? -z->circle[1] : z->box[1];
 	r = circle ? z->circle[0] : z->box[2], b = circle ? z->circle[1] : z->box[3];
-	set_rdp_mode(MODE_DARK);
+	set_rdp_mode(dither ? MODE_DARK_ORD : MODE_DARK);
 	ret_outside(view, (ax + l * g) * draw.m.xs, ay + tp * g, (ax + r * g) * draw.m.xs, ay + b * g,
-		circle ? HUD64_ALPHA_CIRCLE_OUT : HUD64_ALPHA_SNIPER_OUT);
+		dither ? ORDERED(alpha) : alpha);
 	if (!circle)
 	{
+		/* the window's outline edges and the dark lines */
+		set_rdp_mode(MODE_DARK);
 		ret_darks(z->rects, 10, ax, ay, g);
 		/* the side frames: the ladder's one period, wrapped down them (its
 		own upload) */

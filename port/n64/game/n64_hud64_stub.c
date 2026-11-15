@@ -29,8 +29,8 @@ loaded. Without it each does nothing, and the game draws its own HUD.
 #include <stdio.h>
 #include <stdlib.h>
 
-/* the module's file: its code, tables and state (59,920 bytes while it is
-loaded, on every cartridge; n64_module.c finds it room) */
+/* the module's file: its code, tables and state (60,176 bytes while it is
+loaded, 60,144 on the Multiplayer cartridge; n64_module.c finds it room) */
 #define HUD64_MODULE "rom:/hud64.dso"
 
 /* The heap the style leaves free once its module and textures are in (the
@@ -90,6 +90,37 @@ int n64_hud_style(
 		flag = n64_debug_text("debug_hud_style", text, sizeof(text)) ? atoi(text) == 64 : -1;
 	}
 	return flag >= 0 ? flag : hud_style;
+}
+
+/* ZOOM SHADE AUTO's choice where the RDP blends slowly: one place, so that
+another look can take it */
+#define ZOOM_SHADE_SLOW N64_ZOOM_SHADE_DITHER
+
+static int zoom_shade = N64_ZOOM_SHADE_AUTO;
+
+/* (Settings: ZOOM SHADE, n64_menu.c; applied as a game starts) */
+void n64_hud_set_zoom_shade(
+	int shade)
+{
+	zoom_shade = shade >= N64_ZOOM_SHADE_AUTO && shade <= N64_ZOOM_SHADE_BLEND ? shade : N64_ZOOM_SHADE_AUTO;
+	return;
+}
+
+/* AUTO's look: BLEND or the slow choice, by the measure of the latest
+second of frames before the first game (the menu shows it once made), made
+now if not yet */
+int n64_hud_zoom_shade_auto(
+	void)
+{
+	return n64_render_blend_choose() ? ZOOM_SHADE_SLOW : N64_ZOOM_SHADE_BLEND;
+}
+
+/* (the module's, at each zoomed view) the setting, AUTO made its look: the
+same all game */
+int n64_hud_zoom_shade(
+	void)
+{
+	return zoom_shade != N64_ZOOM_SHADE_AUTO ? zoom_shade : n64_hud_zoom_shade_auto();
 }
 
 /* ---------- the game's functions the module calls (n64_hud64_imports.h) */
