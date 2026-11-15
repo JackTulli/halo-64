@@ -192,7 +192,7 @@ static int load_group(int group)
 			if (id < HUD64_TEXTURE_COUNT && format < 4 && !hud64.textures[id].buffer)
 			{
 				hud64.textures[id] = surface_make(data + offset, formats[format], width, height, stride);
-				hud64.uploads[id] = upload_block(&hud64.textures[id]);
+				hud64.uploads[id] = id < HUD64_TEX_RET_FIRST ? upload_block(&hud64.textures[id]) : NULL;
 			}
 		}
 	}
