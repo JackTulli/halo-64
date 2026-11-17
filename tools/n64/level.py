@@ -646,6 +646,16 @@ class LevelBuilder:
         # its water was flat (the user: "fix all the water on the level like
         # we did on beaver creek"); the campaign's level only
         self.chicago_water = False
+        # a Custom Edition map's level (convert.py --custom): an alpha-tested
+        # environment shader with no bump map drawn opaque (material), as
+        # Halo draws it: its alpha test reads the bump map's alpha, and with
+        # none there is nothing to cut. The base map's alpha, the fallback
+        # elsewhere, can mean something else there (Hyrule Field's ground
+        # field.bitmap: 94% of it cut away, the fog's colour showing through)
+        self.custom = False
+        # (a Custom Edition map's level: its transparent shaders' materials,
+        # drawn unlit -- unlit_first_map)
+        self.unlit_materials = set()
 
     def fields(self, struct_name):
         return {f.name: o for o, f in self.defs.fields(struct_name)}
@@ -933,6 +943,8 @@ class LevelBuilder:
                 env_flags = struct.unpack("<H", self.map.read(tag.address + f["shader environment flags"], 2))[0]
                 bump = struct.unpack("<I", self.map.read(tag.address + f["bump map"] + 12, 4))[0]
                 bump_scale = struct.unpack("<f", self.map.read(tag.address + f["bump map scale"], 4))[0] or 1.0
+                if self.custom and bump == 0xFFFFFFFF:
+                    env_flags &= ~1
                 if env_flags & 1:
                     flags |= MATERIAL_ALPHA_TEST
                 span = self.shader_span.get(shader_datum, 0.0)
@@ -991,6 +1003,15 @@ class LevelBuilder:
                     self.water_colour[index] = self.campaign_water(tag, self.chicago_water_tint(tag))
                     self.material_by_shader[shader_datum] = index
                     return index
+                if self.custom:
+                    texture, opaque = self.unlit_first_map(tag)
+                    if texture is not None:
+                        if opaque:
+                            flags &= ~MATERIAL_TRANSPARENT
+                        index = self.add_material(texture, flags, shade, tint=tint)
+                        self.unlit_materials.add(index)
+                        self.material_by_shader[shader_datum] = index
+                        return index
                 texture = self.first_map(tag)
         if texture < 0:
             flags |= MATERIAL_UNTEXTURED
@@ -1422,6 +1443,65 @@ class LevelBuilder:
             return self.texture(found[0], fmt="RGBA16", box=(64, 32))
         return self.texture(found[0], dither=choice is not None and choice.option == "ci4-64x64" and choice.dither)
 
+    def unlit_first_map(self, tag):
+        """a Custom Edition level's transparent shader (an alpha-blended
+        generic, chicago or chicago extended one: those dropped_shader
+        keeps): (texture, opaque), or (None, False).
+
+        The texture is the shader's first map as it is, not doubled as the
+        lit textures are: Halo draws these shaders unlit, and build gives
+        their vertices white. (Lit, they took the lightmap's material
+        summary, black for a surface the lightmapper leaves out: Rainbow
+        Road's road was black.)
+
+        opaque: the map has no transparent texel. The N64 drew such a
+        surface whole already; it is now drawn in the opaque pass, with
+        depth writes.
+
+        (None, False), and so the converter's old drawing, where there is
+        no colour to show: no map, one that cannot be decoded, or one white
+        and opaque everywhere. That is the preparation's stand-in
+        (ce_prepare.py) for a bitmap only Custom Edition's bitmaps.map has
+        (No Remorse's surf; surfaces on Area 53, H2 Zanzibar and
+        Hydrolysis): unlit, it would be a white slab. A map that is really
+        white everywhere is left as it was too."""
+        found = []
+
+        def on_dependency(t, address, f, path, group, datum):
+            if group == 0x6269746D and datum != 0xFFFFFFFF and not found:  # 'bitm'
+                found.append(datum)
+
+        from .walk import Walker
+        Walker(self.map, self.defs).walk(tag, on_dependency=on_dependency)
+        if not found:
+            return None, False
+        key = ("unlit", found[0])
+        if key not in self.texture_by_bitmap:
+            bitmap = self.map.tag(found[0])
+            images = bitmap_images(self.map, bitmap, self.defs) if bitmap is not None else []
+            try:
+                img = decode(self.map, images[0], 64) if images else None
+            except ValueError:
+                img = None
+            if img is not None:
+                img = img.convert("RGBA")
+            # (white and opaque everywhere: the stand-in -- or a map that is
+            # really white everywhere, left as it was too)
+            if img is None or all(low >= 255 for low, _ in img.getextrema()):
+                self.texture_by_bitmap[key] = (None, False)
+            else:
+                opaque = img.getchannel("A").getextrema()[0] >= 255
+                choice = self.texture_choice(found[0])
+                fmt, box = ("RGBA16", (64, 32)) if choice is not None and choice.option == "colour-32x64" else (None, None)
+                dither = choice is not None and choice.option == "ci4-64x64" and choice.dither
+                brightness, self.texture_brightness = self.texture_brightness, 1.0
+                try:
+                    index = self.write_texture(img, bitmap.name, fmt=fmt, box=box, dither=dither)
+                finally:
+                    self.texture_brightness = brightness
+                self.texture_by_bitmap[key] = (index, opaque)
+        return self.texture_by_bitmap[key]
+
     # ---------- geometry
 
     def build(self, bsp_tag):
@@ -1498,6 +1578,10 @@ class LevelBuilder:
                     if material in self.water_colour:
                         # water: its flat colour, never split by light
                         color, lightmap = list(self.water_colour[material]), None
+                    elif material in self.unlit_materials:
+                        # (a Custom Edition level's transparent shader: unlit,
+                        # its texture as it is -- unlit_first_map)
+                        color, lightmap = [1.0, 1.0, 1.0], None
                     vertex =((px, py, pz), n, (u, vv), tuple(min(1.0, max(0.0, c)) for c in color), lightmap)
                     # the same vertex twice (position, texture coordinate,
                     # light): one, so that batches share it

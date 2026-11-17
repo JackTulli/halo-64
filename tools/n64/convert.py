@@ -650,6 +650,9 @@ def main():
         # original images (level.py grey_texture), natural terrain drawn with
         # its detail maps (terrain_materials)
         builder.greyscale = builder.terrain_detail = True
+        # (a Custom Edition map: its level's shaders as Halo draws them where
+        # the Xbox maps never use them so: LevelBuilder.custom)
+        builder.custom = args.custom
         # rock, earth, snow: their detail maps drawn over them (not in the
         # lighter level of 3-4 player games)
         builder.overlay_detail = True
@@ -662,6 +665,7 @@ def main():
         # lit at their corners
         low = LevelBuilder(xmap, repacker.defs, xmap.name, args.filesystem, split_depth=0)
         low.greyscale = low.terrain_detail = True
+        low.custom = args.custom
         stats = low.write(args.filesystem / "levels" / f"{xmap.name}-low.lvl", xmap.bsps[0][0])
         print(f"{xmap.name} low level: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         from .models import ModelConverter
@@ -675,6 +679,7 @@ def main():
             suffix = f"-fp{quality}" if quality else ""
             models = ModelConverter(xmap, repacker.defs, xmap.name + suffix, args.filesystem)
             models.reduce_open_shapes = args.custom
+            models.custom = args.custom
             models.lod_preferences = {i: lowest for i in covenant}
             models.budget_overrides = {i: 250 for i in covenant}
             models.first_person_budget = int(models.first_person_budget * view_scale)
@@ -684,6 +689,7 @@ def main():
             # their triangles, the first-person views at 350)
             low_models = ModelConverter(xmap, repacker.defs, f"{xmap.name}-low{suffix}", args.filesystem)
             low_models.reduce_open_shapes = args.custom
+            low_models.custom = args.custom
             low_models.budget_scale = 0.5
             low_models.first_person_budget = int(350 * view_scale)
             low_models.first_person_deviation = 0.06
