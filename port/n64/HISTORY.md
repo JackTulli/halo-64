@@ -5,6 +5,42 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+17 November: version 0.6.9, five pull requests by jz-k (details and
+measurements in each pull request's description) and one by grimfervor.
+
+- The level's geometry stream (pull request 42): its cache waits for the
+  RSP per region, not for the whole queue, and empties a quarter of itself
+  at a time; a higher frame rate where a level is streamed (the PC maps
+  Death Island and Infinity, the Custom Edition maps Yoyorast Island, H2
+  Coagulation and Mystic), most in split screen, with the same pictures.
+- Release programs (pull request 43): `tools/n64_build.py --release`
+  defines `N64_STRIP_TEST_FLAGS` for every unit, so each test flag read
+  (`n64_debug_flag`, `n64_debug_text`, `port/n64/include/n64_debug_flags.h`)
+  folds to its value with no flag file and the code only a set flag
+  reaches is left out: 62 to 80 KB more heap on every cartridge. Its ROMs
+  carry no port.json flag files. The ROM Builder's package takes only such
+  programs (it checks the build folder's halo.elf for `n64_debug_flag`;
+  `--allow-test-flags` for a test package).
+- Projectiles (pull request 44): a Settings row, PROJECTILES, OFF, LIGHT
+  (the default), HEAVY or FULL: bullets' tracers, the glows of plasma
+  bolts, needles and rockets as Halo's light volumes, the sniper rifle's
+  trail as Halo's contrail, HEAVY's short trails and FULL's long contrails,
+  and a dot for a projectile whose model has no room. The drawing is a
+  second module, `rom:/projectiles.dso` (FULL's contrails a third,
+  `projectiles_full.dso`), loaded only while wanted and where the heap has
+  room; the build, the ROM Builder and its package carry any number of
+  modules (`check_module_files`).
+- Custom Edition surfaces (pull request 45): alpha-tested environment
+  shaders without a bump map drawn whole (Hyrule Field's ground),
+  transparent level shaders in their colours, Rainbow Road against black.
+  Only the Custom Edition cartridge's conversion changes.
+- Split-screen crosshairs (pull request 46): `hud_calculate_point` puts
+  centre-anchored HUD items at the middle of the view's viewport, where
+  the 3D's projection and the shots' aim are, not the middle of its
+  title-safe window (up to 3 pixels off at 320 across).
+- `ares_installer.sh` (pull request 48, grimfervor): installs Flatpak and
+  ares from Flathub on Debian or Ubuntu.
+
 11 November: version 0.6.8, nine pull requests by jz-k (details and
 measurements in each pull request's description).
 

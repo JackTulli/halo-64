@@ -79,11 +79,20 @@ class PackageTests(unittest.TestCase):
         built.mkdir(parents=True)
         (built / "Halo64RomBuilder.exe").write_bytes(b"not a real executable")
 
-    def run_package(self, extra=()):
+    def run_package(self, extra=(), release_check=False):
+        # (the fixtures' programs are no ELFs: a test package, unless the
+        # release check itself is tested)
         argv = ["package", "--tools", str(self.tools), "--elf", str(self.elf),
-                "--invader", str(self.invader), "--out", str(self.output), *extra]
+                "--invader", str(self.invader), "--out", str(self.output), *extra,
+                *(() if release_check else ("--allow-test-flags",))]
         with patch.object(sys, "argv", argv):
             package.main()
+
+    def test_package_refuses_a_program_it_cannot_tell_is_a_release_one(self):
+        with self.assertRaises(SystemExit) as context:
+            self.run_package(release_check=True)
+        self.assertEqual(context.exception.code, 2)
+        self.assertEqual(self.payload, {})
 
     def test_vanilla_package_needs_no_pc_tools_or_assets(self):
         self.run_package()
