@@ -38,6 +38,7 @@ the two colours by the texel), all drawn like the particles.
 #include "n64.h"
 #include "n64_sniper_ribbon.h"
 #include "n64_fx_format.h"
+#include "n64_projectiles_module.h"
 
 #define MAXIMUM_PARTICLES 128
 #define CELL 16
@@ -149,14 +150,16 @@ static struct
 	surface_t fireball;
 } fx;
 
-/* Eight short, independently fading shot segments: 224 bytes, no heap. */
+/* Eight fading shot ribbons, each a bullet's joined moves from the muzzle:
+224 bytes, no heap. */
 static struct { float start[3], end[3], age; } sniper_ribbons[N64_SNIPER_RIBBONS];
 static int next_sniper_ribbon;
-/* I4: soft across the ribbon, tapered at both ends, no opaque card. */
-static unsigned char sniper_mask[32] __attribute__((aligned(16))) = {
+/* I4: soft across the ribbon, even along it (a bullet's moves join into one
+line from the muzzle), no opaque card. */
+unsigned char n64_sniper_mask[32] __attribute__((aligned(16))) = {
     0,0,0,0,0,0,0,0,
-    0x01,0x35,0x79,0xBC,0xCB,0x97,0x53,0x10,
-    0x01,0x35,0x79,0xBC,0xCB,0x97,0x53,0x10,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
     0,0,0,0,0,0,0,0
 };
 static void reset_sniper_ribbons(void)
@@ -168,9 +171,122 @@ void n64_sniper_ribbon(const float *start, const float *end)
 {
     if (fx.disabled) return;
     int index = next_sniper_ribbon;
+    /* (a bullet's next tick joins its ribbon: one that ends where it starts
+    and is still new -- two rounds in flight keep a ribbon each) */
+    for (int i = 0; i < N64_SNIPER_RIBBONS; i++)
+        if (sniper_ribbons[i].age < N64_SNIPER_HOLD && !memcmp(start, sniper_ribbons[i].end, sizeof(sniper_ribbons[i].end)))
+        {
+            memcpy(sniper_ribbons[i].end, end, sizeof(sniper_ribbons[i].end));
+            return;
+        }
     if (!sniper_ribbon_segment(start, end, sniper_ribbons[index].start, sniper_ribbons[index].end)) return;
     sniper_ribbons[index].age = 0.f;
-    next_sniper_ribbon = (index + 1) % N64_SNIPER_RIBBONS;
+    next_sniper_ribbon = (index + 1) & (N64_SNIPER_RIBBONS - 1);
+}
+
+/* ---------- projectiles: the setting, the module, the dots. The tracers,
+trails and glows are a module, rom:/projectiles.dso (n64_projectiles.c),
+loaded here only while PROJECTILES (Settings, n64_projectiles_set_mode) is
+LIGHT, HEAVY or FULL, no earlier than PROJECTILE_HOLD_FRAMES after the map's load
+or the module's last give-back (twice as long after each give-back in the
+map, up to 16 times: it does not come and go), and only into room the heap
+has with PROJECTILE_HEAP_FREE besides -- the model cache's own margin, so
+that its load never leaves a model short, more than HUD STYLE 64's (58 KB,
+n64_hud64_stub.c), which ranks above it -- dropping nothing for it; asked again
+PROJECTILE_REFUSED_FRAMES after a refusal. It is the first memory given
+back: when another model, or a HUD image, finds the heap short
+(n64_projectiles_give_back, from n64_render.c and n64_hud.c). Where memory is
+short, tracers and glows are not drawn. The dots of projectiles whose model
+had no room (n64_projectile_dot_next) are the program's, whatever the module
+and the setting. */
+#define PROJECTILES_MODULE "rom:/projectiles.dso"
+#define PROJECTILES_FULL_MODULE "rom:/projectiles_full.dso"
+/* (n64_render.c MODEL_HEAP_MARGIN) */
+#define PROJECTILE_HEAP_FREE (96 * 1024)
+#define PROJECTILE_HOLD_FRAMES 120
+/* after the heap had not the module's room: asked again 60 frames later
+(the room test walks the heap, ~0.1 ms), not in the next frame */
+#define PROJECTILE_REFUSED_FRAMES 60
+
+static uint8_t projectile_mode = 1, projectile_map_mode, projectile_views = 1, projectile_map_live;
+static unsigned long projectile_frame, projectile_hold;
+/* the frame time smoothed over about 8 frames, kept across the module's
+loads (the HEAVY trails' life, n64_projectiles.c) */
+static float projectile_frame_time = 1.f / 30.f;
+/* the module's give-backs in this map (its hold doubles with each) */
+static uint8_t projectile_gives;
+/* the module's glows' texture (n64_projectiles_module.h): a soft round
+falloff, 1 - r^2 squared, the top left quarter of 16x16 I4 */
+const unsigned char n64_projectile_glow_texels[32] __attribute__((aligned(16))) = {
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x12, 0x00, 0x01, 0x23, 0x44, 0x00, 0x12, 0x45, 0x67,
+	0x00, 0x24, 0x68, 0x9A, 0x01, 0x35, 0x8A, 0xBC, 0x01, 0x46, 0x9B, 0xDE, 0x02, 0x47, 0xAC, 0xEF,
+};
+/* the module's memory, and its entry points while it is in; and the FULL
+part's (rom:/projectiles_full.dso: FULL's long contrails, at FULL only) */
+static void *projectile_module, *projectile_full_module;
+const struct n64_projectiles_entries *n64_projectiles_entry;
+const struct n64_projectiles_full_entries *n64_projectiles_full_entry;
+
+void n64_projectiles_set_mode(int mode)
+{
+	projectile_mode = (uint8_t)(mode >= 0 && mode <= 3 ? mode : 1);
+}
+
+int n64_projectiles_give_back(void)
+{
+	if (!projectile_module)
+		return 0;
+	/* (the FULL part first: the projectiles' module calls it) */
+	if (projectile_full_module)
+	{
+		n64_projectiles_full_entry = NULL;
+		n64_module_free(projectile_full_module);
+		projectile_full_module = NULL;
+	}
+	n64_projectiles_entry = NULL;
+	n64_module_free(projectile_module);
+	projectile_module = NULL;
+	/* (the frame's later views gather its objects again: the needles the
+	module drew by their glows are drawn by their models) */
+	n64_render_gather_again();
+	projectile_hold = projectile_frame + ((unsigned long)PROJECTILE_HOLD_FRAMES << projectile_gives);
+	if (projectile_gives < 4)
+		projectile_gives++;
+	return 1;
+}
+
+/* the map's: the setting taken, nothing kept (n64_particles_load: live;
+n64_particles_release: no map, and no dots) */
+static void projectiles_reset(int mode, int live)
+{
+	n64_projectiles_give_back();
+	projectile_map_mode = (uint8_t)mode;
+	projectile_map_live = (uint8_t)live;
+	projectile_hold = projectile_frame + PROJECTILE_HOLD_FRAMES;
+	projectile_gives = 0;
+}
+
+/* the module in, where the setting wants it, the hold is over and the heap
+has its room (a frame's: n64_particles_update) */
+static void projectiles_module_start(void)
+{
+	void *address;
+
+	if (!projectile_map_mode || projectile_module || projectile_frame < projectile_hold)
+		return;
+	projectile_module = n64_module_load_spare(PROJECTILES_MODULE, N64_PROJECTILES_ENTRIES, PROJECTILE_HEAP_FREE, &address);
+	if (!projectile_module)
+	{
+		projectile_hold = projectile_frame + PROJECTILE_REFUSED_FRAMES;
+		return;
+	}
+	n64_projectiles_entry = (const struct n64_projectiles_entries *)address;
+	/* (FULL: its part too, where the heap has its room and the margin besides;
+	else the module draws HEAVY) */
+	if (projectile_map_mode == 3 && (projectile_full_module = n64_module_load_spare(PROJECTILES_FULL_MODULE,
+		N64_PROJECTILES_FULL_ENTRIES, PROJECTILE_HEAP_FREE, &address)))
+		n64_projectiles_full_entry = (const struct n64_projectiles_full_entries *)address;
+	n64_projectiles_entry->begin(projectile_map_mode, projectile_frame_time);
 }
 
 static void make_fireball(void);
@@ -215,6 +331,7 @@ void n64_particles_release(void)
 	fx_free();
 	flame_cell = 0;
 	reset_sniper_ribbons();
+	projectiles_reset(0, 0);
 	memset(fx.particles, 0, sizeof(fx.particles));
 	fx.live = 0;
 	memset(fx.explosions, 0, sizeof(fx.explosions));
@@ -353,6 +470,7 @@ void n64_particles_load(const char *map_name)
     int ok = 0;
 
     reset_sniper_ribbons();
+    projectiles_reset(projectile_mode, 1);
     n64_paint_reset(map_name);
     fx_free();
     flame_cell = 0;
@@ -652,8 +770,15 @@ void n64_particles_update(float dt)
 	n64_paint_update(dt);
 	/* Age even if the sprite pool is empty. No simulation tick/RNG changes. */
 	if (isfinite(dt) && dt > 0.f)
+	{
 		for (int i = 0; i < N64_SNIPER_RIBBONS; i++)
 			if (sniper_ribbons[i].age < N64_SNIPER_LIFE) sniper_ribbons[i].age += dt;
+		projectile_frame_time += (n64_min_f(n64_max_f(dt, 1.f / 60.f), 0.5f) - projectile_frame_time) * 0.125f;
+	}
+	projectile_frame++;
+	projectiles_module_start();
+	if (n64_projectiles_entry)
+		n64_projectiles_entry->update(dt, projectile_frame_time);
 	static float log_time;
 
 	/* (port.json flag "debug_particles": the counts every five seconds) */
@@ -1146,12 +1271,16 @@ static void draw_sniper_ribbons(const struct n64_particle_view *view)
         float projected[N64_SNIPER_CLIP][6];
         float age = sniper_ribbons[i].age;
         if (age >= N64_SNIPER_LIFE) continue;
-        int count = sniper_ribbon_geometry(view, sniper_ribbons[i].start, sniper_ribbons[i].end, projected);
+        /* (how far it has faded: 0 held, 1 gone; Halo's width 0.044 world
+        units held, 0.0875 gone -- its first 0.025 is under a pixel here) */
+        float fade = age < N64_SNIPER_HOLD ? 0.f : (age - N64_SNIPER_HOLD) * (1.f / (N64_SNIPER_LIFE - N64_SNIPER_HOLD));
+        int count = sniper_ribbon_geometry(view, sniper_ribbons[i].start, sniper_ribbons[i].end, 0.022f + 0.0215f * fade,
+            projected);
         if (count < 3) continue;
         if (!started)
         {
-            surface_t mask = surface_make_linear(sniper_mask, FMT_I4, 16, 4);
-            data_cache_hit_writeback(sniper_mask, sizeof(sniper_mask));
+            surface_t mask = surface_make_linear(n64_sniper_mask, FMT_I4, 16, 4);
+            data_cache_hit_writeback(n64_sniper_mask, sizeof(n64_sniper_mask));
             rdpq_sync_pipe();
             rdpq_mode_begin();
             rdpq_set_mode_standard();
@@ -1164,21 +1293,95 @@ static void draw_sniper_ribbons(const struct n64_particle_view *view)
             rdpq_tex_upload(TILE0, &mask, NULL);
             started = 1;
         }
-        float alpha = 1.f - age / N64_SNIPER_LIFE;
+        float alpha = 1.f - fade;
         if (view->fog_end > view->fog_start)
         {
-            float z = 1.f / projected[0][5];
+            /* (the fog at its nearest vertex: a long ribbon that passes the
+            view is as clear there as a short one, whatever its far end) */
+            float inv = projected[0][5];
+            for (int v = 1; v < count; v++) if (projected[v][5] > inv) inv = projected[v][5];
+            float z = 1.f / inv;
             if (z > view->fog_end) continue;
             if (z > view->fog_start) alpha *= 1.f - (z - view->fog_start) / (view->fog_end - view->fog_start);
         }
-        /* Pale vapor, deliberately much quieter than impact flashes. */
-        rdpq_set_prim_color(RGBA32(205, 225, 235, (int)(alpha * alpha * 76.f)));
+        /* Halo's colours: gold (242, 217, 151) at first, grey (196, 196, 196)
+        held, then fading out (its bitmap's alpha at most 0.73) */
+        int a = (int)(alpha * 186.f);
+        rdpq_set_prim_color(age < N64_SNIPER_GOLD ? RGBA32(242, 217, 151, a) : RGBA32(196, 196, 196, a));
         for (int v = 1; v < count - 1; v++) rdpq_triangle(&TRIFMT_ZBUF_TEX, projected[0], projected[v], projected[v + 1]);
     }
 }
 
+/* this view's dots: a square of 2-4 pixels for each projectile whose model
+had no room in it (a grenade in flight, a rocket where memory is short), in
+its own colour, faded in the fog and depth-tested, whatever the module (it
+is given back where memory is short) and the setting (OFF too: the model's
+rule is not the setting's); then (the module's) its segments */
+static void draw_projectiles(const struct n64_particle_view *view)
+{
+	float position[3], depth_a = 0.f, depth_b = 0.f, fog_per = 0.f;
+	unsigned long color;
+	int mode = 0;
+
+	for (int cursor = 0; projectile_map_live && n64_projectile_dot_next(&cursor, position, &color);)
+	{
+		float d[3], z, per_z, s, x, y, half, fog, depth;
+
+		for (int k = 0; k < 3; k++)
+			d[k] = position[k] - view->eye[k];
+		z = d[0] * view->forward[0] + d[1] * view->forward[1] + d[2] * view->forward[2];
+		if (!(z > view->z_near * 2.f) || (view->fog_end > 0.f && z >= view->fog_end))
+			continue;
+		per_z = 1.f / z;
+		s = view->pixels_per_unit * per_z;
+		x = view->center_x + (d[0] * view->right[0] + d[1] * view->right[1] + d[2] * view->right[2]) * view->x_scale * s;
+		y = view->center_y - (d[0] * view->up[0] + d[1] * view->up[1] + d[2] * view->up[2]) * s;
+		half = n64_min_f(n64_max_f(0.1f * s, 1.f), 2.f);
+		if (!isfinite(x + y) || x + half < view->x0 || x - half >= view->x1 || y + half < view->y0 || y - half >= view->y1)
+			continue;
+		/* (the view's constants, at its first dot: tiny3d's depth as a - b / z
+		-- the particles' depth -- and the fog's inverse length, 0: none; the
+		module's own the same) */
+		if (!mode)
+		{
+			depth_a = (view->z_far + view->z_near) / (view->z_far - view->z_near) * 0.5f + 0.5f;
+			depth_b = view->z_far * view->z_near / (view->z_far - view->z_near) / 0.995f;
+			fog_per = view->fog_end > view->fog_start ? 1.f / (view->fog_end - view->fog_start) : 0.f;
+			rdpq_sync_pipe();
+			rdpq_mode_begin();
+			rdpq_set_mode_standard();
+			rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+			rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+			rdpq_mode_zbuf(true, false);
+			rdpq_mode_zoverride(true, 0.f, 0);
+			rdpq_mode_end();
+			mode = 1;
+		}
+		fog = fog_per > 0.f && z > view->fog_start ? 1.f - (z - view->fog_start) * fog_per : 1.f;
+		depth = depth_a - depth_b * per_z;
+		rdpq_set_prim_depth_raw((uint16_t)(int)((depth >= 1.f ? 1.f : depth <= 0.f ? 0.f : depth) * 0x7FFF), 0);
+		rdpq_set_prim_color(RGBA32(color >> 16, (color >> 8) & 0xFF, color & 0xFF, (int)(fog * 255.f)));
+		/* (CHUNKY and MEDIUM: in the pixels drawn, at least one wide) */
+		float across = half;
+
+		if (view->chunky)
+		{
+			x = view->x0 + (x - view->x0) * view->chunky_scale;
+			across = n64_max_f(half * view->chunky_scale, 0.5f);
+		}
+		rdpq_fill_rectangle(x - across, y - half, x + across, y + half);
+	}
+	if (n64_projectiles_entry)
+		n64_projectiles_entry->draw(view, projectile_views, &mode);
+	if (mode)
+		rdpq_mode_zoverride(false, 0.f, 0);
+}
+
 void n64_particles_draw(const struct n64_particle_view *view)
 {
+	/* (the projectiles' own setting, not PARTICLES') */
+	if (!view->first_person)
+		draw_projectiles(view);
 	if (fx.disabled) return;
 	draw_particles(view);
 	/* (explosions are the world's: not in the first-person pass) */
@@ -1199,6 +1402,7 @@ void n64_particles_statistics(unsigned long *spawned, unsigned long *drawn, unsi
 
 void n64_particles_set_view_count(int views)
 {
+	projectile_views = (uint8_t)(views > 1 ? views : 1);
 	fx.budget = views > 2 ? 0.5f : 1.f;
 }
 
