@@ -7,6 +7,7 @@ Windows Python that has pillow, tkinterdnd2, sv-ttk and pyinstaller:
          --pc-tool-notices <matching licence/source-offer files>]
         [--custom-elf build/n64/custom --ce-tools <invader-lite and ogg2wav for Windows>]
         [--online-kit <halo64-link's link/sc64/make-kit.sh --template folder>]
+        [--allow-test-flags]
 
 The online cartridge's program comes from build/n64/online when the build
 has it (ninja target online); --online-kit adds Halo 64 Link's kit (the
@@ -22,7 +23,9 @@ notices come from tools/n64/invader_lite.
 What goes in, beside Python and the converters (tools/n64): the payload --
 libdragon's tools for Windows (tools/n64/build_windows_tools.sh), each
 cartridge's prebuilt program (the compressed stripped ELF and its symbols
-from the N64 build: code, no Halo data; with HUD STYLE 64's module and the
+from the N64 build, configured with `tools/n64_build.py --release`: without
+the test flags, which the packaging checks in the build folder's halo.elf,
+--allow-test-flags for a test package; code, no Halo data; with HUD STYLE 64's module and the
 program's symbols for it), HUD STYLE 64's textures (assets/hud64,
 project-original), Invader's tag definitions (the converters read them) and
 port/n64/port.json -- and the licences of what it carries. The result is a folder (Halo64RomBuilder.exe beside its
@@ -41,7 +44,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO))
-from tools.n64.rombuilder import BuildError, check_hud64_files  # noqa: E402
+from tools.n64.rombuilder import BuildError, check_hud64_files, elf_symbols  # noqa: E402
 NAME = "Halo64RomBuilder"
 # (mkasset compresses every cartridge's maps: compress_map.py)
 TOOLS = ("mksprite", "audioconv64", "mkdfs", "n64tool", "ed64romconfig", "mkasset")
@@ -93,6 +96,21 @@ def make_icon(folder):
     return png, ico
 
 
+def test_flags_left_in(cartridge, folder):
+    """None if the program beside its build output is a release program
+    (tools/n64_build.py --release: n64_debug_flag is not in its link), else
+    why it may not go into the package. The link's halo.elf is read: the
+    payload's halo.elf.sym is compressed"""
+    program = folder / "halo.elf"
+    if not program.is_file():
+        return (f"{cartridge}: no halo.elf in {folder} to tell a release program from a developer one; package "
+                "from the build folder, or pass --allow-test-flags for a test package")
+    if "n64_debug_flag" in elf_symbols(program):
+        return (f"{cartridge}: {program} was built without tools/n64_build.py --release (the test flags are in "
+                "it); build it with --release, or pass --allow-test-flags for a test package")
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tools", type=Path, required=True, help="libdragon's tools for Windows (.exe)")
@@ -106,6 +124,8 @@ def main():
     parser.add_argument("--online-kit", type=Path,
                         help="Halo 64 Link's kit without the cartridge and maps (halo64-link: link/sc64/make-kit.sh --template)")
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--allow-test-flags", action="store_true",
+                        help="test packages only: take programs built without tools/n64_build.py --release")
     args = parser.parse_args()
     if args.online_kit:
         if not (args.elf / "online" / "halo.elf.stripped").is_file():
@@ -140,6 +160,20 @@ def main():
                 parser.error(f"missing supplied PC tool: {name}.exe")
         if not args.pc_tool_notices.is_dir() or not any(p.is_file() for p in args.pc_tool_notices.iterdir()):
             parser.error("--pc-tool-notices must contain the supplied tools' licence/source-offer notices")
+    programs = [("multiplayer", args.elf), ("campaign", args.elf / "campaign")]
+    if args.pc_expansion_elf:
+        programs.append(("pc-expansion", args.pc_expansion_elf))
+    if args.custom_elf:
+        programs.append(("custom", args.custom_elf))
+    # (Halo 64 Online's program, when the build has it: ninja target online)
+    if (args.elf / "online" / "halo.elf.stripped").is_file():
+        programs.append(("online", args.elf / "online"))
+    # (release programs only, unless asked: a developer program carries the
+    # test flags' code, 62 to 80 KB of the cartridge's heap)
+    for cartridge, folder in programs:
+        wrong = None if args.allow_test_flags else test_flags_left_in(cartridge, folder)
+        if wrong:
+            parser.error(wrong)
     stage = Path(tempfile.mkdtemp(prefix="halo64-package-"))
     try:
         # the converters, a regular package (tools/ is a namespace package
@@ -154,14 +188,6 @@ def main():
         (payload / "bin").mkdir(parents=True)
         for name in TOOLS:
             shutil.copy2(args.tools / f"{name}.exe", payload / "bin" / f"{name}.exe")
-        programs =[("multiplayer", args.elf), ("campaign", args.elf / "campaign")]
-        if args.pc_expansion_elf:
-            programs.append(("pc-expansion", args.pc_expansion_elf))
-        if args.custom_elf:
-            programs.append(("custom", args.custom_elf))
-        # (Halo 64 Online's program, when the build has it: ninja target online)
-        if (args.elf / "online" / "halo.elf.stripped").is_file():
-            programs.append(("online", args.elf / "online"))
         for cartridge, folder in programs:
             target = payload / "elf" / cartridge
             target.mkdir(parents=True)

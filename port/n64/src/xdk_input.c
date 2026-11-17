@@ -43,6 +43,7 @@ driven by a script instead, so an unattended run exercises the game
 */
 
 #include "platform.h"
+#include "n64_debug_flags.h"
 
 #include <string.h>
 

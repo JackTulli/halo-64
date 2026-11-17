@@ -8,6 +8,9 @@ OBJECTS.C
 /* ---------- headers */
 
 #include "cseries.h"
+#ifdef HALO_N64
+#include "n64_debug_flags.h"
+#endif
 #include "objects.h"
 
 #include "damage.h"
@@ -4186,7 +4189,6 @@ static void n64_child_pose_made(
 static int n64_objects_timed(
 	void)
 {
-	extern int n64_debug_flag(char const *name);
 	static int timed = -1;
 
 	if (timed < 0)

@@ -236,6 +236,9 @@ symbols in this file:
 #define REAL_MATH_EXTERNAL_POINT_FROM_LINE3D
 #define REAL_MATH_EXTERNAL_REAL_RANDOM_RANGE
 #include "cseries.h"
+#ifdef HALO_N64
+#include "n64_debug_flags.h"
+#endif
 #include "ai/ai_communication.h"
 #include "ai/ai_debug.h"
 #include "ai/ai_runtime.h"
@@ -4430,7 +4433,6 @@ boolean biped_update(
 #ifdef HALO_N64
 		{
 		extern void n64_log(const char *text);
-		extern int n64_debug_flag(const char *name);
 
 		/* (looked up once: every AI biped asked, every tick) */
 		static int biped_log = -1;

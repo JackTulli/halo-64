@@ -95,6 +95,9 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
+#ifdef HALO_N64
+#include "n64_debug_flags.h"
+#endif
 #include "cseries_windows.h"
 #include "real_math.h"
 #include "console.h"
@@ -501,7 +504,6 @@ static void code_001af650(
 #ifdef HALO_N64
 	/* no d:\ to write to: the debug log, with the port.json flag
 	"debug_game_state" (each allocation; the N64's pools are sized from it) */
-	extern int n64_debug_flag(char const *name);
 	extern void n64_log(char const *text);
 
 	if (n64_debug_flag("debug_game_state"))
