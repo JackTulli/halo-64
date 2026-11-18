@@ -508,18 +508,21 @@ class UnixBuilderTests(unittest.TestCase):
         second = threading.Timer(2.5, os.kill, (os.getpid(), signal.SIGINT))
         second.start()
         self.addCleanup(second.cancel)
+        cut_short = False
         try:
             with self.assertRaises(unix.Stopped):
                 unix.run_group([sys.executable, "-c", code])
         except KeyboardInterrupt:
-            self.fail("the second Ctrl-C cut the stop short")
+            cut_short = True
         finally:
             second.join()
         child = int(pid_file.read_text())
         time.sleep(0.5)
-        if alive(child):
+        left = alive(child)
+        if left:
             os.kill(child, signal.SIGKILL)
-            self.fail("the child that ignores SIGTERM was left running")
+        self.assertFalse(cut_short, "the second Ctrl-C cut the stop short")
+        self.assertFalse(left, "the child that ignores SIGTERM was left running")
 
     def test_under_nohup_a_sighup_does_not_stop_the_build(self):
         code = ("import os, signal, sys, time\n"
