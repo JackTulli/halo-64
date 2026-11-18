@@ -154,8 +154,8 @@ machines make the same ROMs from the same disc (on the systems tested).
 Download `Halo64RomBuilder.zip` from the release (or keep the folder your
 browser unpacked it to) and check out the same release's tag. The builder
 stops if the release is of another version: it reads the version from the
-release's `version.txt` or, in releases without one, from the version its
-programs show on the title page, and it compares the release's `port.json`
+release's `version.txt` or, for v0.6.9, which has none, from its
+multiplayer program's SHA-256, and it compares the release's `port.json`
 with the repository's.
 
 ```sh
@@ -170,8 +170,8 @@ It writes `halo-n64.z64` and `halo-campaign.z64` (`--multiplayer` or
 `tools/n64/invader_lite/build.sh` builds invader-lite for Linux and
 Windows. The first steps fetch libdragon and Invader at the commits named
 in `tools/n64/rombuilder_unix.py` and build their tools (a minute or two;
-invader-lite a few more), one compiler for each CPU and for each 1.5 GB of
-memory at a time (`JOBS=1` in front of the command builds with one).
+invader-lite a few more), one compiler for each CPU at a time and at most
+two for invader-lite (`JOBS=1` in front of the command builds with one).
 `--tools <folder>` keeps the tools in two folders of their own inside it,
 for the next run. Everything else goes in a folder in `TMPDIR` (about
 2 GB), removed at the end, and on Ctrl-C; a failed build leaves its logs in
