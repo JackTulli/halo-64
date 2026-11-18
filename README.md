@@ -136,6 +136,41 @@ zips> --ce-tools <invader-lite's Linux build, with ogg2wav or ffmpeg>`.
 On Linux the builder runs from the repository too:
 `python3 -m tools.n64.rombuilder <disc image or maps folder> -o <folder>`.
 
+### The ROM Builder on macOS and Linux
+
+The same builder runs from this repository on a Mac or a Linux PC with the
+release's prebuilt game programs, so it makes the same ROMs as the Windows
+builder. It needs no N64 toolchain: it builds the few tools it runs from
+their sources (libdragon's, and invader-lite for Custom Edition maps).
+
+| | What you need |
+|---|---|
+| macOS | the command line developer tools (`xcode-select --install`: git, make, a C and C++ compiler) and Python 3.12 or later with Pillow (`python3 -m pip install pillow`; the `python3` that comes with macOS is too old) |
+| Linux | Python 3.12 or later (Ubuntu 24.04's): `sudo apt install build-essential git python3-pil` |
+| Linux, Custom Edition maps | also `sudo apt install cmake ninja-build zlib1g-dev libsamplerate0-dev` |
+
+Download `Halo64RomBuilder.zip` from the release and check out the same
+release's tag (the builder stops if the zip's `port.json` is not the
+repository's):
+
+```sh
+git clone --branch vX.Y.Z https://github.com/JackTulli/halo-64 && cd halo-64
+python3 -m tools.n64.rombuilder_unix --release ~/Downloads/Halo64RomBuilder.zip \
+    <disc image or maps folder> -o <folder>
+```
+
+It writes `halo-n64.z64` and `halo-campaign.z64` (`--multiplayer` or
+`--campaign` for one of them). `--custom-edition <maps or zips>` makes
+`halo-custom-edition.z64`; on Linux only for now, as
+`tools/n64/invader_lite/build.sh` builds invader-lite for Linux and
+Windows. The first steps fetch libdragon and Invader at the commits named
+in `tools/n64/rombuilder_unix.py` and build their tools (a minute or two;
+invader-lite a few more); `--tools <folder>` keeps them there for the next
+run. Everything else it makes goes in a folder in `TMPDIR` (about 4 GB),
+removed at the end. It needs about 3 GB of free memory, and 5 to 6 GB for
+a Custom Edition map as big as Yoyorast Island (`--jobs 1` converts one
+map at a time).
+
 ### From the sources
 
 The build runs on Linux (or on Windows in WSL, below). It takes ~10 minutes
