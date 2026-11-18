@@ -131,6 +131,11 @@ class UnixBuilderTests(unittest.TestCase):
     def test_the_tools_are_the_ones_the_windows_package_carries(self):
         self.assertEqual(set(unix.LIBDRAGON_TOOLS), set(package.TOOLS))
 
+    def test_the_libdragon_patches_are_in_the_repository(self):
+        for patch_file in unix.LIBDRAGON_PATCHES:
+            text = (REPO / patch_file).read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("diff --git a/tools/"), patch_file)
+
     def test_the_commits_are_the_ones_the_repository_names(self):
         lite = REPO / "tools" / "n64" / "invader_lite"
         self.assertIn(unix.INVADER_COMMIT, (lite / "README.md").read_text(encoding="utf-8"))
@@ -143,27 +148,30 @@ class UnixBuilderTests(unittest.TestCase):
         folder.mkdir(parents=True)
         for name in unix.LIBDRAGON_TOOLS:
             (folder / name).write_bytes(b"tool fixture")
-        (folder / unix.STAMP).write_text(unix.LIBDRAGON_COMMIT + "\n")
+        (folder / unix.STAMP).write_text(unix.libdragon_stamp() + "\n")
         with patch.object(unix, "fetch", side_effect=AssertionError("fetched again")):
             unix.build_libdragon_tools(folder, self.root)
-        (folder / unix.STAMP).write_text("0" * 40 + "\n")
+        # (another commit, or other patches: built again)
+        (folder / unix.STAMP).write_text(unix.LIBDRAGON_COMMIT + "\n")
         made = []
 
         def make(command, log, what, **options):
+            made.append(command)
             if command[0] == "make":
                 tools = Path(command[2])
                 for path in unix.LIBDRAGON_TOOLS.values():
                     (tools / path).parent.mkdir(parents=True, exist_ok=True)
                     (tools / path).write_bytes(b"new tool fixture")
-                made.append(command)
 
         with patch.object(unix, "fetch") as fetch, patch.object(unix, "run", side_effect=make):
             unix.build_libdragon_tools(folder, self.root)
         fetch.assert_called_once_with(unix.LIBDRAGON_URL, unix.LIBDRAGON_COMMIT, self.root / "libdragon",
                                       self.root / "libdragon.log")
-        self.assertEqual(made[0][4:], list(unix.LIBDRAGON_TOOLS))
+        self.assertEqual(made[:-1], [["git", "-C", self.root / "libdragon", "apply", REPO / patch]
+                                     for patch in unix.LIBDRAGON_PATCHES])
+        self.assertEqual(made[-1][4:], list(unix.LIBDRAGON_TOOLS))
         self.assertEqual((folder / "mkdfs").read_bytes(), b"new tool fixture")
-        self.assertEqual((folder / unix.STAMP).read_text().strip(), unix.LIBDRAGON_COMMIT)
+        self.assertEqual((folder / unix.STAMP).read_text().strip(), unix.libdragon_stamp())
 
     def test_rom_builder_command_line(self):
         maps = [Path("maps") / "a.map", Path("maps") / "b.zip"]
@@ -186,7 +194,7 @@ class UnixBuilderTests(unittest.TestCase):
             folder.mkdir(parents=True)
             for name in unix.LIBDRAGON_TOOLS:
                 (folder / name).write_bytes(b"tool fixture")
-            (folder / unix.STAMP).write_text(unix.LIBDRAGON_COMMIT)
+            (folder / unix.STAMP).write_text("stamp fixture")
 
         def rombuilder(command, cwd, env):
             payload = Path(env["HALO64_PAYLOAD"])

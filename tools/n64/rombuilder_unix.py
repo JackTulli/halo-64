@@ -5,8 +5,8 @@ program (its payload: tools/n64/package_rombuilder.py), the same for every
 player; the tools beside them are Windows programs. This takes the zip's
 programs, Invader's tag definitions, art and port.json, builds the tools
 the ROM builder runs from their sources -- libdragon's mksprite,
-audioconv64, mkdfs, n64tool, ed64romconfig and mkasset at LIBDRAGON_COMMIT,
-and for Custom Edition maps invader-lite and ogg2wav at INVADER_COMMIT
+audioconv64, mkdfs, n64tool, ed64romconfig and mkasset at LIBDRAGON_COMMIT
+(with LIBDRAGON_PATCHES), and for Custom Edition maps invader-lite and ogg2wav at INVADER_COMMIT
 (tools/n64/invader_lite/build.sh, Linux only) -- and runs
 tools/n64/rombuilder.py with that payload (HALO64_PAYLOAD):
 
@@ -24,6 +24,7 @@ CPU).
 """
 
 import argparse
+import hashlib
 import os
 import platform
 import shlex
@@ -42,6 +43,9 @@ REPO = Path(__file__).resolve().parent.parent.parent
 # PROVENANCE.md), and so the release's tools
 LIBDRAGON_URL = "https://github.com/DragonMinded/libdragon"
 LIBDRAGON_COMMIT = "39d0d6096130836a65710da6730290701d060272"
+# and the fixes its tools take here: audioconv64 read a missing path's
+# uninitialised stat and, in Linux, wrote "<out>/x.wav//x.wav64"
+LIBDRAGON_PATCHES = ("port/n64/devtools/libdragon-audioconv64-stat.patch",)
 # the Invader that invader-lite is built from (tools/n64/invader_lite/README.md)
 INVADER_URL = "https://github.com/SnowyMouse/invader"
 INVADER_COMMIT = "696830ff80af227e84e7237c2ef26eb2301ed110"
@@ -53,8 +57,8 @@ LIBDRAGON_TOOLS = {"mksprite": "mksprite/mksprite", "audioconv64": "audioconv64/
 # what is taken from the zip's payload (its bin/, ce-tools/ and online-kit/
 # are Windows programs)
 PAYLOAD_PARTS = ("port.json", "elf/", "invader/", "art/")
-# a stamp in each tools folder: the commit its tools were built from
-STAMP = "commit.txt"
+# a stamp in each tools folder: what its tools were built from
+STAMP = "built-from.txt"
 INSTALL_HINTS = {
     "darwin": "xcode-select --install gives git, make and the C and C++ compilers; Python 3.12 or later with "
               "Pillow from python.org or Homebrew, then python3 -m pip install pillow",
@@ -174,26 +178,36 @@ def fetch(url, commit, folder, log):
         f"checking out {commit}")
 
 
-def tools_ready(folder, commit, names):
-    stamp = folder / STAMP
-    return (stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == commit
+def tools_ready(folder, stamp, names):
+    path = folder / STAMP
+    return (path.is_file() and path.read_text(encoding="utf-8").strip() == stamp
             and all((folder / name).is_file() for name in names))
 
 
+def libdragon_stamp():
+    """LIBDRAGON_COMMIT and the patches' contents"""
+    digest = hashlib.sha256(b"".join((REPO / patch).read_bytes() for patch in LIBDRAGON_PATCHES)).hexdigest()
+    return f"{LIBDRAGON_COMMIT} {digest[:16]}"
+
+
 def build_libdragon_tools(folder, work):
-    """libdragon's tools (LIBDRAGON_TOOLS) in folder, built at LIBDRAGON_COMMIT"""
-    if tools_ready(folder, LIBDRAGON_COMMIT, LIBDRAGON_TOOLS):
+    """libdragon's tools (LIBDRAGON_TOOLS) in folder, built at LIBDRAGON_COMMIT
+    with LIBDRAGON_PATCHES"""
+    stamp = libdragon_stamp()
+    if tools_ready(folder, stamp, LIBDRAGON_TOOLS):
         print(f"libdragon's tools: {folder} (built before)", flush=True)
         return
     print(f"building libdragon's tools ({LIBDRAGON_COMMIT[:7]})", flush=True)
     source, log = work / "libdragon", work / "libdragon.log"
     fetch(LIBDRAGON_URL, LIBDRAGON_COMMIT, source, log)
+    for patch in LIBDRAGON_PATCHES:
+        run(["git", "-C", source, "apply", REPO / patch], log, f"applying {patch}")
     run(["make", "-C", source / "tools", f"-j{compile_jobs()}", *LIBDRAGON_TOOLS], log, "building libdragon's tools")
     shutil.rmtree(folder, ignore_errors=True)
     folder.mkdir(parents=True)
     for name, path in LIBDRAGON_TOOLS.items():
         shutil.copy2(source / "tools" / path, folder / name)
-    (folder / STAMP).write_text(LIBDRAGON_COMMIT + "\n", encoding="utf-8")
+    (folder / STAMP).write_text(stamp + "\n", encoding="utf-8")
 
 
 def build_ce_tools(folder, work):
