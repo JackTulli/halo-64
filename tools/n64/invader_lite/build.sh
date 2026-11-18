@@ -178,7 +178,8 @@ if [ "$TARGET" = windows ]; then
 	run_logged "$BUILD/ogg2wav.log" "$MINGW-gcc-posix" -O2 -municode -static -s -o "$BUILD/ogg2wav.exe" "$HERE/ogg2wav.c"
 else
 	EXE=
-	run_logged "$BUILD/ogg2wav.log" cc -O2 -o "$BUILD/ogg2wav" "$HERE/ogg2wav.c" -lm
+	# (with the caller's CFLAGS, as CMake takes them for Invader's tools)
+	run_logged "$BUILD/ogg2wav.log" cc -O2 ${CFLAGS:-} -o "$BUILD/ogg2wav" "$HERE/ogg2wav.c" -lm
 fi
 
 # ---- the finished tools --------------------------------------------------------

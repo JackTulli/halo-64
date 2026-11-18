@@ -158,6 +158,8 @@ class UnixBuilderTests(unittest.TestCase):
         def make(command, log, what, **options):
             made.append(command)
             if command[0] == "make":
+                self.assertIn(unix.TOOL_FLAGS, options["env"]["CFLAGS"])
+                self.assertIn(unix.TOOL_FLAGS, options["env"]["CXXFLAGS"])
                 tools = Path(command[2])
                 for path in unix.LIBDRAGON_TOOLS.values():
                     (tools / path).parent.mkdir(parents=True, exist_ok=True)
@@ -172,6 +174,16 @@ class UnixBuilderTests(unittest.TestCase):
         self.assertEqual(made[-1][4:], list(unix.LIBDRAGON_TOOLS))
         self.assertEqual((folder / "mkdfs").read_bytes(), b"new tool fixture")
         self.assertEqual((folder / unix.STAMP).read_text().strip(), unix.libdragon_stamp())
+
+    def test_tools_are_built_without_fused_multiply_add(self):
+        with patch.dict(os.environ, {"CFLAGS": "-O3", "JOBS": "5"}):
+            os.environ.pop("CXXFLAGS", None)
+            env = unix.tool_environment()
+        self.assertEqual(unix.TOOL_FLAGS, "-ffp-contract=off")
+        self.assertEqual(env["CFLAGS"], "-O3 -ffp-contract=off")
+        self.assertEqual(env["CXXFLAGS"], "-ffp-contract=off")
+        self.assertEqual(env["JOBS"], "5")
+        self.assertIn(unix.TOOL_FLAGS, unix.libdragon_stamp())
 
     def test_rom_builder_command_line(self):
         maps = [Path("maps") / "a.map", Path("maps") / "b.zip"]

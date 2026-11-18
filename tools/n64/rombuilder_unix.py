@@ -6,9 +6,9 @@ player; the tools beside them are Windows programs. This takes the zip's
 programs, Invader's tag definitions, art and port.json, builds the tools
 the ROM builder runs from their sources -- libdragon's mksprite,
 audioconv64, mkdfs, n64tool, ed64romconfig and mkasset at LIBDRAGON_COMMIT
-(with LIBDRAGON_PATCHES), and for Custom Edition maps invader-lite and ogg2wav at INVADER_COMMIT
-(tools/n64/invader_lite/build.sh, Linux only) -- and runs
-tools/n64/rombuilder.py with that payload (HALO64_PAYLOAD):
+with LIBDRAGON_PATCHES, and for Custom Edition maps invader-lite and
+ogg2wav at INVADER_COMMIT (tools/n64/invader_lite/build.sh, Linux only)
+-- and runs tools/n64/rombuilder.py with that payload (HALO64_PAYLOAD):
 
     python3 -m tools.n64.rombuilder_unix --release <Halo64RomBuilder.zip>
         <disc image or maps folder> -o <folder>
@@ -46,6 +46,12 @@ LIBDRAGON_COMMIT = "39d0d6096130836a65710da6730290701d060272"
 # and the fixes its tools take here: audioconv64 read a missing path's
 # uninitialised stat and, in Linux, wrote "<out>/x.wav//x.wav64"
 LIBDRAGON_PATCHES = ("port/n64/devtools/libdragon-audioconv64-stat.patch",)
+# the C and C++ compilers' flags for every tool built here: no fused
+# multiply-add. The compilers fuse a*b+c on arm64 (Apple silicon) and not on
+# x86-64 (as the release's Windows tools are built), and mksprite then chose
+# another palette for one texture of the multiplayer maps (libdragon builds
+# audioconv64's VADPCM encoder so for the same reason)
+TOOL_FLAGS = "-ffp-contract=off"
 # the Invader that invader-lite is built from (tools/n64/invader_lite/README.md)
 INVADER_URL = "https://github.com/SnowyMouse/invader"
 INVADER_COMMIT = "696830ff80af227e84e7237c2ef26eb2301ed110"
@@ -178,6 +184,15 @@ def fetch(url, commit, folder, log):
         f"checking out {commit}")
 
 
+def tool_environment():
+    """the environment the tools are built in: TOOL_FLAGS added to CFLAGS and
+    CXXFLAGS (libdragon's tools/Makefile and CMake add theirs to these)"""
+    env = dict(os.environ, JOBS=compile_jobs())
+    for name in ("CFLAGS", "CXXFLAGS"):
+        env[name] = f"{env.get(name, '')} {TOOL_FLAGS}".strip()
+    return env
+
+
 def tools_ready(folder, stamp, names):
     path = folder / STAMP
     return (path.is_file() and path.read_text(encoding="utf-8").strip() == stamp
@@ -185,9 +200,9 @@ def tools_ready(folder, stamp, names):
 
 
 def libdragon_stamp():
-    """LIBDRAGON_COMMIT and the patches' contents"""
+    """LIBDRAGON_COMMIT, the patches' contents and TOOL_FLAGS"""
     digest = hashlib.sha256(b"".join((REPO / patch).read_bytes() for patch in LIBDRAGON_PATCHES)).hexdigest()
-    return f"{LIBDRAGON_COMMIT} {digest[:16]}"
+    return f"{LIBDRAGON_COMMIT} {digest[:16]} {TOOL_FLAGS}"
 
 
 def build_libdragon_tools(folder, work):
@@ -202,7 +217,8 @@ def build_libdragon_tools(folder, work):
     fetch(LIBDRAGON_URL, LIBDRAGON_COMMIT, source, log)
     for patch in LIBDRAGON_PATCHES:
         run(["git", "-C", source, "apply", REPO / patch], log, f"applying {patch}")
-    run(["make", "-C", source / "tools", f"-j{compile_jobs()}", *LIBDRAGON_TOOLS], log, "building libdragon's tools")
+    run(["make", "-C", source / "tools", f"-j{compile_jobs()}", *LIBDRAGON_TOOLS], log, "building libdragon's tools",
+        env=tool_environment())
     shutil.rmtree(folder, ignore_errors=True)
     folder.mkdir(parents=True)
     for name, path in LIBDRAGON_TOOLS.items():
@@ -215,7 +231,8 @@ def build_ce_tools(folder, work):
     built at INVADER_COMMIT"""
     from .ce_prepare import INVADER_TOOLS
     names = [f"invader-{name}" for name in INVADER_TOOLS] + ["ogg2wav"]
-    if tools_ready(folder, INVADER_COMMIT, names):
+    stamp = f"{INVADER_COMMIT} {TOOL_FLAGS}"
+    if tools_ready(folder, stamp, names):
         print(f"invader-lite: {folder} (built before)", flush=True)
         return
     print(f"building invader-lite ({INVADER_COMMIT[:7]}; a few minutes)", flush=True)
@@ -223,10 +240,10 @@ def build_ce_tools(folder, work):
     fetch(INVADER_URL, INVADER_COMMIT, source, log)
     build = work / "invader-lite"
     run(["bash", REPO / "tools" / "n64" / "invader_lite" / "build.sh", source, build, "linux"], log,
-        "building invader-lite", env=dict(os.environ, JOBS=compile_jobs()))
+        "building invader-lite", env=tool_environment())
     shutil.rmtree(folder, ignore_errors=True)
     shutil.copytree(build / "dist", folder)
-    (folder / STAMP).write_text(INVADER_COMMIT + "\n", encoding="utf-8")
+    (folder / STAMP).write_text(stamp + "\n", encoding="utf-8")
 
 
 def rombuilder_command(args, work):
