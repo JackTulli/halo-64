@@ -5,6 +5,14 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+18 November: version 0.7.0: the two-controller schemes below, the ROM
+Builder on macOS and Linux (pull request 52 by jz-k:
+`tools/n64/rombuilder_unix.py` takes the release's programs from its
+`Halo64RomBuilder.zip` -- whose payload now carries `version.txt` -- and
+builds libdragon's tools and invader-lite from their sources without fused
+multiply-add, so that arm64 and x86-64 make the same ROMs) and an ares
+installer script for Snap (`ares_snap.sh`, pull request 51 by grimfervor).
+
 18 November: two-controller (dual analogue) schemes, as GoldenEye's and
 Perfect Dark's 2.x styles.
 

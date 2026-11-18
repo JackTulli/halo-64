@@ -157,9 +157,10 @@ class UnixBuilderTests(unittest.TestCase):
         stated = payload / "version.txt"
         stated.write_text(VERSION + "\n")
         unix.check_version(payload)
-        stated.write_text("0.7.0\n")
-        with self.assertRaisesRegex(BuildError, rf"the release is version 0\.7\.0 and this checkout is version "
-                                                rf"{VERSION}.*git checkout v0\.7\.0"):
+        # (a version no checkout is: the test outlives each release's number)
+        stated.write_text("99.0.0\n")
+        with self.assertRaisesRegex(BuildError, rf"the release is version 99\.0\.0 and this checkout is version "
+                                                rf"{re.escape(VERSION)}.*git checkout v99\.0\.0"):
             unix.check_version(payload)
         # (without version.txt: the known releases' multiplayer programs)
         stated.unlink()

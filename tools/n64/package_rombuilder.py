@@ -217,7 +217,9 @@ def main():
         shutil.copy2(args.invader / "include" / "invader" / "hek" / "fourcc.hpp", fourcc / "fourcc.hpp")
         shutil.copy2(REPO / "port" / "n64" / "port.json", payload / "port.json")
         # (the version the programs are, which tools/n64/rombuilder_unix.py checks)
-        (payload / "version.txt").write_text(VERSION + "\n", encoding="utf-8")
+        # (written as bytes: on Windows, where the release is packaged, text
+        # mode would end the line with CR LF)
+        (payload / "version.txt").write_bytes((VERSION + "\n").encode("utf-8"))
         art = payload / "art"
         art.mkdir()
         shutil.copy2(REPO / "assets" / "paintball" / "paint-splatter-original.png", art / "paint-splatter-original.png")
