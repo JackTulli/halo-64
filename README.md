@@ -167,8 +167,10 @@ It writes `halo-n64.z64` and `halo-campaign.z64` (`--multiplayer` or
 `tools/n64/invader_lite/build.sh` builds invader-lite for Linux and
 Windows. The first steps fetch libdragon and Invader at the commits named
 in `tools/n64/rombuilder_unix.py` and build their tools (a minute or two;
-invader-lite a few more); `--tools <folder>` keeps them there for the next
-run. Everything else it makes goes in a folder in `TMPDIR` (about 2 GB),
+invader-lite a few more), one compiler for each CPU at a time: if one is
+killed for lack of memory, run again with `JOBS=1` in front of the
+command. `--tools <folder>` keeps the tools there for the next run.
+Everything else it makes goes in a folder in `TMPDIR` (about 2 GB),
 removed at the end. It needs about 3 GB of free memory, and 5 to 6 GB for
 a Custom Edition map as big as Yoyorast Island (`--jobs 1` converts one
 map at a time).

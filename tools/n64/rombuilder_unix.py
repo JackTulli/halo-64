@@ -240,7 +240,8 @@ def build_ce_tools(folder, work):
     fetch(INVADER_URL, INVADER_COMMIT, source, log)
     build = work / "invader-lite"
     run(["bash", REPO / "tools" / "n64" / "invader_lite" / "build.sh", source, build, "linux"], log,
-        "building invader-lite", env=tool_environment())
+        "building invader-lite (a compiler that was killed ran out of memory: JOBS=1 builds with one at a time)",
+        env=tool_environment())
     shutil.rmtree(folder, ignore_errors=True)
     shutil.copytree(build / "dist", folder)
     (folder / STAMP).write_text(stamp + "\n", encoding="utf-8")
