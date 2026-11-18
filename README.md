@@ -138,10 +138,12 @@ On Linux the builder runs from the repository too:
 
 ### The ROM Builder on macOS and Linux
 
-The same builder runs from this repository on a Mac or a Linux PC with the
-release's prebuilt game programs, so it makes the same ROMs as the Windows
-builder. It needs no N64 toolchain: it builds the few tools it runs from
-their sources (libdragon's, and invader-lite for Custom Edition maps).
+The same builder runs from this repository on a Mac or a Linux PC, with the
+release's prebuilt game programs: the same game code as the Windows
+builder's. It needs no N64 toolchain: it builds the few tools it runs from
+their sources (libdragon's, and invader-lite for Custom Edition maps),
+without fused multiply-add, so the same disc gives the same ROMs on arm64
+(Apple silicon) and x86-64 machines.
 
 | | What you need |
 |---|---|
@@ -166,7 +168,7 @@ It writes `halo-n64.z64` and `halo-campaign.z64` (`--multiplayer` or
 Windows. The first steps fetch libdragon and Invader at the commits named
 in `tools/n64/rombuilder_unix.py` and build their tools (a minute or two;
 invader-lite a few more); `--tools <folder>` keeps them there for the next
-run. Everything else it makes goes in a folder in `TMPDIR` (about 4 GB),
+run. Everything else it makes goes in a folder in `TMPDIR` (about 2 GB),
 removed at the end. It needs about 3 GB of free memory, and 5 to 6 GB for
 a Custom Edition map as big as Yoyorast Island (`--jobs 1` converts one
 map at a time).
