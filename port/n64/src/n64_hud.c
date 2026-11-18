@@ -2738,8 +2738,6 @@ static void pause_text_fit(float x, int y, int align, unsigned long color, const
 void n64_hud_pause_controls(const int *ports, int count, const int *selected_rows)
 {
 	static const char *const names[CONTROL_COUNT] = {"SCHEME", "CROUCH", "LOOK", "FIRE", "STICK", "C LOOK", "RUMBLE"};
-	static const char *const schemes[N64_SCHEME_COUNT] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH", "GOLDEN STYLE",
-		"D-PAD MOVE"};
 	int width = n64_render_screen_width(), height = n64_render_screen_height();
 	int unit = height >= 480 ? 2 : 1, cap, i, r;
 	int columns = count > 1 ? 2 : 1, rows = count > 2 ? 2 : 1;
@@ -2769,25 +2767,38 @@ void n64_hud_pause_controls(const int *ports, int count, const int *selected_row
 		controls = &n64_controls[port];
 		pause_box(x0, y0, x1, y1, PAUSE_PANEL);
 		pause_frame(x0, y0, x1, y1, unit, PAUSE_FRAME);
-		snprintf(text, sizeof(text), "PLAYER %d  -  PORT %d", i + 1, port + 1);
+		/* (a two-controller player: both ports, the second as found now) */
+		if (N64_SCHEME_IS_DUAL(controls->scheme) && n64_input_partners[port] >= 0)
+			snprintf(text, sizeof(text), "PLAYER %d  -  PORTS %d + %d", i + 1, port + 1, n64_input_partners[port] + 1);
+		else
+			snprintf(text, sizeof(text), "PLAYER %d  -  PORT %d", i + 1, port + 1);
 		pause_text_fit((x0 + x1) * 0.5f, y0 + cap + 2 * unit, PAUSE_CENTRE, PAUSE_BRIGHT, text, x1 - x0 - 8 * unit);
 		for (r = 0; r < CONTROL_COUNT; r++)
 		{
 			int y = y0 + cap + 5 * unit + r * pitch, selected = selected_rows[port] == r;
-			const char *value = text;
+			const char *value = text, *name = names[r];
 			if (selected) pause_box(x0 + 2 * unit, y - unit, x1 - 2 * unit, y + pitch - unit, PAUSE_CHOSEN);
 			switch (r)
 			{
-			case CONTROL_SCHEME: value = schemes[controls->scheme < N64_SCHEME_COUNT ? controls->scheme : 0]; break;
+			case CONTROL_SCHEME: value = n64_scheme_name(controls->scheme); break;
 			case CONTROL_CROUCH: value = controls->toggle_crouch ? "TOGGLE" : "HOLD"; break;
 			case CONTROL_LOOK: value = controls->inverted ? "INVERTED" : "NORMAL"; break;
-			case CONTROL_FIRE: value = !controls->swap_fire ? "Z" : controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" :
-				controls->scheme == N64_SCHEME_GOLDEN_STYLE ? "D-LEFT" : "R"; break;
+			case CONTROL_FIRE: value = n64_fire_button_name(port); break;
 			case CONTROL_STICK_SPEED: snprintf(text, sizeof(text), "%d", 5 + controls->stick_speed); break;
-			case CONTROL_C_SPEED: snprintf(text, sizeof(text), "%d", 5 + controls->c_speed); break;
+			case CONTROL_C_SPEED:
+				/* (two controllers: the C buttons do not look; the row
+				chooses the second controller) */
+				if (N64_SCHEME_IS_DUAL(controls->scheme))
+				{
+					name = "2ND PAD";
+					n64_input_partner_text(port, n64_input_partners[port], text, sizeof(text));
+				}
+				else
+					snprintf(text, sizeof(text), "%d", 5 + controls->c_speed);
+				break;
 			default: value = controls->no_rumble ? "OFF" : "ON"; break;
 			}
-			pause_text_fit(x0 + 4 * unit, y + cap, PAUSE_LEFT, selected ? PAUSE_BRIGHT : PAUSE_TEXT, names[r], (x1 - x0 - 12 * unit) / 2);
+			pause_text_fit(x0 + 4 * unit, y + cap, PAUSE_LEFT, selected ? PAUSE_BRIGHT : PAUSE_TEXT, name, (x1 - x0 - 12 * unit) / 2);
 			pause_text_fit(x1 - 4 * unit, y + cap, PAUSE_RIGHT, selected ? PAUSE_BRIGHT : PAUSE_TEXT, value, (x1 - x0 - 12 * unit) / 2);
 		}
 	}

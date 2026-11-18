@@ -17,6 +17,7 @@ page (n64_controls.no_rumble).
 */
 
 #include <libdragon.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "n64.h"
@@ -58,6 +59,111 @@ unsigned short n64_input_take_pressed(int port)
 void n64_input_clear_pressed(void)
 {
 	memset(pressed_latch, 0, sizeof(pressed_latch));
+}
+
+/* ---------- the schemes, and the two-controller players' second controllers */
+
+const char *n64_scheme_name(int scheme)
+{
+	static const char *const names[N64_SCHEME_COUNT] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH",
+		"GOLDEN STYLE", "D-PAD MOVE", "DUAL MODERN", "DUAL MODERN LEFT", "DUAL CLASSIC", "DUAL CLASSIC LEFT"};
+
+	return names[scheme >= 0 && scheme < N64_SCHEME_COUNT ? scheme : 0];
+}
+
+const char *n64_fire_button_name(int port)
+{
+	const struct n64_controls *controls = &n64_controls[port & 3];
+
+	/* (two controllers: the aiming hand's Z, or the other's when swapped) */
+	if (N64_SCHEME_IS_DUAL(controls->scheme))
+		return !N64_SCHEME_DUAL_LEFT_AIMS(controls->scheme) != !controls->swap_fire ? "LEFT Z" : "RIGHT Z";
+	return !controls->swap_fire ? "Z" : controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" :
+		controls->scheme == N64_SCHEME_GOLDEN_STYLE ? "D-LEFT" : "R";
+}
+
+const char *n64_grenade_button_name(int port)
+{
+	const struct n64_controls *controls = &n64_controls[port & 3];
+
+	if (N64_SCHEME_IS_DUAL(controls->scheme))
+		return !N64_SCHEME_DUAL_LEFT_AIMS(controls->scheme) != !controls->swap_fire ? "RIGHT Z" : "LEFT Z";
+	return controls->swap_fire ? "Z" : controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" :
+		controls->scheme == N64_SCHEME_GOLDEN_STYLE ? "D-LEFT" : "R";
+}
+
+void n64_input_pairs(int players, signed char partner[4])
+{
+	/* (the CONTROLS page: each port a player in turn unless taken already) */
+	int every = players < 0, taken = every ? 0 : players & 0xF;
+
+	for (int port = 0; port < 4; port++)
+		partner[port] = -1;
+	for (int port = 0; port < 4; port++)
+	{
+		const struct n64_controls *controls = &n64_controls[port];
+		int order[3], count = 0;
+
+		if (every)
+		{
+			if ((taken & (1 << port)) || !joypad_is_connected(port))
+				continue;
+			taken |= 1 << port;
+		}
+		else if (!(players & (1 << port)))
+			continue;
+		if (!N64_SCHEME_IS_DUAL(controls->scheme))
+			continue;
+		if (controls->partner)
+			order[count++] = (controls->partner - 1) & 3;
+		else
+		{
+			/* (Perfect Dark's pairs, then the other ports in order) */
+			order[count++] = port ^ 2;
+			for (int other = 0; other < 4; other++)
+				if (other != port && other != (port ^ 2))
+					order[count++] = other;
+		}
+		for (int i = 0; i < count; i++)
+		{
+			int other = order[i];
+
+			if (other == port || (taken & (1 << other)) || !joypad_is_connected(other))
+				continue;
+			partner[port] = (signed char)other;
+			taken |= 1 << other;
+			break;
+		}
+	}
+}
+
+void n64_input_partner_text(int port, int resolved, char *text, int size)
+{
+	int chosen = n64_controls[port & 3].partner;
+
+	if (!chosen)
+		snprintf(text, size, resolved >= 0 ? "AUTO: PORT %d" : "AUTO: NONE FREE", resolved + 1);
+	else if (resolved == ((chosen - 1) & 3))
+		snprintf(text, size, "PORT %d", chosen);
+	else
+		snprintf(text, size, joypad_is_connected((chosen - 1) & 3) ? "PORT %d (IN USE)" : "PORT %d (NO PAD)", chosen);
+}
+
+void n64_input_partner_step(int port, int step)
+{
+	/* the choices: automatic, then the other three ports in order */
+	unsigned char choices[4];
+	int count = 0, at = 0;
+	struct n64_controls *controls = &n64_controls[port & 3];
+
+	choices[count++] = 0;
+	for (int other = 0; other < 4; other++)
+		if (other != (port & 3))
+			choices[count++] = (unsigned char)(other + 1);
+	for (int i = 0; i < count; i++)
+		if (choices[i] == controls->partner)
+			at = i;
+	controls->partner = choices[(at + count + (step < 0 ? -1 : 1)) % count];
 }
 
 void n64_input_get(int port, struct n64_pad *pad)

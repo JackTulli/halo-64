@@ -118,6 +118,7 @@ static void n64_game_start(
 		main_set_map_name(map_name);
 		main_disallow_persistent_storage();
 		n64_gamepad_ports[0] = n64_choice.ports[0];
+		n64_gamepad_players = 1;
 		for (port = 0; port < 4 && used < 4; port++)
 		{
 			if (port != n64_choice.ports[0])
@@ -151,6 +152,7 @@ static void n64_game_start(
 		main_set_map_name(map_name);
 		main_disallow_persistent_storage();
 		n64_gamepad_ports[0] = n64_choice.ports[0];
+		n64_gamepad_players = player_spawn_count;
 		for (port = 0; port < 4; port++)
 		{
 			if (port != n64_choice.ports[0])
@@ -222,6 +224,7 @@ static void n64_game_start(
 			n64_gamepad_ports[i] = n64_choice.ports[i];
 			used |= 1 << n64_choice.ports[i];
 		}
+		n64_gamepad_players = n64_choice.player_count;
 		for (port = 0; port < 4 && i < 4; port++)
 		{
 			if (!(used & (1 << port)))
@@ -593,6 +596,8 @@ void n64_game_pause_frame(
 	{
 		presses[port] = n64_input_take_pressed(port);
 		if (n64_pause_player(port) >= 0) pressed |= presses[port];
+		/* (a two-controller player's other START too) */
+		else if (n64_input_partner_of(port) >= 0) pressed |= presses[port] & N64_BUTTON_START;
 	}
 	if (!n64_paused)
 	{

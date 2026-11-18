@@ -245,6 +245,9 @@ static struct
 	controller whose row the help line explains */
 	int control_row[4];
 	int control_pad;
+	/* the CONTROL STYLE page (Z on CONTROLS): the controller whose scheme it
+	pictures */
+	int layout_pad;
 	/* the scene */
 	int sky_model, ring_model;
 	float ring[13];
@@ -904,7 +907,7 @@ static void read_pads(void)
 /* ---------- the screens */
 
 enum { SCREEN_RESULTS, SCREEN_TITLE, SCREEN_SETUP, SCREEN_SETTINGS, SCREEN_CONTROLS, SCREEN_CONTENT, SCREEN_TEAMS,
-	SCREEN_ONLINE };
+	SCREEN_ONLINE, SCREEN_LAYOUT };
 enum { ROW_GAME_TYPE, ROW_MAP, ROW_SCORE, ROW_BOTS, ROW_OPTIONS, ROW_START, ROW_COUNT };
 enum { CONTENT_WEAPONS, CONTENT_VEHICLES,
 	CONTENT_FEEDBACK, CONTENT_BIG_HEAD, CONTENT_PAINTBALL, CONTENT_BACK, CONTENT_COUNT };
@@ -1057,6 +1060,12 @@ static void settings_pack(unsigned char *bytes)
 	before there was one, so theirs are on) */
 	for (int p = 0; p < 4; p++)
 		bytes[13] |= (unsigned char)((n64_controls[p].no_rumble != 0) << p);
+	/* (two bits a controller, its SECOND PAD: 0 automatic, else the other
+	port as the port's number xor it -- 1 to 3; 0 in the records kept before
+	there was one) */
+	for (int p = 0; p < 4; p++)
+		if (n64_controls[p].partner)
+			bytes[42] |= (unsigned char)((((n64_controls[p].partner - 1) ^ p) & 3) << (p * 2));
 	for (int p = 0; p < 4; p++)
 	{
 		unsigned char *controls = bytes + SAVED_CONTROLS + p * 6;
@@ -1112,6 +1121,11 @@ static int settings_unpack(const unsigned char *bytes)
 		n64_controls[p].stick_speed = stick >= -4 && stick <= 5 ? stick : 0;
 		n64_controls[p].c_speed = c_speed >= -4 && c_speed <= 5 ? c_speed : 0;
 		n64_controls[p].no_rumble = (bytes[13] >> p) & 1;
+		{
+			int other = (bytes[42] >> (p * 2)) & 3;
+
+			n64_controls[p].partner = other ? (unsigned char)((p ^ other) + 1) : 0;
+		}
 	}
 	return 1;
 }
@@ -1176,6 +1190,10 @@ void n64_controls_step(int port, int row, int step, int cycle)
 		if (!controls->no_rumble)
 			n64_input_rumble_pulse(port, RUMBLE_PULSE_FRAMES);
 	}
+	/* (two controllers: the C buttons do not look; the row chooses the
+	second controller) */
+	else if (row == CONTROL_C_SPEED && N64_SCHEME_IS_DUAL(controls->scheme))
+		n64_input_partner_step(port, step);
 	else
 	{
 		signed char *speed = row == CONTROL_STICK_SPEED ? &controls->stick_speed : &controls->c_speed;
@@ -1486,38 +1504,98 @@ static void draw_title(int item)
 #endif
 }
 
+/* what each scheme is, in a line (the CONTROLS page's help, CONTROL STYLE's) */
+static const char *const scheme_help[N64_SCHEME_COUNT] = {
+	"THE STICK LOOKS, THE C BUTTONS MOVE",
+	"STANDARD, BUT R JUMPS AND A THROWS GRENADES",
+	"THE STICK WALKS AND TURNS, C LEFT AND RIGHT STRAFE",
+	"THE STICK WALKS AND STRAFES, THE C BUTTONS LOOK",
+	"R AIMS; C UP/DOWN ZOOM; D-LEFT THROWS GRENADES",
+	"THE STICK LOOKS, THE D-PAD MOVES",
+	"2 CONTROLLERS: THE LEFT STICK MOVES, THE RIGHT ONE LOOKS",
+	"2 CONTROLLERS: THE RIGHT STICK MOVES, THE LEFT ONE LOOKS",
+	"2 CONTROLLERS: LEFT WALKS AND TURNS, RIGHT STRAFES AND LOOKS",
+	"2 CONTROLLERS: RIGHT WALKS AND TURNS, LEFT STRAFES AND LOOKS",
+};
+
+/* text at most width wide, condensed across to fit: from x, centred on
+center, or ending at right */
+static void text_fit(struct n64_font *font, int x, int y, unsigned long color, const char *text, int width)
+{
+	int full = n64_text_width(font, text);
+
+	if (full <= width || full <= 0)
+		menu_text(font, x, y, color, text);
+	else
+		n64_text_draw_scaled(font, squeezed_x(x), y, color, text, (float)width / full * squeeze());
+}
+
+static void text_centered_fit(struct n64_font *font, int center, int y, unsigned long color, const char *text, int width)
+{
+	int full = n64_text_width(font, text);
+
+	text_fit(font, center - (full < width ? full : width) / 2, y, color, text, width);
+}
+
+static void text_right_fit(struct n64_font *font, int right, int y, unsigned long color, const char *text, int width)
+{
+	int full = n64_text_width(font, text);
+
+	text_fit(font, right - (full < width ? full : width), y, color, text, width);
+}
+
+/* the controllers taken as two-controller players' second ones on the
+CONTROLS and CONTROL STYLE pages (every controller a player's own but
+those): owner[port] = the port of the player it belongs to, or -1 */
+static void controls_owners(signed char pairs[4], int owner[4])
+{
+	n64_input_pairs(-1, pairs);
+	for (int p = 0; p < 4; p++)
+		owner[p] = -1;
+	for (int p = 0; p < 4; p++)
+		if (pairs[p] >= 0)
+			owner[pairs[p]] = p;
+}
+
 /* the CONTROLS page: a panel for each controller (two by two), its own rows
-chosen and changed with its own buttons; each row says what it is */
+chosen and changed with its own buttons; each row says what it is. A
+controller that is a two-controller player's second one says so instead
+(its player's panel chooses it, SECOND PAD). Z: CONTROL STYLE, the scheme
+drawn */
 static void draw_controls(void)
 {
-	static const char *const schemes[N64_SCHEME_COUNT] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH", "GOLDEN STYLE",
-		"D-PAD MOVE"};
 	static const char *const labels[CONTROL_COUNT] = {
 		"SCHEME", "CROUCH", "LOOK", "FIRE BUTTON", "STICK SPEED", "C BUTTON SPEED", "RUMBLE",
 	};
-	static const char *const scheme_help[N64_SCHEME_COUNT] = {
-		"THE STICK LOOKS, THE C BUTTONS MOVE",
-		"STANDARD, BUT R JUMPS AND A THROWS GRENADES",
-		"THE STICK WALKS AND TURNS, C LEFT AND RIGHT STRAFE",
-		"THE STICK WALKS AND STRAFES, THE C BUTTONS LOOK",
-		"R AIMS; C UP/DOWN ZOOM; D-LEFT THROWS GRENADES",
-		"THE STICK LOOKS, THE D-PAD MOVES",
-	};
 	const struct n64_controls *chosen_controls = &n64_controls[menu.control_pad & 3];
+	int chosen_dual = N64_SCHEME_IS_DUAL(chosen_controls->scheme);
 	const char *help;
-	char text[24], help_text[48];
+	char text[24], help_text[64];
+	signed char pairs[4];
+	int owner[4];
 
-	page("CONTROLS", "B  BACK");
+	controls_owners(pairs, owner);
+	page("CONTROLS", "Z  SEE LAYOUT   B  BACK");
 	for (int p = 0; p < 4; p++)
 	{
 		const struct n64_controls *controls = &n64_controls[p];
 		int x = SAFE_LEFT + (p & 1) * 292, y = 84 + (p >> 1) * 176, w = 284, h = 166, center = x + w / 2;
-		int connected = joypad_is_connected(p);
-		/* (fire on the grenade's button when swapped) */
-		const char *fire = !controls->swap_fire ? "Z" : controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" : controls->scheme == N64_SCHEME_GOLDEN_STYLE ? "D-LEFT" : "R";
+		int connected = joypad_is_connected(p), dual = N64_SCHEME_IS_DUAL(controls->scheme);
 
 		panel(x, y, x + w, y + h, connected ? 0xA0102040 : 0x60000000);
 		frame_line(x, y, x + w, y + h, connected ? FRAME_COLOR : 0x806080A0);
+		if (connected && owner[p] >= 0)
+		{
+			/* (a two-controller player's second controller) */
+			snprintf(text, sizeof(text), "PLAYER %d", owner[p] + 1);
+			text_centered(menu.large, center, y + 28, TEXT_COLOR, text);
+			panel(x + 14, y + 38, x + w - 14, y + 38 + LINE, 0x608CC0FF);
+			text_centered(menu.small, center, y + 80, TEXT_BRIGHT, "SECOND CONTROLLER");
+			text_centered(menu.small, center, y + 102, TEXT_COLOR, p > owner[p] ? "RIGHT HAND" : "LEFT HAND");
+			snprintf(help_text, sizeof(help_text), "SET ON PLAYER %d'S PANEL", owner[p] + 1);
+			text_centered(menu.small, center, y + 136, TEXT_DIM, help_text);
+			continue;
+		}
 		snprintf(text, sizeof(text), "PLAYER %d", p + 1);
 		text_centered(menu.large, center, y + 28, connected ? TEXT_BRIGHT : TEXT_DIM, text);
 		if (!connected)
@@ -1530,31 +1608,44 @@ static void draw_controls(void)
 		{
 			/* (seven rows: 17 apart, the last one's frame inside the panel) */
 			int row_y = y + 59 + row * 17, selected = menu.control_row[p] == row;
-			const char *value = text;
+			const char *value = text, *label = labels[row];
+			int label_width;
 
 			switch (row)
 			{
-			case CONTROL_SCHEME: value = schemes[controls->scheme]; break;
+			case CONTROL_SCHEME: value = n64_scheme_name(controls->scheme); break;
 			case CONTROL_CROUCH: value = controls->toggle_crouch ? "TOGGLE" : "HOLD"; break;
 			case CONTROL_LOOK: value = controls->inverted ? "INVERTED" : "NORMAL"; break;
-			case CONTROL_FIRE: value = fire; break;
+			/* (fire on the grenade's button when swapped) */
+			case CONTROL_FIRE: value = n64_fire_button_name(p); break;
 			case CONTROL_STICK_SPEED: snprintf(text, sizeof(text), "%d", 5 + controls->stick_speed); break;
-			case CONTROL_C_SPEED: snprintf(text, sizeof(text), "%d", 5 + controls->c_speed); break;
+			case CONTROL_C_SPEED:
+				/* (two controllers: the C buttons do not look; the row
+				chooses the second controller) */
+				if (dual)
+				{
+					label = "SECOND PAD";
+					n64_input_partner_text(p, pairs[p], text, sizeof(text));
+				}
+				else
+					snprintf(text, sizeof(text), "%d", 5 + controls->c_speed);
+				break;
 			default: value = controls->no_rumble ? "OFF" : "ON"; break;
 			}
+			label_width = n64_text_width(menu.small, label) + 12;
 			if (selected)
 			{
-				char arrows[32];
+				char arrows[40];
 
 				chosen(x + 6, row_y - 15, x + w - 6, row_y + 5);
 				snprintf(arrows, sizeof(arrows), "<  %s  >", value);
-				menu_text(menu.small, x + 14, row_y, TEXT_BRIGHT, labels[row]);
-				text_right(menu.small, x + w - 14, row_y, TEXT_BRIGHT, arrows);
+				menu_text(menu.small, x + 14, row_y, TEXT_BRIGHT, label);
+				text_right_fit(menu.small, x + w - 14, row_y, TEXT_BRIGHT, arrows, w - 28 - label_width);
 			}
 			else
 			{
-				menu_text(menu.small, x + 14, row_y, TEXT_DIM, labels[row]);
-				text_right(menu.small, x + w - 14, row_y, TEXT_COLOR, value);
+				menu_text(menu.small, x + 14, row_y, TEXT_DIM, label);
+				text_right_fit(menu.small, x + w - 14, row_y, TEXT_COLOR, value, w - 28 - label_width);
 			}
 		}
 	}
@@ -1562,40 +1653,349 @@ static void draw_controls(void)
 	switch (menu.control_row[menu.control_pad & 3])
 	{
 	case CONTROL_SCHEME:
-		help = scheme_help[chosen_controls->scheme];
+		help = scheme_help[chosen_controls->scheme < N64_SCHEME_COUNT ? chosen_controls->scheme : 0];
 		break;
 	case CONTROL_CROUCH:
-		help = chosen_controls->toggle_crouch ? "D-PAD DOWN CROUCHES OR STANDS" : "HOLD D-PAD DOWN TO CROUCH";
+		help = chosen_dual ? (chosen_controls->toggle_crouch ? "C-DOWN OR D-DOWN (EITHER PAD) CROUCHES OR STANDS" :
+			"HOLD C-DOWN OR D-DOWN (EITHER PAD) TO CROUCH") :
+			chosen_controls->toggle_crouch ? "D-PAD DOWN CROUCHES OR STANDS" : "HOLD D-PAD DOWN TO CROUCH";
 		break;
 	case CONTROL_LOOK:
 		help = chosen_controls->inverted ? "PUSH UP TO LOOK DOWN" : "PUSH UP TO LOOK UP";
 		break;
 	case CONTROL_FIRE:
 		snprintf(help_text, sizeof(help_text), "%s FIRES, %s THROWS GRENADES",
-			!chosen_controls->swap_fire ? "Z" : chosen_controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" : chosen_controls->scheme == N64_SCHEME_GOLDEN_STYLE ? "D-LEFT" : "R",
-			chosen_controls->swap_fire ? "Z" : chosen_controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" : chosen_controls->scheme == N64_SCHEME_GOLDEN_STYLE ? "D-LEFT" : "R");
+			n64_fire_button_name(menu.control_pad), n64_grenade_button_name(menu.control_pad));
 		help = help_text;
 		break;
 	case CONTROL_STICK_SPEED:
-		help = "HOW FAST THE STICK TURNS YOU (1-10)";
+		help = chosen_dual ? "HOW FAST THE STICKS TURN YOU (1-10)" : "HOW FAST THE STICK TURNS YOU (1-10)";
 		break;
 	case CONTROL_C_SPEED:
-		help = "HOW FAST THE C BUTTONS TURN YOU (1-10)";
+		help = chosen_dual ? "THE CONTROLLER IN YOUR OTHER HAND (AUTO: PORTS 1+3, 2+4)" :
+			"HOW FAST THE C BUTTONS TURN YOU (1-10)";
 		break;
 	default:
 		help = !n64_input_rumble_present(menu.control_pad & 3) ? "NO RUMBLE PAK IN THIS CONTROLLER" :
 			chosen_controls->no_rumble ? "THE RUMBLE PAK STAYS STILL" : "THE RUMBLE PAK SHAKES WITH SHOTS, HITS AND BLASTS";
 		break;
 	}
+	if (owner[menu.control_pad & 3] >= 0)
+	{
+		snprintf(help_text, sizeof(help_text), "PLAYER %d'S SECOND CONTROLLER", owner[menu.control_pad & 3] + 1);
+		help = help_text;
+	}
 	snprintf(text, sizeof(text), "PLAYER %d:", (menu.control_pad & 3) + 1);
 	{
-		int width = n64_text_width(menu.small, text) + 8 + n64_text_width(menu.small, help);
-		int x = (SCREEN_W - width) / 2;
+		int label = n64_text_width(menu.small, text) + 8, room = SAFE_RIGHT - SAFE_LEFT - label;
+		int shown = n64_text_width(menu.small, help) < room ? n64_text_width(menu.small, help) : room;
+		int x = (SCREEN_W - label - shown) / 2;
 
 		foot_band();
 		menu_text(menu.small, x, HINT_Y, TEXT_BRIGHT, text);
-		menu_text(menu.small, x + n64_text_width(menu.small, text) + 8, HINT_Y, TEXT_COLOR, help);
+		text_fit(menu.small, x + label, HINT_Y, TEXT_COLOR, help, room);
 	}
+}
+
+/* ---------- the CONTROL STYLE page (Z on CONTROLS): a controller's scheme
+drawn as GoldenEye's and Perfect Dark's control pages drew theirs -- the
+N64 controller (two of them, one in each hand, for a two-controller scheme)
+and what each of its buttons does; left and right step through the
+schemes */
+
+#define PAD_BODY 0xFF9A9CA6u
+#define PAD_GONE 0xFF343846u
+#define PAD_SHADOW 0xFF060C1Au
+#define PAD_DARK 0xFF4E505Au
+
+/* the flat colour the shapes after it are filled with (opaque: a shape's
+triangles share edges) */
+static void flat_color(unsigned long argb)
+{
+	rdpq_sync_pipe();
+	rdpq_set_mode_standard();
+	rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+	rdpq_set_prim_color(RGBA32((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, argb >> 24));
+}
+
+/* a convex polygon (count x, y pairs about its own origin, in order),
+scaled and placed at x, y */
+static void fan(const float *points, int count, float x, float y, float scale)
+{
+	float first[2] = {squeezed_x(x + points[0] * scale), y + points[1] * scale};
+
+	for (int i = 1; i + 1 < count; i++)
+	{
+		float b[2] = {squeezed_x(x + points[i * 2] * scale), y + points[i * 2 + 1] * scale};
+		float c[2] = {squeezed_x(x + points[i * 2 + 2] * scale), y + points[i * 2 + 3] * scale};
+
+		rdpq_triangle(&TRIFMT_FILL, first, b, c);
+	}
+}
+
+/* a round button or a prong's end: twelve sides */
+static void disc(float x, float y, float radius)
+{
+	static float unit[24];
+
+	if (unit[0] == 0.f)
+		for (int i = 0; i < 12; i++)
+		{
+			unit[i * 2] = cosf(i * (6.2831853f / 12.f));
+			unit[i * 2 + 1] = sinf(i * (6.2831853f / 12.f));
+		}
+	fan(unit, 12, x, y, radius);
+}
+
+static void bar(float x, float y, float scale, float x0, float y0, float x1, float y1)
+{
+	float points[8] = {x0, y0, x1, y0, x1, y1, x0, y1};
+
+	fan(points, 4, x, y, scale);
+}
+
+/* an N64 controller seen from above, its stick at x, y (scale 1: 200
+across, 52 over the stick to 91 under it); a controller not there is a dark
+shape */
+static void draw_pad(float x, float y, float s, int present)
+{
+	static const float top[] = {-100, 4, -100, -14, -86, -40, -40, -48, 40, -48, 86, -40, 100, -14, 100, 4};
+	static const float left[] = {-100, 0, -54, 0, -60, 58, -94, 58};
+	static const float middle[] = {-22, 0, 22, 0, 17, 74, -17, 74};
+	static const float right[] = {54, 0, 100, 0, 94, 58, 60, 58};
+
+	for (int pass = 0; pass < 2; pass++)
+	{
+		/* (its shadow, down and to the right; then the shoulder buttons,
+		behind it; then the controller) */
+		float ox = pass ? x : x + 3.f * s, oy = pass ? y : y + 4.f * s;
+
+		if (pass && present)
+		{
+			flat_color(PAD_DARK);
+			bar(x, y, s, -90, -54, -52, -44);
+			bar(x, y, s, 52, -54, 90, -44);
+		}
+		flat_color(!pass ? PAD_SHADOW : present ? PAD_BODY : PAD_GONE);
+		fan(top, 8, ox, oy, s);
+		fan(left, 4, ox, oy, s);
+		fan(middle, 4, ox, oy, s);
+		fan(right, 4, ox, oy, s);
+		disc(ox - 77.f * s, oy + 58.f * s, 17.f * s);
+		disc(ox, oy + 74.f * s, 17.f * s);
+		disc(ox + 77.f * s, oy + 58.f * s, 17.f * s);
+	}
+	if (!present)
+		return;
+	flat_color(PAD_DARK);
+	/* the D-pad, the trigger under the middle grip (Z), the stick's well */
+	bar(x, y, s, -84, -22, -60, -14);
+	bar(x, y, s, -76, -30, -68, -6);
+	bar(x, y, s, -7, 34, 7, 54);
+	disc(x, y - 12.f * s, 15.f * s);
+	flat_color(0xFFC4C6D0u);
+	disc(x, y - 12.f * s, 9.f * s);
+	flat_color(0xFFD83C3Cu);
+	disc(x, y - 36.f * s, 5.f * s);
+	flat_color(0xFF2EA052u);
+	disc(x + 36.f * s, y - 26.f * s, 7.f * s);
+	flat_color(0xFF3262DCu);
+	disc(x + 48.f * s, y - 12.f * s, 8.5f * s);
+	flat_color(0xFFF0C820u);
+	disc(x + 74.f * s, y - 36.f * s, 5.f * s);
+	disc(x + 74.f * s, y - 16.f * s, 5.f * s);
+	disc(x + 64.f * s, y - 26.f * s, 5.f * s);
+	disc(x + 84.f * s, y - 26.f * s, 5.f * s);
+}
+
+struct layout_entry
+{
+	const char *button, *action;
+};
+
+/* a button's name in its own colour: A blue, B green, the C buttons
+yellow, START red */
+static unsigned long button_color(const char *button)
+{
+	if (button[0] == 'A' && (!button[1] || button[1] == ' '))
+		return 0xFF7C9CFFu;
+	if (button[0] == 'B' && (!button[1] || button[1] == ' '))
+		return 0xFF6CD890u;
+	if (button[0] == 'C' && button[1] == ' ')
+		return 0xFFF4D24Cu;
+	if (!strncmp(button, "START", 5))
+		return 0xFFFF7C7Cu;
+	return TEXT_BRIGHT;
+}
+
+/* what a controller's buttons do with its scheme (as xdk_input.c's
+pad_to_gamepad has it): a two-controller scheme's buttons on both
+controllers, its sticks and triggers apart (draw_layout) */
+static int layout_entries(int port, struct layout_entry *entries)
+{
+	const struct n64_controls *controls = &n64_controls[port & 3];
+	int scheme = controls->scheme, count = 0;
+	const char *crouch = controls->toggle_crouch ? "CROUCH (TOGGLE)" : "CROUCH";
+	const char *grenades = CAMPAIGN_CARTRIDGE ? "GRENADES; HOLD: SPEED" : "GRENADES; HOLD: LIGHT";
+
+#define ENTRY(b, a) (entries[count].button = (b), entries[count].action = (a), count++)
+	if (N64_SCHEME_IS_DUAL(scheme))
+	{
+		ENTRY("A", "JUMP");
+		ENTRY("B", "RELOAD / ACTION");
+		ENTRY("R", "THROW A GRENADE");
+		ENTRY("L / C LEFT", "MELEE");
+		ENTRY("START", "PAUSE");
+		ENTRY("C UP / D-UP", "SWITCH WEAPON");
+		ENTRY("C DOWN / D-DOWN", crouch);
+		ENTRY("C RIGHT / D-LEFT", "ZOOM");
+		ENTRY("D-RIGHT", grenades);
+		return count;
+	}
+	switch (scheme)
+	{
+	case N64_SCHEME_GOLDENEYE:
+		ENTRY("STICK", "WALK AND TURN");
+		ENTRY("C UP / DOWN", "LOOK UP AND DOWN");
+		ENTRY("C LEFT / RIGHT", "STRAFE");
+		break;
+	case N64_SCHEME_GOLDEN_STYLE:
+		ENTRY("STICK", "WALK AND TURN");
+		ENTRY("R (HOLD)", "AIM FREELY");
+		ENTRY("C UP / DOWN", "LOOK; AIMING: ZOOM");
+		ENTRY("C LEFT / RIGHT", "STRAFE");
+		break;
+	case N64_SCHEME_NORTH:
+		ENTRY("STICK", "WALK AND STRAFE");
+		ENTRY("C BUTTONS", "LOOK AND TURN");
+		break;
+	case N64_SCHEME_DPAD:
+		ENTRY("STICK", "LOOK AND TURN");
+		ENTRY("D-PAD", "WALK AND STRAFE");
+		break;
+	default:
+		ENTRY("STICK", "LOOK AND TURN");
+		ENTRY("C UP / DOWN", "WALK");
+		ENTRY("C LEFT / RIGHT", "STRAFE");
+		break;
+	}
+	ENTRY(n64_fire_button_name(port), "FIRE");
+	ENTRY(n64_grenade_button_name(port), "THROW A GRENADE");
+	ENTRY(scheme == N64_SCHEME_BUMPER_JUMPER ? "R" : "A", "JUMP");
+	ENTRY("B", "RELOAD / ACTION");
+	ENTRY("L", "MELEE");
+	if (scheme == N64_SCHEME_DPAD)
+	{
+		ENTRY("C UP", "SWITCH WEAPON");
+		ENTRY("C DOWN", crouch);
+		ENTRY("C LEFT", "ZOOM");
+		ENTRY("C RIGHT", grenades);
+	}
+	else
+	{
+		ENTRY("D-UP", "SWITCH WEAPON");
+		ENTRY("D-DOWN", crouch);
+		if (scheme != N64_SCHEME_GOLDEN_STYLE)
+			ENTRY("D-LEFT", "ZOOM");
+		ENTRY("D-RIGHT", grenades);
+	}
+	ENTRY("START", "PAUSE");
+#undef ENTRY
+	return count;
+}
+
+/* the entries in two columns, rows apart from top */
+static void draw_entries(const struct layout_entry *entries, int count, int top, int rows, int spacing)
+{
+	for (int i = 0; i < count; i++)
+	{
+		int column = i / rows, x = SAFE_LEFT + 16 + column * 292, y = top + (i % rows) * spacing;
+
+		text_fit(menu.small, x, y, button_color(entries[i].button), entries[i].button, 124);
+		text_fit(menu.small, x + 130, y, TEXT_COLOR, entries[i].action, 140);
+	}
+}
+
+/* a button and what it does, centred on center */
+static void pair_centered(int center, int y, const char *button, const char *action)
+{
+	int width = n64_text_width(menu.small, button) + 10 + n64_text_width(menu.small, action);
+	int x = center - (width < 270 ? width : 270) / 2;
+
+	menu_text(menu.small, x, y, button_color(button), button);
+	text_fit(menu.small, x + n64_text_width(menu.small, button) + 10, y, TEXT_COLOR, action,
+		270 - n64_text_width(menu.small, button) - 10);
+}
+
+static void draw_layout(void)
+{
+	int port = menu.layout_pad & 3;
+	const struct n64_controls *controls = &n64_controls[port];
+	struct layout_entry entries[16];
+	int count = layout_entries(port, entries);
+	signed char pairs[4];
+	int owner[4];
+	char text[48];
+
+	controls_owners(pairs, owner);
+	snprintf(text, sizeof(text), "PLAYER %d", port + 1);
+	page("CONTROL STYLE", text);
+	snprintf(text, sizeof(text), "<  %s  >", n64_scheme_name(controls->scheme));
+	text_centered(menu.large, SCREEN_W / 2, 100, pulsing(), text);
+	text_centered_fit(menu.small, SCREEN_W / 2, 121, TEXT_COLOR,
+		scheme_help[controls->scheme < N64_SCHEME_COUNT ? controls->scheme : 0], SAFE_RIGHT - SAFE_LEFT);
+	if (!N64_SCHEME_IS_DUAL(controls->scheme))
+	{
+		draw_pad(SCREEN_W / 2, 186, 0.95f, 1);
+		box(SAFE_LEFT, 286, SAFE_RIGHT, 428);
+		draw_entries(entries, count, 307, 7, 18);
+	}
+	else
+	{
+		/* (the second controller: the one found, else the one wanted --
+		chosen, or Perfect Dark's pair -- to say where to plug it in) */
+		int partner = pairs[port];
+		int wanted = partner >= 0 ? partner : controls->partner ? (controls->partner - 1) & 3 : port ^ 2;
+		int own_left = wanted > port;
+		int left_aims = N64_SCHEME_DUAL_LEFT_AIMS(controls->scheme), turns = N64_SCHEME_DUAL_TURNS(controls->scheme);
+
+		for (int hand = 0; hand < 2; hand++)
+		{
+			int own = (hand == 0) == own_left, pad_port = own ? port : wanted;
+			int present = own || partner >= 0, aims = hand ? !left_aims : left_aims, center = hand ? 464 : 176;
+			const char *stick = aims ? (turns ? "STRAFE AND LOOK" : "LOOK AND TURN") :
+				(turns ? "WALK AND TURN" : "WALK AND STRAFE");
+
+			if (present)
+			{
+				snprintf(text, sizeof(text), "%s HAND  -  PORT %d", hand ? "RIGHT" : "LEFT", pad_port + 1);
+				text_centered(menu.small, center, 143, TEXT_BRIGHT, text);
+			}
+			else
+			{
+				snprintf(text, sizeof(text), "%s HAND  -  NO CONTROLLER", hand ? "RIGHT" : "LEFT");
+				text_centered(menu.small, center, 143, TEXT_WARNING, text);
+			}
+			draw_pad(center, 194, 0.75f, present);
+			if (present)
+			{
+				pair_centered(center, 282, "STICK", stick);
+				pair_centered(center, 300, "Z", aims != !!controls->swap_fire ? "FIRE" : "THROW A GRENADE");
+			}
+			else
+			{
+				snprintf(text, sizeof(text), joypad_is_connected(pad_port) ? "PORT %d IS ANOTHER PLAYER'S" :
+					"PLUG A CONTROLLER INTO PORT %d", pad_port + 1);
+				text_centered_fit(menu.small, center, 282, TEXT_WARNING, text, 270);
+				text_centered_fit(menu.small, center, 300, TEXT_DIM, "UNTIL THEN: THE STANDARD SCHEME", 270);
+			}
+		}
+		box(SAFE_LEFT, 310, SAFE_RIGHT, 428);
+		text_centered(menu.small, SCREEN_W / 2, 328, TEXT_DIM, "EITHER CONTROLLER");
+		draw_entries(entries, count, 347, 5, 18);
+	}
+	hints("LEFT/RIGHT  CHANGE STYLE   B  BACK");
 }
 
 static void draw_settings(int item)
@@ -1852,17 +2252,54 @@ static void setup_roster_text(const struct n64_menu_choice *c, char *text, size_
 			setup_burning(c) ? " - YOUR CONSOLE WILL BURN" : setup_experimental(c) ? " (EXPERIMENTAL)" : "");
 }
 
+/* the joined players' second controllers (two-controller schemes,
+n64_input_pairs): partner[port] its second controller's port or -1, and
+whose second controller a port is (its player's port, or -1) */
+static void setup_pairs(const struct n64_menu_choice *c, signed char partner[4])
+{
+	int players = 0;
+
+	for (int i = 0; i < c->player_count; i++)
+		players |= 1 << (c->ports[i] & 3);
+	n64_input_pairs(players, partner);
+}
+
+static int setup_second_controller(const struct n64_menu_choice *c, int port)
+{
+	signed char partner[4];
+
+	setup_pairs(c, partner);
+	for (int owner = 0; owner < 4; owner++)
+		if (partner[owner] == port)
+			return owner;
+	return -1;
+}
+
 static void draw_player_cards(const struct n64_menu_choice *c, int teams, int choosing_team)
 {
 	char value[48];
+	signed char partner[4];
+
+	setup_pairs(c, partner);
 	for (int p = 0; p < 4; p++)
 	{
 		int x = SAFE_LEFT + p * 146, y = 338, w = 138, h = 92, center = x + w / 2;
-		int slot = -1;
+		int slot = -1, owner = -1;
 		for (int i = 0; i < c->player_count; i++)
 			if (c->ports[i] == p) slot = i;
-		panel(x, y, x + w, y + h, slot >= 0 ? 0xA0102040 : 0x60000000);
+		for (int i = 0; i < 4; i++)
+			if (partner[i] == p) owner = i;
+		panel(x, y, x + w, y + h, slot >= 0 ? 0xA0102040 : owner >= 0 ? 0x80102040 : 0x60000000);
 		frame_line(x, y, x + w, y + h, slot >= 0 ? FRAME_COLOR : 0x806080A0);
+		if (slot < 0 && owner >= 0)
+		{
+			/* (a two-controller player's other hand) */
+			snprintf(value, sizeof(value), "PLAYER %d", owner + 1);
+			text_centered(menu.large, center, y + 30, TEXT_COLOR, value);
+			text_centered(menu.small, center, y + 56, TEXT_BRIGHT, "2ND CONTROLLER");
+			text_centered(menu.small, center, y + 76, TEXT_DIM, p > owner ? "RIGHT HAND" : "LEFT HAND");
+			continue;
+		}
 		if (slot < 0)
 		{
 			if (joypad_is_connected(p))
@@ -1879,8 +2316,17 @@ static void draw_player_cards(const struct n64_menu_choice *c, int teams, int ch
 		panel(x + 12, y + 36, x + w - 12, y + 62, 0xFF000000 | (teams ? team_rgb[c->teams[slot]] : player_rgb[slot & 3]));
 		if (teams)
 			text_centered(menu.small, center, y + 55, TEXT_BRIGHT, c->teams[slot] ? "BLUE TEAM" : "RED TEAM");
-		text_centered(menu.small, center, y + 82, TEXT_DIM,
-			choosing_team ? "LEFT/RIGHT  TEAM" : teams ? "Z/R  TEAMS" : "B  LEAVE");
+		/* (two controllers: the other one's port, or that it is missing) */
+		if (N64_SCHEME_IS_DUAL(n64_controls[p].scheme) && !choosing_team)
+		{
+			if (partner[p] >= 0)
+				snprintf(value, sizeof(value), "+ PORT %d", partner[p] + 1);
+			text_centered_fit(menu.small, center, y + 82, partner[p] >= 0 ? TEXT_COLOR : TEXT_WARNING,
+				partner[p] >= 0 ? value : "NO 2ND CONTROLLER", w - 12);
+		}
+		else
+			text_centered(menu.small, center, y + 82, TEXT_DIM,
+				choosing_team ? "LEFT/RIGHT  TEAM" : teams ? "Z/R  TEAMS" : "B  LEAVE");
 	}
 }
 
@@ -2100,7 +2546,7 @@ static int team_setup_input(struct n64_menu_choice *c, int *screen, int automate
 			if (c->ports[i] == p) slot = i;
 		if (slot < 0)
 		{
-			if (pad->pressed.a && c->player_count < 4)
+			if (pad->pressed.a && c->player_count < 4 && setup_second_controller(c, p) < 0)
 			{
 				c->ports[c->player_count] = p;
 				c->teams[c->player_count] = c->player_count & 1;
@@ -2507,13 +2953,32 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 		}
 		else if (screen == SCREEN_CONTROLS)
 		{
+			signed char pairs[4];
+			int owner[4];
+
+			controls_owners(pairs, owner);
 			for (int p = 0; p < 4 && screen == SCREEN_CONTROLS; p++)
 			{
 				struct pad *pad = &pads[p];
-				struct n64_controls *controls = &n64_controls[p];
 				int *row = &menu.control_row[p];
 				int step = pad->left ? -1 : (pad->right || pad->pressed.a) ? 1 : 0;
 
+				if (pad->pressed.b || pad->pressed.start)
+				{
+					screen = SCREEN_TITLE;
+					break;
+				}
+				/* (a two-controller player's second controller: its player's
+				panel has its settings) */
+				if (owner[p] >= 0)
+					continue;
+				/* (Z: the scheme drawn) */
+				if (pad->pressed.z)
+				{
+					menu.control_pad = menu.layout_pad = p;
+					screen = SCREEN_LAYOUT;
+					break;
+				}
 				if (pad->up || pad->down || step)
 					menu.control_pad = p;
 				if (pad->up)
@@ -2522,9 +2987,19 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					*row = (*row + 1) % CONTROL_COUNT;
 				if (step)
 					n64_controls_step(p, *row, step, pad->pressed.a && !pad->left && !pad->right);
-				if (pad->pressed.b || pad->pressed.start)
-					screen = SCREEN_TITLE;
 			}
+		}
+		else if (screen == SCREEN_LAYOUT)
+		{
+			/* (CONTROL STYLE: its controller steps the scheme; B, Z or START
+			back to CONTROLS) */
+			struct pad *pad = &pads[menu.layout_pad & 3];
+			int step = pad->left ? -1 : (pad->right || pad->pressed.a) ? 1 : 0;
+
+			if (!joypad_is_connected(menu.layout_pad & 3) || pad->pressed.b || pad->pressed.z || pad->pressed.start)
+				screen = SCREEN_CONTROLS;
+			else if (step)
+				n64_controls_step(menu.layout_pad & 3, CONTROL_SCHEME, step, 0);
 		}
 		else
 		{
@@ -2550,8 +3025,9 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				}
 				if (slot < 0)
 				{
-					/* An unjoined pad's A always joins, on every row. */
-					if (pad->pressed.a && c->player_count < (c->campaign ? 1 : 4))
+					/* An unjoined pad's A always joins, on every row (but a
+					two-controller player's second controller's) */
+					if (pad->pressed.a && c->player_count < (c->campaign ? 1 : 4) && setup_second_controller(c, p) < 0)
 					{
 						c->ports[c->player_count] = p;
 						c->teams[c->player_count] = c->player_count & 1;
@@ -2628,7 +3104,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				n64_menu_game_teams(c->game_type) ? (c->teams[i] ? 3 : 2) : player_colors[i & 3];
 
 		/* (the settings kept when their page is left) */
-		if (screen != previous_screen && (previous_screen == SCREEN_SETTINGS || previous_screen == SCREEN_CONTROLS))
+		if (screen != previous_screen && (previous_screen == SCREEN_SETTINGS || previous_screen == SCREEN_CONTROLS ||
+			previous_screen == SCREEN_LAYOUT))
 			settings_save();
 		if (cycle && menu.frame >= cycle_frame + 30.f)
 			start = 1;
@@ -2655,6 +3132,8 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			draw_settings(setting);
 		else if (screen == SCREEN_CONTROLS)
 			draw_controls();
+		else if (screen == SCREEN_LAYOUT)
+			draw_layout();
 		else
 			draw_setup(c, row, score_index);
 		n64_render_frame_end();

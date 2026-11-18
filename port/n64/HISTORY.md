@@ -5,6 +5,47 @@ The running log of the N64 port's state, newest first, as it was kept in
 building and playing). Each entry says what changed and why; the
 technical detail (functions, files, measurements) is here.
 
+18 November: two-controller (dual analogue) schemes, as GoldenEye's and
+Perfect Dark's 2.x styles.
+
+- Four schemes after D-PAD MOVE (`N64_SCHEME_DUAL_*`, n64.h): DUAL MODERN
+  (left stick walks and strafes, right stick looks), DUAL CLASSIC (left
+  walks and turns, right strafes and looks up and down) and their LEFT
+  versions with the hands swapped. A saved record from an earlier version
+  has none of them (its schemes read as before); an earlier version reads
+  these as STANDARD.
+- The second controller (`n64_input_pairs`, n64_input.c): the player's
+  choice (`n64_controls.partner`, EEPROM byte 42, two bits a controller as
+  the other port xor the own, 0 automatic), else Perfect Dark's pairs
+  (sockets 1 and 3, 2 and 4: its manual's own words for its two-controller
+  styles), else the first other free controller; a controller is taken
+  once, by the lowest port first, never a player's own. In a game
+  (xdk_input.c) the pairs are found again at each poll with the game's
+  players (`n64_gamepad_players`, set by n64_game.c); on the setup page
+  with the joined players; on CONTROLS every connected controller is a
+  player's but those an earlier port took.
+- The two pads as one gamepad (`dual_pads`, xdk_input.c): the lower port is
+  the left hand; the sticks as the style has them; the buttons as the
+  standard scheme's on either controller but the triggers (the aiming
+  hand's Z fires, the other's throws a grenade, swapped by FIRE BUTTON) and
+  the C buttons (C up = D-pad up, C down = D-pad down, C left = L, C right =
+  D-pad left). A second controller's own gamepad reads as untouched; both
+  Rumble Paks get the player's rumble; its START pauses. Without a second
+  controller the scheme plays as STANDARD. Look speed: the stick's for
+  both sticks; the C BUTTON SPEED row becomes SECOND PAD.
+- Menus: the CONTROLS page names a second controller's panel by its
+  player and hand; Z opens CONTROL STYLE, a new page that draws the N64
+  controller (two for a two-controller scheme, with each hand's port or
+  where to plug it in) in filled triangles and lists what every button
+  does, left and right stepping the scheme; the setup page's cards show a
+  two-controller player's other port (or that it is missing) and the
+  second controller's card, whose A no longer joins. The pause menu's
+  panels show both ports and the SECOND PAD row. The scheme names and the
+  fire and grenade buttons' names are shared (`n64_scheme_name`,
+  `n64_fire_button_name`, `n64_grenade_button_name`).
+- HUD STYLE 64's grenade letter now reads the local player's own port's
+  controls (it read the controls of the port numbered as the local player).
+
 17 November: version 0.6.9, five pull requests by jz-k (details and
 measurements in each pull request's description) and one by grimfervor.
 

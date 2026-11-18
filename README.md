@@ -413,9 +413,40 @@ The other schemes:
   D-pad walks and strafes; C up switches weapons, C down crouches, C left
   zooms, C right switches grenades (held: flashlight).
 
+**Two controllers** (dual analogue, as GoldenEye's and Perfect Dark's 2.x
+styles): one controller in each hand, each held by its middle grip. The
+second controller is the one in socket 3 for the player in socket 1 and in
+socket 4 for the player in socket 2, as in Perfect Dark (a player alone
+with controllers in sockets 1 and 2 gets the second one too), or the one
+the player chooses (SECOND PAD on the CONTROLS page). The lower-numbered
+socket is the left hand. On the game's setup page the second controller's
+card shows whose it is, and it cannot join as a player of its own.
+
+| Style | Left stick | Right stick |
+|---|---|---|
+| **Dual modern** | walk and strafe | look and turn |
+| **Dual modern left** | look and turn | walk and strafe |
+| **Dual classic** (GoldenEye's way of turning) | walk and turn | strafe and look up/down |
+| **Dual classic left** | strafe and look up/down | walk and turn |
+
+The aiming hand's Z fires and the other hand's Z throws a grenade (the
+FIRE BUTTON row swaps them). Every other button works on either
+controller: A jumps, B reloads, R throws a grenade, L and C left are melee,
+C up and D-pad up switch weapons, C down and D-pad down crouch, C right and
+D-pad left zoom, D-pad right switches grenades (held: flashlight), START
+pauses. Both Rumble Paks shake. Without the second controller the first
+plays the standard scheme. In an emulator, two controllers can be mapped
+onto one modern gamepad (one to its left stick, the other to its right) for
+dual-stick play.
+
+On the CONTROLS page, **Z** opens **CONTROL STYLE**: the scheme drawn, the
+controller (or both controllers) and what each button does, with left and
+right stepping through the schemes.
+
 Each player also chooses: crouch held or toggled, look normal or inverted,
 fire on Z or R (grenades on the other), the look speed of the stick and of
-the C buttons (1-10), and the Rumble Pak on or off (it buzzes when turned
+the C buttons (1-10; with two controllers the C row chooses the second
+controller instead), and the Rumble Pak on or off (it buzzes when turned
 on, to show it's there).
 
 **Rumble Pak.** A controller with a Rumble Pak shakes with Halo's own

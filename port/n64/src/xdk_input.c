@@ -37,6 +37,20 @@ crouch held or toggled (a jump stands back up), look inverted or not, fire
 and grenades swapped or not, and the look speeds of the stick and of the C
 buttons (n64_look_speed: Halo's turning rates times them).
 
+Or two controllers, one in each hand, held by their middle grips, as
+GoldenEye's and Perfect Dark's 2.x styles have it (dual_pads): the second
+is the player's choice, else Perfect Dark's pairs, sockets 1 and 3, 2 and 4
+(n64_input_pairs, found again at each poll), and the lower-numbered socket
+is the left hand. DUAL MODERN: the left stick walks and strafes, the right
+one turns and looks up and down; DUAL CLASSIC: the left stick walks and
+turns, the right one strafes and looks up and down (GoldenEye's way of
+turning); their LEFT versions swap the hands. The aiming hand's Z fires,
+the other's throws a grenade (the two swapped by the fire setting); every
+other button does what it does in the standard scheme on either controller,
+but the C buttons, which no longer walk: C up switches weapons, C down
+crouches, C left is melee, C right zooms. Without a second controller the
+first plays the standard way.
+
 Test mode (a file "autotest" on the cartridge): the first two ports are
 driven by a script instead, so an unattended run exercises the game
 (n64_test_input).
@@ -79,6 +93,28 @@ int n64_input_blocked = 0;
 /* the N64 controller port each of the game's gamepads reads: the menu's
 players are the game's gamepads 0 to n-1 (port/n64/game/n64_game.c) */
 int n64_gamepad_ports[4] = {0, 1, 2, 3};
+/* how many of them are players' (0: not set, every controller one) */
+int n64_gamepad_players = 0;
+/* each port's second controller (a two-controller player's), found at each
+poll: its port, or -1 */
+signed char n64_input_partners[4] = {-1, -1, -1, -1};
+
+int n64_input_partner_of(int port)
+{
+	for (int owner = 0; owner < 4; owner++)
+		if (n64_input_partners[owner] == port)
+			return owner;
+	return -1;
+}
+
+static void find_partners(void)
+{
+	int players = 0;
+
+	for (int i = 0; i < n64_gamepad_players && i < 4; i++)
+		players |= 1 << (n64_gamepad_ports[i] & 3);
+	n64_input_pairs(n64_gamepad_players > 0 ? players : -1, n64_input_partners);
+}
 
 static void poll(void)
 {
@@ -88,6 +124,7 @@ static void poll(void)
 	if (now - last_poll_tick > N64_TICKS_PER_SECOND / 240)
 	{
 		n64_input_poll();
+		find_partners();
 		last_poll_tick = now;
 	}
 }
@@ -265,19 +302,74 @@ static unsigned short swap_c_and_d(unsigned short b)
 	return out;
 }
 
-static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, XINPUT_GAMEPAD *gamepad)
+/* a two-controller player's controllers as one (N64_SCHEME_DUAL_*): the
+sticks as the style has them, into the gamepad; the buttons as one
+controller's of the standard scheme (b), the aiming hand's Z as Z (fire),
+the other hand's Z as R (grenade), and the C buttons as what they do here
+-- C up the D-pad's up (switch weapons), C down its down (crouch), C left L
+(melee), C right the D-pad's left (zoom); the left hand the lower port */
+static unsigned short dual_pads(const struct n64_controls *controls, int n64_port, const struct n64_pad *pad,
+	int partner_port, const struct n64_pad *partner, XINPUT_GAMEPAD *gamepad, SHORT *look_y)
+{
+	const struct n64_pad *left = partner_port < (n64_port & 3) ? partner : pad;
+	const struct n64_pad *right = left == pad ? partner : pad;
+	const struct n64_pad *aim = N64_SCHEME_DUAL_LEFT_AIMS(controls->scheme) ? left : right;
+	const struct n64_pad *move = aim == left ? right : left;
+	unsigned short both = left->buttons | right->buttons;
+	unsigned short b = both & (unsigned short)~(N64_BUTTON_Z | N64_BUTTON_R |
+		N64_BUTTON_C_UP | N64_BUTTON_C_DOWN | N64_BUTTON_C_LEFT | N64_BUTTON_C_RIGHT);
+
+	if (both & N64_BUTTON_C_UP) b |= N64_BUTTON_D_UP;
+	if (both & N64_BUTTON_C_DOWN) b |= N64_BUTTON_D_DOWN;
+	if (both & N64_BUTTON_C_LEFT) b |= N64_BUTTON_L;
+	if (both & N64_BUTTON_C_RIGHT) b |= N64_BUTTON_D_LEFT;
+	/* (fire and grenades swapped: the moving hand fires) */
+	if ((controls->swap_fire ? move : aim)->buttons & N64_BUTTON_Z) b |= N64_BUTTON_Z;
+	if (((controls->swap_fire ? aim : move)->buttons & N64_BUTTON_Z) || (both & N64_BUTTON_R)) b |= N64_BUTTON_R;
+	if (N64_SCHEME_DUAL_TURNS(controls->scheme))
+	{
+		gamepad->sThumbLY = stick(move->stick_y);
+		gamepad->sThumbRX = stick(move->stick_x);
+		gamepad->sThumbLX = stick(aim->stick_x);
+	}
+	else
+	{
+		gamepad->sThumbLY = stick(move->stick_y);
+		gamepad->sThumbLX = stick(move->stick_x);
+		gamepad->sThumbRX = stick(aim->stick_x);
+	}
+	*look_y = stick(aim->stick_y);
+	return b;
+}
+
+/* partner_port: the second controller's port (a two-controller player's,
+n64_input_partners), or -1 */
+static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, int partner_port, XINPUT_GAMEPAD *gamepad)
 {
 	struct n64_controls *controls = &n64_controls[n64_port & 3];
+	int dual = N64_SCHEME_IS_DUAL(controls->scheme) && partner_port >= 0;
 	unsigned short b = controls->scheme == N64_SCHEME_DPAD ? swap_c_and_d(pad->buttons) : pad->buttons;
-	unsigned short pressed = b & ~controls->last_buttons;
+	unsigned short pressed;
 	unsigned short jump = N64_BUTTON_A, grenade = N64_BUTTON_R, fire = N64_BUTTON_Z;
 	SHORT look_y;
 	int crouch;
 
 	golden_pads[n64_port & 3] = *pad;
-	if (controls->scheme == N64_SCHEME_GOLDEN_STYLE) grenade = N64_BUTTON_D_LEFT;
-	switch (controls->scheme)
+	if (dual)
 	{
+		struct n64_pad partner;
+
+		n64_input_get(partner_port & 3, &partner);
+		b = dual_pads(controls, n64_port, pad, partner_port & 3, &partner, gamepad, &look_y);
+	}
+	pressed = b & ~controls->last_buttons;
+	if (controls->scheme == N64_SCHEME_GOLDEN_STYLE) grenade = N64_BUTTON_D_LEFT;
+	/* (a two-controller scheme without its second controller: the standard
+	one) */
+	switch (dual ? -1 : controls->scheme)
+	{
+	case -1:
+		break;
 	case N64_SCHEME_GOLDEN_STYLE:
 	case N64_SCHEME_GOLDENEYE:
 		gamepad->sThumbRX = stick(pad->stick_x);
@@ -304,8 +396,9 @@ static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, XINPUT_GAMEP
 		jump = N64_BUTTON_R;
 		grenade = N64_BUTTON_A;
 	}
-	/* fire and grenades swapped: fire on the grenade's button */
-	if (controls->swap_fire)
+	/* fire and grenades swapped: fire on the grenade's button (two
+	controllers: their Zs swapped already, dual_pads) */
+	if (controls->swap_fire && !dual)
 	{
 		fire = grenade;
 		grenade = N64_BUTTON_Z;
@@ -402,7 +495,7 @@ int n64_input_link_pad(int port, struct n64_link_pad *out)
 	if (!pad.connected)
 		return 0;
 	memset(&gamepad, 0, sizeof(gamepad));
-	pad_to_gamepad(port & 3, &pad, &gamepad);
+	pad_to_gamepad(port & 3, &pad, n64_input_partners[port & 3], &gamepad);
 	out->port = (uint8_t)port;
 	out->buttons = gamepad.wButtons;
 	memcpy(out->analog, gamepad.bAnalogButtons, sizeof(out->analog));
@@ -435,7 +528,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 				pad.stick_y = phase % 64 < 32 ? 20 : 0;
 				pad.buttons = phase % 64 < 32 ? N64_BUTTON_R : 0;
 				if (phase % 16 < 4) pad.buttons |= N64_BUTTON_Z;
-				pad_to_gamepad(n64_gamepad_ports[port], &pad, &state->Gamepad);
+				pad_to_gamepad(n64_gamepad_ports[port], &pad, -1, &state->Gamepad);
 			}
 			else test_gamepad(port, &state->Gamepad);
 		}
@@ -443,13 +536,16 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 	else
 	{
 		struct n64_pad pad;
+		int n64_port = n64_gamepad_ports[port] & 3;
 
 		poll();
-		n64_input_get(n64_gamepad_ports[port], &pad);
+		n64_input_get(n64_port, &pad);
 		if (!pad.connected)
 			return ERROR_DEVICE_NOT_CONNECTED;
-		if (!n64_input_blocked)
-			pad_to_gamepad(n64_gamepad_ports[port], &pad, &state->Gamepad);
+		/* (a player's second controller reads as untouched: its player's
+		gamepad has it) */
+		if (!n64_input_blocked && n64_input_partner_of(n64_port) < 0)
+			pad_to_gamepad(n64_port, &pad, n64_input_partners[n64_port], &state->Gamepad);
 	}
 	if (memcmp(&state->Gamepad, &controllers[port].previous, sizeof(state->Gamepad)))
 	{
@@ -469,9 +565,19 @@ DWORD WINAPI XInputSetState(HANDLE device, PXINPUT_FEEDBACK feedback)
 		/* (the scripted players have no motors; none while paused) */
 		if (port >= 0 && !n64_test_input)
 		{
-			n64_input_rumble(n64_gamepad_ports[port],
-				n64_input_blocked ? 0.f : feedback->Rumble.wLeftMotorSpeed * (1.f / 65535.f),
-				n64_input_blocked ? 0.f : feedback->Rumble.wRightMotorSpeed * (1.f / 65535.f));
+			int n64_port = n64_gamepad_ports[port] & 3, partner = n64_input_partners[n64_port];
+			float left = n64_input_blocked ? 0.f : feedback->Rumble.wLeftMotorSpeed * (1.f / 65535.f);
+			float right = n64_input_blocked ? 0.f : feedback->Rumble.wRightMotorSpeed * (1.f / 65535.f);
+
+			/* (a two-controller player's Rumble Paks both, as the player has
+			it; a second controller's own gamepad leaves its motor alone) */
+			if (n64_input_partner_of(n64_port) < 0)
+			{
+				n64_input_rumble(n64_port, left, right);
+				if (partner >= 0)
+					n64_input_rumble(partner, n64_controls[n64_port].no_rumble ? 0.f : left,
+						n64_controls[n64_port].no_rumble ? 0.f : right);
+			}
 		}
 		feedback->Header.dwStatus = ERROR_SUCCESS;
 	}

@@ -173,8 +173,20 @@ enum
 	N64_SCHEME_NORTH,         /* the stick walks and strafes, the C buttons look */
 	N64_SCHEME_GOLDEN_STYLE,  /* optional free aim, held R and threshold turning */
 	N64_SCHEME_DPAD,          /* the stick looks, the D-pad moves, the C buttons do the D-pad's */
+	/* two controllers, one in each hand (GoldenEye's and Perfect Dark's 2.x
+	styles; xdk_input.c's dual_pads): */
+	N64_SCHEME_DUAL_MODERN,       /* the left stick walks and strafes, the right one looks */
+	N64_SCHEME_DUAL_MODERN_LEFT,  /* the same with the hands swapped */
+	N64_SCHEME_DUAL_CLASSIC,      /* the left stick walks and turns, the right one strafes and looks up and down */
+	N64_SCHEME_DUAL_CLASSIC_LEFT, /* the same with the hands swapped */
 	N64_SCHEME_COUNT
 };
+
+#define N64_SCHEME_IS_DUAL(scheme) ((scheme) >= N64_SCHEME_DUAL_MODERN && (scheme) <= N64_SCHEME_DUAL_CLASSIC_LEFT)
+/* the left hand aims (fires with its Z), the right one moves */
+#define N64_SCHEME_DUAL_LEFT_AIMS(scheme) ((scheme) == N64_SCHEME_DUAL_MODERN_LEFT || (scheme) == N64_SCHEME_DUAL_CLASSIC_LEFT)
+/* the moving stick turns and the aiming one strafes */
+#define N64_SCHEME_DUAL_TURNS(scheme) ((scheme) == N64_SCHEME_DUAL_CLASSIC || (scheme) == N64_SCHEME_DUAL_CLASSIC_LEFT)
 
 struct n64_controls
 {
@@ -189,11 +201,42 @@ struct n64_controls
 	unsigned char crouched;
 	/* the Rumble Pak turned off on the CONTROLS page (n64_input.c) */
 	unsigned char no_rumble;
+	/* a two-controller scheme's second controller: 0 automatic (n64_input_pairs),
+	else its port + 1 */
+	unsigned char partner;
 	/* (xdk_input.c's) the buttons last read */
 	unsigned short last_buttons;
 };
 
 extern struct n64_controls n64_controls[4];
+
+/* the schemes' names, as the menus show them; the buttons that fire and
+throw grenades with a port's controls ("Z", "R", "A", "D-LEFT", "LEFT Z",
+"RIGHT Z": as xdk_input.c's pad_to_gamepad has them) */
+const char *n64_scheme_name(int scheme);
+const char *n64_fire_button_name(int port);
+const char *n64_grenade_button_name(int port);
+/* the second controllers of the two-controller players (n64_input.c):
+partner[port] = the port of that player's other controller, or -1 (not a
+two-controller player, or no controller to be had). players: a bit each for
+the ports that are players' own controllers, or -1 on the menu's CONTROLS
+page (every controller a player's but those taken as an earlier port's
+second). A player's chosen port, else (automatic) Perfect Dark's pairs --
+1 and 3, 2 and 4 -- else the first other free one; a controller is taken
+once, by the lowest port first, never one that is a player's own */
+void n64_input_pairs(int players, signed char partner[4]);
+/* a SECOND PAD row's value: "AUTO: PORT 3", "PORT 3", "AUTO: NONE FREE",
+"PORT 3 (NO PAD)" (resolved: the port n64_input_pairs found, or -1) */
+void n64_input_partner_text(int port, int resolved, char *text, int size);
+/* the next SECOND PAD choice: automatic, then each other port */
+void n64_input_partner_step(int port, int step);
+/* in a game (xdk_input.c): the second controllers found at the last poll
+(the players being the game's), and whose second controller a port is (its
+player's port, or -1) */
+extern signed char n64_input_partners[4];
+int n64_input_partner_of(int port);
+/* the game's players, the first of n64_gamepad_ports (port/n64/game/n64_game.c) */
+extern int n64_gamepad_players;
 
 /* Shared by title Controls and the in-game, per-port Controls panels. */
 enum { CONTROL_SCHEME, CONTROL_CROUCH, CONTROL_LOOK, CONTROL_FIRE, CONTROL_STICK_SPEED, CONTROL_C_SPEED,
