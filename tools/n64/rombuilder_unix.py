@@ -18,17 +18,19 @@ all with TOOL_FLAGS -- and runs tools/n64/rombuilder.py with that payload
 
 --release also takes the zip's folder, unpacked. The release must be of
 the version checked out here (tools/n64/version.py): the version its
-version.txt names or, in a release without one, the version its programs
-show on the title page; and its port.json must be port/n64/port.json.
+version.txt names or, in a release without one, the version KNOWN_RELEASES
+gives its multiplayer program; and its port.json must be port/n64/port.json.
 The work files go in a new folder in TMPDIR, removed at the end (and on
 Ctrl-C, SIGTERM or SIGHUP, which stop every process the build started);
 only the ROMs stay, and the logs when the build fails. --tools keeps the
 tools built in two folders of its own inside it (TOOL_FOLDERS), which a
 later run reuses. JOBS sets how many compilers build the tools at a time
-(default: one for each CPU, and one for each COMPILER_BYTES of memory).
+(default: one for each CPU; for invader-lite, whose compilers take much
+memory, INVADER_JOBS at most).
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -37,7 +39,6 @@ import re
 import shlex
 import shutil
 import signal
-import struct
 import subprocess
 import sys
 import tempfile
@@ -80,15 +81,14 @@ PAYLOAD_PARTS = ("port.json", VERSION_FILE, "elf/", "invader/", "art/")
 # in each tools folder: what its tools were built from, as JSON. A folder
 # with other files and without it is not this command's, and is never emptied
 STAMP = "built-from.json"
-# a compiler's memory, about (invader-lite's generated parsers take most)
-COMPILER_BYTES = 3 << 29
-# where Linux says how much memory is free, and a container's limits (cgroup v2)
-MEMINFO = Path("/proc/meminfo")
-CGROUP = Path("/sys/fs/cgroup")
-# a program's segment compressed by n64elfcompress (its level 1 is LZ4)
-PF_N64_COMPRESSED = 0x1000
-# the version on a program's title page: "V" HALO64_VERSION (n64_menu.c)
-TITLE_VERSION = re.compile(rb"V(\d+\.\d+\.\d+)\x00")
+# releases without version.txt: their multiplayer program's SHA-256
+# (elf/multiplayer/halo.elf.stripped)
+KNOWN_RELEASES = {"d104c4986ec85f02772b90186d36835af61d929cdb8480bf2e62760fca1a8c67": "0.6.9"}
+# invader-lite's compilers at a time by default (its generated parsers take
+# much memory: three were once too many for 4 GB)
+INVADER_JOBS = 2
+# how long a stopped process group has between SIGTERM and SIGKILL
+GRACE = 5.0
 VENV = "python3 -m venv ~/halo-64-venv && ~/halo-64-venv/bin/pip install pillow, then run this command with " \
        "~/halo-64-venv/bin/python3"
 INSTALL_HINTS = {
@@ -141,22 +141,6 @@ def developer_tools_missing():
     return result.returncode != 0 or not Path(result.stdout.strip() or "/nonexistent").is_dir()
 
 
-def missing_headers(compiler):
-    """invader-lite's libraries' headers the C compiler cannot find: [(header,
-    Debian/Ubuntu package)]"""
-    missing = []
-    for header, package in (("zlib.h", "zlib1g-dev"), ("samplerate.h", "libsamplerate0-dev")):
-        command = [*shlex.split(compiler), *shlex.split(os.environ.get("CFLAGS", "")), "-E", "-x", "c", "-",
-                   "-o", os.devnull]
-        try:
-            found = subprocess.run(command, input=f"#include <{header}>\n".encode(), capture_output=True).returncode == 0
-        except OSError:
-            found = False
-        if not found:
-            missing.append((header, package))
-    return missing
-
-
 def missing_prerequisites(ce_tools_built, system=None):
     """what this machine lacks to build the tools and run the converters"""
     system = system or sys.platform
@@ -176,14 +160,10 @@ def missing_prerequisites(ce_tools_built, system=None):
         commands = []
     if ce_tools_built:
         commands += [("cmake", "cmake"), ("ninja", "ninja"), ("bash", "bash")]
-    absent = []
     for command, what in commands:
         words = shlex.split(command)
         if not words or not shutil.which(words[0]):
-            absent.append(command)
             missing.append(what)
-    if ce_tools_built and compilers[0] not in absent:
-        missing += [f"{header} ({package})" for header, package in missing_headers(compilers[0])]
     return missing
 
 
@@ -277,120 +257,32 @@ def check_port_json(payload):
                          f"(v{VERSION})")
 
 
-def lz4_block(data):
-    """an LZ4 block decompressed (n64elfcompress's level 1)"""
-    out = bytearray()
-    at = 0
-    try:
-        while at < len(data):
-            token = data[at]
-            at += 1
-            length = token >> 4
-            if length == 15:
-                while True:
-                    length += data[at]
-                    at += 1
-                    if data[at - 1] != 255:
-                        break
-            if at + length > len(data):
-                raise IndexError(at + length)
-            out += data[at:at + length]
-            at += length
-            if at >= len(data):
-                break
-            offset = data[at] | data[at + 1] << 8
-            at += 2
-            length = token & 15
-            if length == 15:
-                while True:
-                    length += data[at]
-                    at += 1
-                    if data[at - 1] != 255:
-                        break
-            length += 4
-            if not 0 < offset <= len(out):
-                raise BuildError("a compressed program refers outside its data")
-            start = len(out) - offset
-            while length:
-                piece = out[start:start + min(length, offset)]
-                out += piece
-                start += len(piece)
-                length -= len(piece)
-    except IndexError as error:
-        raise BuildError("a compressed program is cut short") from error
-    return bytes(out)
-
-
-def program_versions(path):
-    """the versions a program shows on its title page ("V" HALO64_VERSION):
-    looked for in its loadable segments, decompressed where n64elfcompress
-    compressed them"""
-    data = path.read_bytes()
-    if data[:4] != b"\x7fELF" or len(data) < 0x40 or data[5] != 2 or data[4] not in (1, 2):
-        raise BuildError(f"{path} is not a big-endian ELF file")
-    wide = data[4] == 2
-    try:
-        if wide:
-            offset, = struct.unpack_from(">Q", data, 0x20)
-            entry_size, count = struct.unpack_from(">HH", data, 0x36)
-        else:
-            offset, = struct.unpack_from(">I", data, 0x1C)
-            entry_size, count = struct.unpack_from(">HH", data, 0x2A)
-        found = set()
-        for i in range(count):
-            if wide:
-                kind, flags, start, _, _, size, _, _ = struct.unpack_from(">IIQQQQQQ", data, offset + i * entry_size)
-            else:
-                kind, start, _, _, size, _, flags, _ = struct.unpack_from(">IIIIIIII", data, offset + i * entry_size)
-            if kind != 1:  # (PT_LOAD)
-                continue
-            body = data[start:start + size]
-            if flags & PF_N64_COMPRESSED:
-                body = lz4_block(body)
-            found.update(match.decode("ascii") for match in TITLE_VERSION.findall(body))
-    except struct.error as error:
-        raise BuildError(f"{path} is cut short") from error
-    return found
-
-
-def check_version(payload, cartridges):
-    """the release must be of the version checked out here: its version.txt
-    says so or, in a release without one (v0.6.9 and earlier), every chosen
-    cartridge's program shows this version on its title page. (port.json
-    alone did not change from v0.6.5 to v0.6.9; the converters did)"""
-    def mismatch(other):
-        return BuildError(f"the release is version {other} and this checkout is version {VERSION}: use version "
-                          f"{VERSION}'s Halo64RomBuilder.zip, or check out v{other} (git checkout v{other})")
+def release_version(payload):
+    """the release's version: its version.txt's (package_rombuilder.py
+    writes it) or, in a release without one, the one KNOWN_RELEASES gives
+    its multiplayer program; None if neither says"""
     stated = payload / VERSION_FILE
     if stated.is_file():
-        other = stated.read_text(encoding="utf-8", errors="replace").strip()
-        if other != VERSION:
-            raise mismatch(other)
-        return
-    for cartridge in cartridges:
-        found = program_versions(payload / "elf" / CARTRIDGES[cartridge]["elf"] / "halo.elf.stripped")
-        if VERSION not in found:
-            if found:
-                raise mismatch(", ".join(sorted(found)))
-            raise BuildError(f"the release's {cartridge} program shows no version on its title page: use version "
-                             f"{VERSION}'s Halo64RomBuilder.zip")
+        return stated.read_text(encoding="utf-8", errors="replace").strip()
+    program = payload / "elf" / "multiplayer" / "halo.elf.stripped"
+    if program.is_file():
+        return KNOWN_RELEASES.get(hashlib.sha256(program.read_bytes()).hexdigest())
+    return None
+
+
+def check_version(payload):
+    """the release must be of the version checked out here (port.json alone
+    did not change from v0.6.5 to v0.6.9; the converters did)"""
+    version = release_version(payload)
+    if version is None:
+        raise BuildError(f"the release is older than this command or unknown (no version.txt, and not a release "
+                         f"it knows): use the Halo64RomBuilder.zip of version {VERSION}, the one checked out here")
+    if version != VERSION:
+        raise BuildError(f"the release is version {version} and this checkout is version {VERSION}: use version "
+                         f"{VERSION}'s Halo64RomBuilder.zip, or check out v{version} (git checkout v{version})")
 
 
 # ---------- processes: each in a group of its own, stopped whole
-
-def alive(pid):
-    """True while a process runs (a zombie does not)"""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    try:
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
-    except (OSError, IndexError):
-        return True
-
 
 def group_alive(group):
     try:
@@ -402,23 +294,38 @@ def group_alive(group):
     return True
 
 
-def stop_group(process, grace=5.0):
+@contextlib.contextmanager
+def signals_ignored():
+    """Ctrl-C, SIGTERM and SIGHUP ignored meanwhile: a second Ctrl-C does not
+    cut a stop or a cleaning up short (the main thread only can)"""
+    try:
+        previous = {number: signal.signal(number, signal.SIG_IGN)
+                    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    except ValueError:
+        previous = {}
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def stop_group(process, grace=None):
     """a process and every process it started (its group): SIGTERM, then
-    SIGKILL for what is left after grace seconds"""
-    for number in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(process.pid, number)
-        except ProcessLookupError:
-            break
-        deadline = time.monotonic() + grace
-        while time.monotonic() < deadline:
-            process.poll()
+    SIGKILL for what is left after GRACE seconds"""
+    with signals_ignored():
+        for number in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(process.pid, number)
+            except ProcessLookupError:
+                break
+            deadline = time.monotonic() + (GRACE if grace is None else grace)
+            while time.monotonic() < deadline and group_alive(process.pid):
+                process.poll()
+                time.sleep(0.1)
             if not group_alive(process.pid):
                 break
-            time.sleep(0.1)
-        if not group_alive(process.pid):
-            break
-    process.poll()
+        process.poll()
 
 
 def run_group(command, **options):
@@ -435,61 +342,15 @@ def run_group(command, **options):
 
 # ---------- the tools
 
-def cgroup_cpus():
-    """a Linux container's CPUs (cgroup v2 cpu.max), or None"""
-    try:
-        quota, period = (CGROUP / "cpu.max").read_text().split()[:2]
-        return None if quota == "max" else max(1, -(-int(quota) // int(period)))
-    except (OSError, ValueError):
-        return None
-
-
-def cgroup_memory():
-    """a Linux container's memory left (cgroup v2 memory.max less
-    memory.current), or None"""
-    try:
-        limit = (CGROUP / "memory.max").read_text().strip()
-        if limit == "max":
-            return None
-        return max(0, int(limit) - int((CGROUP / "memory.current").read_text().strip()))
-    except (OSError, ValueError):
-        return None
-
-
-def available_memory():
-    """the memory the compilers may take: Linux's MemAvailable (macOS, which
-    has none, its physical memory), and a container's limit"""
-    sizes = []
-    try:
-        for line in MEMINFO.read_text().splitlines():
-            if line.startswith("MemAvailable:"):
-                sizes.append(int(line.split()[1]) * 1024)
-    except (OSError, ValueError, IndexError):
-        pass
-    if not sizes:
-        try:
-            sizes.append(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
-        except (AttributeError, OSError, ValueError):
-            pass
-    limited = cgroup_memory()
-    if limited is not None:
-        sizes.append(limited)
-    return min(sizes) if sizes else None
-
-
-def compile_jobs():
-    """compilers at a time: JOBS, else one for each CPU (a container's) and
-    for each COMPILER_BYTES of memory"""
+def compile_jobs(limit=None):
+    """compilers at a time: JOBS, else one for each CPU (limit at most)"""
     value = os.environ.get("JOBS")
     if value:
         if not value.isdigit() or int(value) < 1:
             raise BuildError(f"JOBS must be a whole number of 1 or more (it is {value!r})")
         return int(value)
-    cpus = cgroup_cpus() or os.cpu_count() or 1
-    memory = available_memory()
-    if memory is not None:
-        cpus = min(cpus, max(1, memory // COMPILER_BYTES))
-    return max(1, cpus)
+    cpus = os.cpu_count() or 1
+    return min(cpus, limit) if limit else cpus
 
 
 def tool_environment(jobs):
@@ -560,20 +421,31 @@ def tools_ready(folder, wanted, names):
 
 def own_folder(folder):
     """a tools folder emptied (or made) for this command's tools: one that
-    holds anything without this command's stamp is never touched"""
+    holds anything without this command's stamp is never touched, and the
+    stamp goes last (a folder emptied halfway is still this command's)"""
     if folder.is_symlink() or (folder.exists() and not folder.is_dir()):
         raise BuildError(f"{folder} is not a folder this command made: name another --tools folder")
-    if folder.is_dir():
-        if any(folder.iterdir()) and not (folder / STAMP).is_file():
-            raise BuildError(f"{folder} holds files this command did not make (no {STAMP} in it): name another "
-                             "--tools folder, or move them away")
-        try:
-            shutil.rmtree(folder)
-        except OSError as error:
-            raise BuildError(f"{folder} cannot be emptied: {error}") from error
-    folder.mkdir(parents=True)
-    # (a stamp at once, which matches no build: an unfinished folder is this command's too)
-    (folder / STAMP).write_text("{}\n", encoding="utf-8")
+    try:
+        if folder.is_dir():
+            if any(folder.iterdir()) and not (folder / STAMP).is_file():
+                raise BuildError(f"{folder} holds files this command did not make (no {STAMP} in it): name "
+                                 "another --tools folder, or move them away")
+            for entry in folder.iterdir():
+                if entry.name != STAMP:
+                    remove_entry(entry)
+        else:
+            folder.mkdir(parents=True)
+        # (a stamp which matches no build: an unfinished folder is this command's too)
+        (folder / STAMP).write_text("{}\n", encoding="utf-8")
+    except OSError as error:
+        raise BuildError(f"{folder} cannot be made ready for the tools: {error}") from error
+
+
+def remove_entry(path):
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
 
 
 def build_libdragon_tools(folder, work, jobs):
@@ -674,13 +546,15 @@ def build(args):
                          "its folder)")
     if not args.source.exists():
         raise BuildError(f"no disc image or maps folder at {args.source}")
+    if args.tools and args.tools.exists() and not args.tools.is_dir():
+        raise BuildError(f"--tools {args.tools} is a file: name a folder")
     jobs = compile_jobs()
     work = Path(tempfile.mkdtemp(prefix="halo64-rombuilder-"))
     failed = False
     try:
         payload = work / "payload"
         extract_payload(args.release, payload, cartridges)
-        check_version(payload, cartridges)
+        check_version(payload)
         check_port_json(payload)
         print(f"{args.release.name}: version {VERSION}'s programs ({', '.join(cartridges)})", flush=True)
         tools = args.tools.resolve() if args.tools else work / "tools"
@@ -689,7 +563,7 @@ def build(args):
         shutil.copytree(bin_folder, payload / "bin", ignore=shutil.ignore_patterns(STAMP))
         if ce_tools_built:
             ce_folder = tools / TOOL_FOLDERS["invader-lite"]
-            build_ce_tools(ce_folder, work, jobs)
+            build_ce_tools(ce_folder, work, compile_jobs(INVADER_JOBS))
             shutil.copytree(ce_folder, payload / "ce-tools", ignore=shutil.ignore_patterns(STAMP))
         command = rombuilder_command(args, work / "build")
         code = run_group(command, cwd=REPO, env=dict(os.environ, HALO64_PAYLOAD=str(payload)))
@@ -699,17 +573,11 @@ def build(args):
         failed = True
         raise
     finally:
-        # (no signal stops the cleaning up)
-        handlers = {number: signal.signal(number, signal.SIG_IGN)
-                    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
-        try:
+        with signals_ignored():
             kept = keep_logs(work, args.output.resolve()) if failed else None
             if kept:
                 print(f"the logs of this build: {kept}", file=sys.stderr)
             remove_work(work)
-        finally:
-            for number, handler in handlers.items():
-                signal.signal(number, handler)
 
 
 def main():
@@ -736,7 +604,9 @@ def main():
         raise Stopped(number)
 
     for number in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(number, stop)
+        # (not where the caller ignores it: nohup's SIGHUP)
+        if signal.getsignal(number) is not signal.SIG_IGN:
+            signal.signal(number, stop)
     try:
         code = build(args)
     except BuildError as error:

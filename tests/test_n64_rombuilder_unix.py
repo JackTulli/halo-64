@@ -1,19 +1,20 @@
 """The ROM builder on macOS and Linux (tools/n64/rombuilder_unix.py) without
 the network, the release or game data: the release's payload, the version
 checks, the prerequisites, the tools folders and their stamps, the
-compilers at a time, stopping the processes, the logs of a failed build and
-the ROM builder's command line."""
+compilers at a time, stopping the processes (and nohup), the logs of a
+failed build and the ROM builder's command line."""
 import argparse
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import re
 import signal
-import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -29,54 +30,15 @@ PREFIX = "Halo64RomBuilder/_internal/payload/"
 PORT = b'{"maps": ["bloodgulch"]}'
 
 
-def lz4(sequences, last):
-    """an LZ4 block: sequences of (literals, offset, match length), then the
-    last literals"""
-    def length(value):
-        out = b""
-        if value >= 15:
-            value -= 15
-            while value >= 255:
-                out += b"\xff"
-                value -= 255
-            out += bytes((value,))
-        return out
-    block = b""
-    for literals, offset, match in sequences:
-        block += bytes((min(len(literals), 15) << 4 | min(match - 4, 15),)) + length(len(literals)) + literals
-        block += struct.pack("<H", offset) + length(match - 4)
-    return block + bytes((min(len(last), 15) << 4,)) + length(len(last)) + last
-
-
-def program(segments):
-    """a big-endian 32-bit ELF of loadable segments: [(bytes, flags)]"""
-    header_size, entry = 0x34, 0x20
-    data = bytearray(header_size + entry * len(segments))
-    data[:6] = b"\x7fELF\x01\x02"
-    struct.pack_into(">I", data, 0x1C, header_size)
-    struct.pack_into(">HH", data, 0x2A, entry, len(segments))
-    for i, (body, flags) in enumerate(segments):
-        struct.pack_into(">8I", data, header_size + i * entry, 1, len(data), 0, 0, len(body), len(body), flags, 16)
-        data += body
-    return bytes(data)
-
-
-def shows(version):
-    """a compressed program whose title page shows this version"""
-    text = b"Multiplayer\0Firefight\0V" + version.encode() + b"\0"
-    return program([(lz4([(b"xyzxyzxyz", 3, 9)], text), unix.PF_N64_COMPRESSED)])
-
-
-def release_zip(path, port=PORT, programs=("multiplayer", "campaign", "custom"), extra=(), version=VERSION,
-                version_txt=None):
-    """a release zip's layout: its programs show version on their title page"""
+def release_zip(path, port=PORT, programs=("multiplayer", "campaign", "custom"), extra=(), version_txt=VERSION):
+    """a release zip's layout (version_txt None: none, as in v0.6.9's)"""
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("Halo64RomBuilder/Halo64RomBuilder.exe", b"MZ fixture")
         archive.writestr(PREFIX + "port.json", port)
         if version_txt is not None:
             archive.writestr(PREFIX + "version.txt", version_txt)
         for name in programs:
-            archive.writestr(f"{PREFIX}elf/{name}/halo.elf.stripped", shows(version))
+            archive.writestr(f"{PREFIX}elf/{name}/halo.elf.stripped", f"{name} program fixture")
             for other in ("halo.elf.sym", "halo.msym", "hud64.dso"):
                 archive.writestr(f"{PREFIX}elf/{name}/{other}", f"{name} {other} fixture")
         archive.writestr(PREFIX + "invader/src/tag/hek/definition/actor.json", "{}")
@@ -102,6 +64,20 @@ def files(folder):
     return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file())
 
 
+def alive(pid):
+    """True while a process runs (a zombie does not)"""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
+
+
 class UnixBuilderTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -115,7 +91,7 @@ class UnixBuilderTests(unittest.TestCase):
     # ---------- the release's payload
 
     def test_payload_without_the_windows_programs(self):
-        release = release_zip(self.root / "Halo64RomBuilder.zip", version_txt="x")
+        release = release_zip(self.root / "Halo64RomBuilder.zip")
         payload = self.root / "payload"
         unix.extract_payload(release, payload, ["multiplayer", "campaign"])
         found = files(payload)
@@ -173,48 +149,32 @@ class UnixBuilderTests(unittest.TestCase):
 
     # ---------- the version
 
-    def test_lz4_blocks_as_n64elfcompress_writes_them(self):
-        literals = bytes(range(40))
-        block = lz4([(literals, 40, 300), (b"ab", 2, 7)], b"the end")
-        self.assertEqual(unix.lz4_block(block), literals * 8 + literals[:20] + b"ab" + b"abababa" + b"the end")
-        with self.assertRaisesRegex(BuildError, "outside its data"):
-            unix.lz4_block(lz4([(b"ab", 3, 4)], b""))
-        with self.assertRaisesRegex(BuildError, "cut short"):
-            unix.lz4_block(block[:-12])
-
-    def test_the_version_a_program_shows_on_its_title_page(self):
-        path = self.root / "halo.elf.stripped"
-        # (the version made whole only by decompressing: "9\0V0.6." then 4 bytes from 7 back)
-        compressed = lz4([(b"9\0V0.6.", 7, 4)], b"end!!")
-        self.assertNotIn(b"V0.6.9\0", compressed)
-        path.write_bytes(program([(b"V9.9.99\0 V1.2 V", 0), (compressed, unix.PF_N64_COMPRESSED)]))
-        self.assertEqual(unix.program_versions(path), {"9.9.99", "0.6.9"})
-        path.write_bytes(shows("0.6.8"))
-        self.assertEqual(unix.program_versions(path), {"0.6.8"})
-        path.write_bytes(b"MZ not an ELF" + bytes(80))
-        with self.assertRaisesRegex(BuildError, "not a big-endian ELF"):
-            unix.program_versions(path)
-
     def test_the_release_must_be_of_this_version(self):
         payload = self.root / "payload"
         program_path = payload / "elf" / "multiplayer" / "halo.elf.stripped"
         program_path.parent.mkdir(parents=True)
-        program_path.write_bytes(shows(VERSION))
-        unix.check_version(payload, ["multiplayer"])
-        program_path.write_bytes(shows("0.6.8"))
-        with self.assertRaisesRegex(BuildError, rf"the release is version 0\.6\.8 and this checkout is version "
-                                                rf"{VERSION}.*git checkout v0\.6\.8"):
-            unix.check_version(payload, ["multiplayer"])
-        program_path.write_bytes(program([(b"no version", 0)]))
-        with self.assertRaisesRegex(BuildError, "shows no version"):
-            unix.check_version(payload, ["multiplayer"])
-        # (a release's version.txt comes first)
-        (payload / "version.txt").write_text(VERSION + "\n")
-        unix.check_version(payload, ["multiplayer"])
-        (payload / "version.txt").write_text("0.7.0\n")
-        program_path.write_bytes(shows(VERSION))
-        with self.assertRaisesRegex(BuildError, "the release is version 0.7.0"):
-            unix.check_version(payload, ["multiplayer"])
+        program_path.write_bytes(b"a release's program")
+        stated = payload / "version.txt"
+        stated.write_text(VERSION + "\n")
+        unix.check_version(payload)
+        stated.write_text("0.7.0\n")
+        with self.assertRaisesRegex(BuildError, rf"the release is version 0\.7\.0 and this checkout is version "
+                                                rf"{VERSION}.*git checkout v0\.7\.0"):
+            unix.check_version(payload)
+        # (without version.txt: the known releases' multiplayer programs)
+        stated.unlink()
+        with self.assertRaisesRegex(BuildError, "older than this command or unknown"):
+            unix.check_version(payload)
+        known = hashlib.sha256(b"a release's program").hexdigest()
+        with patch.dict(unix.KNOWN_RELEASES, {known: VERSION}):
+            unix.check_version(payload)
+        with patch.dict(unix.KNOWN_RELEASES, {known: "0.6.8"}):
+            with self.assertRaisesRegex(BuildError, "the release is version 0.6.8"):
+                unix.check_version(payload)
+
+    def test_v0_6_9_is_known_by_its_multiplayer_program(self):
+        self.assertEqual(list(unix.KNOWN_RELEASES.values()), ["0.6.9"])
+        self.assertTrue(all(len(key) == 64 and int(key, 16) >= 0 for key in unix.KNOWN_RELEASES))
 
     def test_the_release_port_json_must_be_the_repositorys(self):
         payload = self.root / "payload"
@@ -227,7 +187,6 @@ class UnixBuilderTests(unittest.TestCase):
                 unix.check_port_json(payload)
 
     def test_build_stops_at_another_versions_release_before_any_tool(self):
-        release_zip(self.root / "Halo64RomBuilder.zip", version="0.6.8")
         (self.root / "disc.iso").write_bytes(b"disc fixture")
         built = []
         patch.object(unix, "REPO", self.repo).start()
@@ -235,9 +194,11 @@ class UnixBuilderTests(unittest.TestCase):
         patch.object(unix, "compile_jobs", return_value=2).start()
         patch.object(unix, "build_libdragon_tools", side_effect=lambda *a: built.append(a)).start()
         patch.object(unix, "run_group", side_effect=AssertionError("the ROM builder ran")).start()
-        with patch.object(unix.tempfile, "tempdir", str(self.root)):
-            with self.assertRaisesRegex(BuildError, "the release is version 0.6.8"):
-                unix.build(arguments(self.root))
+        for version_txt, error in (("0.6.8", "the release is version 0.6.8"), (None, "older than this command")):
+            release_zip(self.root / "Halo64RomBuilder.zip", version_txt=version_txt)
+            with patch.object(unix.tempfile, "tempdir", str(self.root)):
+                with self.assertRaisesRegex(BuildError, error):
+                    unix.build(arguments(self.root))
         self.assertEqual(built, [])
         self.assertFalse(list(self.root.glob("halo64-rombuilder-*")))
 
@@ -260,7 +221,6 @@ class UnixBuilderTests(unittest.TestCase):
         def which(name):
             return None if name in ("cmake", "clang-99") else "/usr/bin/" + name
 
-        patch.object(unix, "missing_headers", return_value=[]).start()
         with patch.object(unix.shutil, "which", side_effect=which), patch.dict(os.environ, {"CC": "clang-99"}):
             self.assertIn("a C compiler (clang-99)", unix.missing_prerequisites(False, "linux"))
             self.assertNotIn("cmake", unix.missing_prerequisites(False, "linux"))
@@ -268,20 +228,6 @@ class UnixBuilderTests(unittest.TestCase):
         with patch.object(unix.shutil, "which", return_value="/usr/bin/tool"), \
                 patch.object(unix.sys, "version_info", (3, 11, 9)):
             self.assertTrue(any(m.startswith("Python 3.12 or later") for m in unix.missing_prerequisites(False, "linux")))
-
-    def test_invader_lite_headers_are_checked(self):
-        patch.object(unix.shutil, "which", return_value="/usr/bin/tool").start()
-        patch.object(unix, "missing_headers", return_value=[("samplerate.h", "libsamplerate0-dev")]).start()
-        self.assertIn("samplerate.h (libsamplerate0-dev)", unix.missing_prerequisites(True, "linux"))
-        self.assertEqual(unix.missing_prerequisites(False, "linux"), [])
-        results = {"zlib.h": 0, "samplerate.h": 1}
-
-        def compile_only(command, input, capture_output):
-            header = input.decode().split("<")[1].split(">")[0]
-            return subprocess.CompletedProcess(command, results[header])
-
-        with patch.object(unix.subprocess, "run", side_effect=compile_only):
-            self.assertEqual(unix.missing_headers("cc"), [("samplerate.h", "libsamplerate0-dev")])
 
     def test_macos_without_its_developer_tools(self):
         patch.object(unix.shutil, "which", return_value="/usr/bin/git").start()
@@ -422,6 +368,36 @@ class UnixBuilderTests(unittest.TestCase):
         unix.build_libdragon_tools(folder, self.root, 2)
         self.assertFalse((folder / "old-tool").exists())
 
+    def test_an_emptying_cut_short_leaves_the_folder_this_commands(self):
+        folder = self.root / "tools" / "libdragon-tools"
+        folder.mkdir(parents=True)
+        (folder / unix.STAMP).write_text("{}")
+        for name in ("a", "b", "c"):
+            (folder / name).write_text("old tool")
+        removed = []
+
+        def remove(path):
+            if removed:
+                raise KeyboardInterrupt
+            removed.append(path)
+            path.unlink()
+
+        with patch.object(unix, "remove_entry", side_effect=remove), self.assertRaises(KeyboardInterrupt):
+            unix.own_folder(folder)
+        self.assertTrue((folder / unix.STAMP).is_file())
+        unix.own_folder(folder)
+        self.assertEqual(files(folder), [unix.STAMP])
+
+    def test_a_file_as_the_tools_folder_is_a_build_error(self):
+        (self.root / "tools.txt").write_text("a file")
+        with patch.object(unix, "missing_prerequisites", return_value=[]):
+            release_zip(self.root / "Halo64RomBuilder.zip")
+            (self.root / "disc.iso").write_bytes(b"disc fixture")
+            with self.assertRaisesRegex(BuildError, "is a file: name a folder"):
+                unix.build(arguments(self.root, tools=self.root / "tools.txt"))
+        with self.assertRaisesRegex(BuildError, "cannot be made ready"):
+            unix.own_folder(self.root / "tools.txt" / "libdragon-tools")
+
     def test_tools_are_built_without_fused_multiply_add(self):
         with patch.dict(os.environ, {"CFLAGS": "-O3"}):
             os.environ.pop("CXXFLAGS", None)
@@ -445,30 +421,18 @@ class UnixBuilderTests(unittest.TestCase):
     # ---------- compilers at a time
 
     def test_compilers_at_a_time(self):
-        cgroup = self.root / "cgroup"
-        cgroup.mkdir()
-        meminfo = self.root / "meminfo"
-        meminfo.write_text("MemTotal: 33554432 kB\nMemAvailable: 16777216 kB\n")
-        patch.object(unix, "CGROUP", cgroup).start()
-        patch.object(unix, "MEMINFO", meminfo).start()
-        patch.object(unix.os, "cpu_count", return_value=16).start()
-        with patch.dict(os.environ, {}):
+        with patch.dict(os.environ, {}), patch.object(unix.os, "cpu_count", return_value=16):
             os.environ.pop("JOBS", None)
-            self.assertEqual(unix.compile_jobs(), 10)  # (16 GiB: 10 compilers of 1.5 GiB)
-            (cgroup / "cpu.max").write_text("300000 100000\n")
-            (cgroup / "memory.max").write_text(str(4 << 30) + "\n")
-            (cgroup / "memory.current").write_text(str(1 << 29) + "\n")
-            self.assertEqual(unix.compile_jobs(), 2)  # (3 CPUs, 3.5 GiB left in the container)
-            (cgroup / "memory.max").write_text("max\n")
-            self.assertEqual(unix.compile_jobs(), 3)
-            (cgroup / "cpu.max").write_text("max 100000\n")
-            meminfo.write_text("MemAvailable: 1048576 kB\n")
-            self.assertEqual(unix.compile_jobs(), 1)
+            self.assertEqual(unix.compile_jobs(), 16)
+            self.assertEqual(unix.compile_jobs(unix.INVADER_JOBS), 2)
             os.environ["JOBS"] = "7"
-            self.assertEqual(unix.compile_jobs(), 7)
+            self.assertEqual((unix.compile_jobs(), unix.compile_jobs(unix.INVADER_JOBS)), (7, 7))
             os.environ["JOBS"] = "lots"
             with self.assertRaisesRegex(BuildError, "JOBS must be a whole number"):
                 unix.compile_jobs()
+        with patch.dict(os.environ, {}), patch.object(unix.os, "cpu_count", return_value=1):
+            os.environ.pop("JOBS", None)
+            self.assertEqual(unix.compile_jobs(unix.INVADER_JOBS), 1)
 
     def test_the_memory_hint_only_when_a_compiler_was_killed(self):
         log = self.root / "build.log"
@@ -503,11 +467,11 @@ class UnixBuilderTests(unittest.TestCase):
         command, pid_file = self.spawn()
         process = subprocess.Popen(command, start_new_session=True)
         child = self.wait_for(pid_file)
-        self.assertTrue(unix.alive(child))
+        self.assertTrue(alive(child))
         unix.stop_group(process, grace=2)
         time.sleep(0.5)
-        self.assertFalse(unix.alive(process.pid))
-        self.assertFalse(unix.alive(child))
+        self.assertFalse(alive(process.pid))
+        self.assertFalse(alive(child))
 
     def test_a_signal_while_waiting_stops_the_whole_group(self):
         command, pid_file = self.spawn()
@@ -525,7 +489,52 @@ class UnixBuilderTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 30)
         child = int(pid_file.read_text())
         time.sleep(0.5)
-        self.assertFalse(unix.alive(child))
+        self.assertFalse(alive(child))
+
+    def test_a_second_ctrl_c_does_not_cut_the_stop_short(self):
+        pid_file = self.root / "stubborn.pid"
+        code = ("import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)")
+
+        def stop(number, _frame):
+            raise unix.Stopped(number)
+
+        previous = signal.signal(signal.SIGALRM, stop)
+        self.addCleanup(signal.signal, signal.SIGALRM, previous)
+        patch.object(unix, "GRACE", 2.0).start()
+        signal.setitimer(signal.ITIMER_REAL, 1.5)
+        self.addCleanup(signal.setitimer, signal.ITIMER_REAL, 0)
+        # (the second Ctrl-C, 1 s into the SIGTERM's grace)
+        second = threading.Timer(2.5, os.kill, (os.getpid(), signal.SIGINT))
+        second.start()
+        self.addCleanup(second.cancel)
+        try:
+            with self.assertRaises(unix.Stopped):
+                unix.run_group([sys.executable, "-c", code])
+        except KeyboardInterrupt:
+            self.fail("the second Ctrl-C cut the stop short")
+        finally:
+            second.join()
+        child = int(pid_file.read_text())
+        time.sleep(0.5)
+        if alive(child):
+            os.kill(child, signal.SIGKILL)
+            self.fail("the child that ignores SIGTERM was left running")
+
+    def test_under_nohup_a_sighup_does_not_stop_the_build(self):
+        code = ("import os, signal, sys, time\n"
+                "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+                "from tools.n64 import rombuilder_unix as unix\n"
+                "def build(args):\n"
+                "    os.kill(os.getpid(), signal.SIGHUP)\n"
+                "    time.sleep(0.3)\n"
+                "    return 0\n"
+                "unix.build = build\n"
+                "sys.argv = ['rombuilder_unix', '--release', 'r.zip', 'disc.iso', '-o', 'out']\n"
+                "unix.main()\n")
+        result = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("stopped", result.stderr)
 
     def test_ctrl_c_and_signals_exit_without_a_traceback(self):
         for raised, code, word in ((KeyboardInterrupt(), 130, "Ctrl-C"), (unix.Stopped(signal.SIGTERM), 143, "SIGTERM"),
