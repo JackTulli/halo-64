@@ -100,6 +100,9 @@ class PackageTests(unittest.TestCase):
         self.assertIn("elf/campaign/halo.elf.stripped", self.payload)
         self.assertFalse(any(k.startswith("pc-tools/") or "pc-expansion" in k for k in self.payload))
         self.assertIn("art/paint-splatter-original.png", self.payload)
+        # (the programs' version, which the ROM builder on macOS and Linux checks)
+        from tools.n64.version import VERSION
+        self.assertEqual(self.payload["version.txt"], VERSION.encode() + b"\n")
         # (every cartridge's maps are compressed: compress_map.py)
         self.assertIn("bin/mkasset.exe", self.payload)
         self.assertFalse(any(k.endswith(".map") for k in self.payload))

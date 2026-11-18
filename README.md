@@ -136,6 +136,55 @@ zips> --ce-tools <invader-lite's Linux build, with ogg2wav or ffmpeg>`.
 On Linux the builder runs from the repository too:
 `python3 -m tools.n64.rombuilder <disc image or maps folder> -o <folder>`.
 
+### The ROM Builder on macOS and Linux
+
+The same builder runs from this repository on a Mac or a Linux PC, with the
+release's prebuilt game programs: the same game code as the Windows
+builder's. It needs no N64 toolchain: it builds the few tools it runs from
+their sources (libdragon's, and invader-lite for Custom Edition maps),
+without fused multiply-add, so that arm64 (Apple silicon) and x86-64
+machines make the same ROMs from the same disc (on the systems tested).
+
+| | What you need |
+|---|---|
+| macOS | the command line developer tools (`xcode-select --install`: git, make, a C and C++ compiler) and Python 3.12 or later with Pillow (the `python3` that comes with macOS is too old; Homebrew's refuses `pip install`, so use a venv: `python3 -m venv ~/halo-64-venv && ~/halo-64-venv/bin/pip install pillow`, then run the command below with `~/halo-64-venv/bin/python3`) |
+| Linux | Python 3.12 or later (Ubuntu 24.04's): `sudo apt install build-essential git python3-pil` |
+| Linux, Custom Edition maps | also `sudo apt install cmake ninja-build zlib1g-dev libsamplerate0-dev` |
+
+Download `Halo64RomBuilder.zip` from the release (or keep the folder your
+browser unpacked it to) and check out the same release's tag. The builder
+stops if the release is of another version: it reads the version from the
+release's `version.txt` or, for v0.6.9, which has none, from its
+multiplayer program's SHA-256, and it compares the release's `port.json`
+with the repository's.
+
+```sh
+git clone --branch vX.Y.Z https://github.com/JackTulli/halo-64 && cd halo-64
+python3 -m tools.n64.rombuilder_unix --release ~/Downloads/Halo64RomBuilder.zip \
+    <disc image or maps folder> -o <folder>
+```
+
+It writes `halo-n64.z64` and `halo-campaign.z64` (`--multiplayer` or
+`--campaign` for one of them). `--custom-edition <maps or zips>` makes
+`halo-custom-edition.z64`; on Linux only for now, as
+`tools/n64/invader_lite/build.sh` builds invader-lite for Linux and
+Windows. The first steps fetch libdragon and Invader at the commits named
+in `tools/n64/rombuilder_unix.py` and build their tools (a minute or two;
+invader-lite a few more), one compiler for each CPU at a time and at most
+two for invader-lite (`JOBS=1` in front of the command builds with one).
+`--tools <folder>` keeps the tools in two folders of their own inside it,
+for the next run. Everything else goes in a folder in `TMPDIR` (about
+2 GB), removed at the end, and on Ctrl-C; a failed build leaves its logs in
+the output folder. Where `/tmp` is in memory (tmpfs), that folder takes
+memory too: `TMPDIR=~/halo-64-tmp` in front of the command (an existing
+folder) puts it on disk.
+
+Memory: Multiplayer and Campaign were built in 4 GB with `--jobs 2`, and a
+Custom Edition cartridge with `--jobs 1`. With the default (up to three
+conversions at a time) one process took about 4 GB on a Mac. The biggest
+Custom Edition map we tried needs about 5 GB. `--jobs 1` converts one map
+at a time, with the least memory.
+
 ### From the sources
 
 The build runs on Linux (or on Windows in WSL, below). It takes ~10 minutes

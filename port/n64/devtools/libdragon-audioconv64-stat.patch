@@ -1,0 +1,21 @@
+diff --git a/tools/audioconv64/audioconv64.cpp b/tools/audioconv64/audioconv64.cpp
+index 0d023cb..3c2602b 100644
+--- a/tools/audioconv64/audioconv64.cpp
++++ b/tools/audioconv64/audioconv64.cpp
+@@ -167,14 +167,12 @@ bool exists(const char *path) {
+ 
+ bool isfile(const char *path) {
+ 	struct stat st;
+-	stat(path, &st);
+-	return (st.st_mode & S_IFREG) != 0;
++	return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+ }
+ 
+ bool isdir(const char *path) {
+ 	struct stat st;
+-	stat(path, &st);
+-	return (st.st_mode & S_IFDIR) != 0;
++	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+ }
+ 
+ void walkdir(char *inpath, const char *outpath, void (*func)(const char *, const char*)) {
