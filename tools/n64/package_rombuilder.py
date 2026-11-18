@@ -28,8 +28,8 @@ the test flags, which the packaging checks in the build folder's halo.elf,
 --allow-test-flags for a test package; code, no Halo data; with its modules
 -- HUD STYLE 64's and the projectiles' -- and the program's symbols for
 them), HUD STYLE 64's textures (assets/hud64,
-project-original), Invader's tag definitions (the converters read them) and
-port/n64/port.json -- and the licences of what it carries. The result is a folder (Halo64RomBuilder.exe beside its
+project-original), Invader's tag definitions (the converters read them),
+port/n64/port.json and version.txt (tools/n64/version.py's) -- and the licences of what it carries. The result is a folder (Halo64RomBuilder.exe beside its
 _internal folder) and a zip of it.
 """
 
@@ -46,6 +46,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO))
 from tools.n64.rombuilder import BuildError, check_module_files, elf_symbols  # noqa: E402
+from tools.n64.version import VERSION  # noqa: E402
 NAME = "Halo64RomBuilder"
 # (mkasset compresses every cartridge's maps: compress_map.py)
 TOOLS = ("mksprite", "audioconv64", "mkdfs", "n64tool", "ed64romconfig", "mkasset")
@@ -215,6 +216,8 @@ def main():
         fourcc.mkdir(parents=True)
         shutil.copy2(args.invader / "include" / "invader" / "hek" / "fourcc.hpp", fourcc / "fourcc.hpp")
         shutil.copy2(REPO / "port" / "n64" / "port.json", payload / "port.json")
+        # (the version the programs are, which tools/n64/rombuilder_unix.py checks)
+        (payload / "version.txt").write_text(VERSION + "\n", encoding="utf-8")
         art = payload / "art"
         art.mkdir()
         shutil.copy2(REPO / "assets" / "paintball" / "paint-splatter-original.png", art / "paint-splatter-original.png")
