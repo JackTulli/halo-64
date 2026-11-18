@@ -142,18 +142,21 @@ The same builder runs from this repository on a Mac or a Linux PC, with the
 release's prebuilt game programs: the same game code as the Windows
 builder's. It needs no N64 toolchain: it builds the few tools it runs from
 their sources (libdragon's, and invader-lite for Custom Edition maps),
-without fused multiply-add, so the same disc gives the same ROMs on arm64
-(Apple silicon) and x86-64 machines.
+without fused multiply-add, so that arm64 (Apple silicon) and x86-64
+machines make the same ROMs from the same disc (on the systems tested).
 
 | | What you need |
 |---|---|
-| macOS | the command line developer tools (`xcode-select --install`: git, make, a C and C++ compiler) and Python 3.12 or later with Pillow (`python3 -m pip install pillow`; the `python3` that comes with macOS is too old) |
+| macOS | the command line developer tools (`xcode-select --install`: git, make, a C and C++ compiler) and Python 3.12 or later with Pillow (the `python3` that comes with macOS is too old; Homebrew's refuses `pip install`, so use a venv: `python3 -m venv ~/halo-64-venv && ~/halo-64-venv/bin/pip install pillow`, then run the command below with `~/halo-64-venv/bin/python3`) |
 | Linux | Python 3.12 or later (Ubuntu 24.04's): `sudo apt install build-essential git python3-pil` |
 | Linux, Custom Edition maps | also `sudo apt install cmake ninja-build zlib1g-dev libsamplerate0-dev` |
 
-Download `Halo64RomBuilder.zip` from the release and check out the same
-release's tag (the builder stops if the zip's `port.json` is not the
-repository's):
+Download `Halo64RomBuilder.zip` from the release (or keep the folder your
+browser unpacked it to) and check out the same release's tag. The builder
+stops if the release is of another version: it reads the version from the
+release's `version.txt` or, in releases without one, from the version its
+programs show on the title page, and it compares the release's `port.json`
+with the repository's.
 
 ```sh
 git clone --branch vX.Y.Z https://github.com/JackTulli/halo-64 && cd halo-64
@@ -167,13 +170,20 @@ It writes `halo-n64.z64` and `halo-campaign.z64` (`--multiplayer` or
 `tools/n64/invader_lite/build.sh` builds invader-lite for Linux and
 Windows. The first steps fetch libdragon and Invader at the commits named
 in `tools/n64/rombuilder_unix.py` and build their tools (a minute or two;
-invader-lite a few more), one compiler for each CPU at a time: if one is
-killed for lack of memory, run again with `JOBS=1` in front of the
-command. `--tools <folder>` keeps the tools there for the next run.
-Everything else it makes goes in a folder in `TMPDIR` (about 2 GB),
-removed at the end. It needs about 3 GB of free memory, and 5 to 6 GB for
-a Custom Edition map as big as Yoyorast Island (`--jobs 1` converts one
-map at a time).
+invader-lite a few more), one compiler for each CPU and for each 1.5 GB of
+memory at a time (`JOBS=1` in front of the command builds with one).
+`--tools <folder>` keeps the tools in two folders of their own inside it,
+for the next run. Everything else goes in a folder in `TMPDIR` (about
+2 GB), removed at the end, and on Ctrl-C; a failed build leaves its logs in
+the output folder. Where `/tmp` is in memory (tmpfs), that folder takes
+memory too: `TMPDIR=~/halo-64-tmp` in front of the command (an existing
+folder) puts it on disk.
+
+Memory: Multiplayer and Campaign were built in 4 GB with `--jobs 2`, and a
+Custom Edition cartridge with `--jobs 1`. With the default (up to three
+conversions at a time) one process took about 4 GB on a Mac. The biggest
+Custom Edition map we tried needs about 5 GB. `--jobs 1` converts one map
+at a time, with the least memory.
 
 ### From the sources
 
