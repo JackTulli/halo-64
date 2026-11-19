@@ -9,9 +9,10 @@ by the game's own rules -- whose actions (the stick, the aim, the buttons)
 come from here instead of a controller. update_client_dequeue (player_
 queues_new.c, HALO_N64) hands each tick's actions to n64_bots_actions, which
 writes the bots' own; players_update_before_game then applies them exactly
-as it does a person's: the action button picks up a weapon (player_handle_
-action), swaps them, gets out of a vehicle; triggers, grenades, melee, jump
-and reload go to unit_control.
+as it does a person's: the swap button (a person's held X) picks up a
+weapon (player_handle_weapon_swap), the action button gets out of a
+vehicle; the weapon wanted, triggers, grenades, melee, jump and reload go
+to unit_control.
 
 Their way of fighting is the Firefight Covenant's (n64_firefight.c), kept
 simple: each picks the nearest enemy (another team's player in a team game,
@@ -932,8 +933,10 @@ static boolean follow_path(
 	return FALSE;
 }
 
-/* a better weapon than the worse of its two lying near enough and in
-sight, or NONE */
+/* a better weapon lying near enough and in sight, or NONE: with two
+carried a pickup is a swap that drops the weapon in hand (players.c,
+player_handle_weapon_swap), so it must beat that one; with fewer, any
+weapon the game would give it (an add, or a fresher copy of its own) */
 static long find_better_weapon(
 	struct bot *bot,
 	struct unit_datum *unit,
@@ -941,25 +944,19 @@ static long find_better_weapon(
 {
 	struct object_iterator iterator;
 	struct object_datum *object;
-	short carried = 0, worst = 99, i;
+	short carried = 0, worst = 0, i;
+	long in_hand = unit_inventory_get_weapon(bot->unit_index, unit->unit.current_weapon_index);
+	boolean armed = in_hand != NONE;
 	long best = NONE, second = NONE;
 	real best_value = 0.f, second_value = 0.f;
 
 	for (i = 0; i < MAXIMUM_WEAPONS_PER_UNIT; i++)
 	{
-		long weapon_index = unit_inventory_get_weapon(bot->unit_index, i);
-
-		if (weapon_index != NONE)
-		{
-			short score = weapon_can_be_fired(weapon_index) ? weapon_score(weapon_index) : 0;
-
+		if (unit_inventory_get_weapon(bot->unit_index, i) != NONE)
 			carried++;
-			if (score < worst)
-				worst = score;
-		}
 	}
-	if (carried < 2)
-		worst = 0;
+	if (carried >= 2 && armed && weapon_can_be_fired(in_hand))
+		worst = weapon_score(in_hand);
 	object_iterator_new(&iterator, _object_mask_weapon, 0);
 	while ((object = object_iterator_next(&iterator)) != NULL)
 	{
@@ -971,6 +968,11 @@ static long find_better_weapon(
 			continue;
 		score = weapon_score(weapon_index);
 		if (score <= worst || !weapon_can_be_fired(weapon_index))
+			continue;
+		/* (none the game would not give it: a kind it carries, unless the
+		one in its hands is older -- units.c, unit_approve_weapon_swap, as
+		players.c offers a person a weapon on the ground) */
+		if (armed && !unit_approve_weapon_swap(bot->unit_index, weapon_index))
 			continue;
 		distance = horizontal_distance(&unit->object.position, &object->object.position);
 		if (distance > WEAPON_SEARCH_RANGE || fabsf(object->object.position.z - unit->object.position.z) > 2.5f)
@@ -1182,14 +1184,21 @@ static void think(
 				move.j = dy / length;
 			}
 			moving = length > 0.35f;
-			/* there: the action button picks it up (it faces it too) */
+			/* there: the swap button picks it up (it faces it too) once
+			the game offers it, as it offers it a player (players.c sets the
+			player's action result as it looks over the objects near) -- a
+			player's held X (player_control.c), whose one press is enough
+			here; the action button beside a weapon only reloads (players.c,
+			player_handle_action) */
 			if (length < 1.1f)
 			{
 				if (bot->action_timer > 0)
 					bot->action_timer -= step;
-				else
+				else if (player->action_object_index == bot->goal_weapon &&
+					(player->action_result == _player_action_result_swap_for_weapon ||
+					player->action_result == _player_action_result_add_weapon_to_inventory))
 				{
-					flags |= FLAG(_unit_control_action_bit);
+					flags |= FLAG(_unit_control_swap_weapons_bit);
 					bot->action_timer = 20;
 				}
 			}
@@ -1328,7 +1337,9 @@ static void think(
 	}
 
 	/* its weapon: reloaded when empty, the other one when this one is
-	spent */
+	spent (the weapon wanted, as a person's switch asks for it: player_
+	control.c's desired_weapon_index; the swap button takes one from the
+	ground) */
 	if (bot->reload_timer > 0)
 		bot->reload_timer -= step;
 	if (bot->swap_timer > 0)
@@ -1349,7 +1360,7 @@ static void think(
 
 				if (other != NONE && other != current_weapon && weapon_can_be_fired(other))
 				{
-					flags |= FLAG(_unit_control_swap_weapons_bit);
+					action->desired_weapon_index = i;
 					bot->swap_timer = TICKS_PER_SECOND;
 					break;
 				}
