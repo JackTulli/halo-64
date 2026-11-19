@@ -2763,12 +2763,14 @@ void n64_hud_pause_controls(const int *ports, int count, const int *selected_row
 		int pitch = (y1 - y0 - cap - 7 * unit) / CONTROL_COUNT;
 		const struct n64_controls *controls;
 		char text[48];
+		int scheme;
 		if (port < 0 || port > 3) continue;
 		controls = &n64_controls[port];
+		scheme = n64_controls_scheme(port);
 		pause_box(x0, y0, x1, y1, PAUSE_PANEL);
 		pause_frame(x0, y0, x1, y1, unit, PAUSE_FRAME);
 		/* (a two-controller player: both ports, the second as found now) */
-		if (N64_SCHEME_IS_DUAL(controls->scheme) && n64_input_partners[port] >= 0)
+		if (N64_SCHEME_IS_DUAL(scheme) && n64_input_partners[port] >= 0)
 			snprintf(text, sizeof(text), "PLAYER %d  -  PORTS %d + %d", i + 1, port + 1, n64_input_partners[port] + 1);
 		else
 			snprintf(text, sizeof(text), "PLAYER %d  -  PORT %d", i + 1, port + 1);
@@ -2780,15 +2782,23 @@ void n64_hud_pause_controls(const int *ports, int count, const int *selected_row
 			if (selected) pause_box(x0 + 2 * unit, y - unit, x1 - 2 * unit, y + pitch - unit, PAUSE_CHOSEN);
 			switch (r)
 			{
-			case CONTROL_SCHEME: value = n64_scheme_name(controls->scheme); break;
+			case CONTROL_SCHEME: value = n64_scheme_name(scheme); break;
 			case CONTROL_CROUCH: value = controls->toggle_crouch ? "TOGGLE" : "HOLD"; break;
 			case CONTROL_LOOK: value = controls->inverted ? "INVERTED" : "NORMAL"; break;
 			case CONTROL_FIRE: value = n64_fire_button_name(port); break;
-			case CONTROL_STICK_SPEED: snprintf(text, sizeof(text), "%d", 5 + controls->stick_speed); break;
+			case CONTROL_STICK_SPEED:
+				/* (a GameCube controller: the C-stick's) */
+				if (scheme == N64_SCHEME_GAMECUBE)
+					name = "C-STICK";
+				snprintf(text, sizeof(text), "%d", 5 + controls->stick_speed);
+				break;
 			case CONTROL_C_SPEED:
 				/* (two controllers: the C buttons do not look; the row
-				chooses the second controller) */
-				if (N64_SCHEME_IS_DUAL(controls->scheme))
+				chooses the second controller. A GameCube controller has no
+				C buttons) */
+				if (scheme == N64_SCHEME_GAMECUBE)
+					value = "-";
+				else if (N64_SCHEME_IS_DUAL(scheme))
 				{
 					name = "2ND PAD";
 					n64_input_partner_text(port, n64_input_partners[port], text, sizeof(text));

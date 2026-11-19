@@ -1171,6 +1171,10 @@ void n64_controls_step(int port, int row, int step, int cycle)
 	if (port < 0 || port >= 4 || row < 0 || row >= CONTROL_COUNT || !step)
 		return;
 	controls = &n64_controls[port];
+	/* (a GameCube controller: one scheme of its own, no C buttons; the port's
+	N64 scheme and C button speed kept as they are) */
+	if (n64_input_gamecube(port) && (row == CONTROL_SCHEME || row == CONTROL_C_SPEED))
+		return;
 	if (row == CONTROL_SCHEME)
 	{
 		controls->scheme = (controls->scheme + N64_SCHEME_COUNT + (step < 0 ? -1 : 1)) % N64_SCHEME_COUNT;
@@ -1505,7 +1509,7 @@ static void draw_title(int item)
 }
 
 /* what each scheme is, in a line (the CONTROLS page's help, CONTROL STYLE's) */
-static const char *const scheme_help[N64_SCHEME_COUNT] = {
+static const char *const scheme_help[N64_SCHEME_GAMECUBE + 1] = {
 	"THE STICK LOOKS, THE C BUTTONS MOVE",
 	"STANDARD, BUT R JUMPS AND A THROWS GRENADES",
 	"THE STICK WALKS AND TURNS, C LEFT AND RIGHT STRAFE",
@@ -1516,7 +1520,14 @@ static const char *const scheme_help[N64_SCHEME_COUNT] = {
 	"2 CONTROLLERS: THE RIGHT STICK MOVES, THE LEFT ONE LOOKS",
 	"2 CONTROLLERS: LEFT WALKS AND TURNS, RIGHT STRAFES AND LOOKS",
 	"2 CONTROLLERS: RIGHT WALKS AND TURNS, LEFT STRAFES AND LOOKS",
+	"THE MAIN STICK MOVES, THE C-STICK LOOKS, AS ON THE XBOX",
 };
+
+/* a port's scheme in a line */
+static const char *scheme_line(int port)
+{
+	return scheme_help[n64_controls_scheme(port)];
+}
 
 /* text at most width wide, condensed across to fit: from x, centred on
 center, or ending at right */
@@ -1568,7 +1579,8 @@ static void draw_controls(void)
 		"SCHEME", "CROUCH", "LOOK", "FIRE BUTTON", "STICK SPEED", "C BUTTON SPEED", "RUMBLE",
 	};
 	const struct n64_controls *chosen_controls = &n64_controls[menu.control_pad & 3];
-	int chosen_dual = N64_SCHEME_IS_DUAL(chosen_controls->scheme);
+	int chosen_dual = N64_SCHEME_IS_DUAL(n64_controls_scheme(menu.control_pad));
+	int chosen_gamecube = n64_input_gamecube(menu.control_pad & 3);
 	const char *help;
 	char text[24], help_text[64];
 	signed char pairs[4];
@@ -1580,7 +1592,8 @@ static void draw_controls(void)
 	{
 		const struct n64_controls *controls = &n64_controls[p];
 		int x = SAFE_LEFT + (p & 1) * 292, y = 84 + (p >> 1) * 176, w = 284, h = 166, center = x + w / 2;
-		int connected = joypad_is_connected(p), dual = N64_SCHEME_IS_DUAL(controls->scheme);
+		int connected = joypad_is_connected(p), dual = N64_SCHEME_IS_DUAL(n64_controls_scheme(p));
+		int gamecube = n64_input_gamecube(p);
 
 		panel(x, y, x + w, y + h, connected ? 0xA0102040 : 0x60000000);
 		frame_line(x, y, x + w, y + h, connected ? FRAME_COLOR : 0x806080A0);
@@ -1609,20 +1622,28 @@ static void draw_controls(void)
 			/* (seven rows: 17 apart, the last one's frame inside the panel) */
 			int row_y = y + 59 + row * 17, selected = menu.control_row[p] == row;
 			const char *value = text, *label = labels[row];
-			int label_width;
+			int label_width, fixed = 0;
 
 			switch (row)
 			{
-			case CONTROL_SCHEME: value = n64_scheme_name(controls->scheme); break;
+			/* (a GameCube controller: its one scheme, fixed) */
+			case CONTROL_SCHEME: value = n64_scheme_name(n64_controls_scheme(p)); fixed = gamecube; break;
 			case CONTROL_CROUCH: value = controls->toggle_crouch ? "TOGGLE" : "HOLD"; break;
 			case CONTROL_LOOK: value = controls->inverted ? "INVERTED" : "NORMAL"; break;
 			/* (fire on the grenade's button when swapped) */
 			case CONTROL_FIRE: value = n64_fire_button_name(p); break;
-			case CONTROL_STICK_SPEED: snprintf(text, sizeof(text), "%d", 5 + controls->stick_speed); break;
+			case CONTROL_STICK_SPEED:
+				if (gamecube)
+					label = "C-STICK SPEED";
+				snprintf(text, sizeof(text), "%d", 5 + controls->stick_speed);
+				break;
 			case CONTROL_C_SPEED:
 				/* (two controllers: the C buttons do not look; the row
-				chooses the second controller) */
-				if (dual)
+				chooses the second controller. A GameCube controller has no
+				C buttons) */
+				if (gamecube)
+					value = "-", fixed = 1;
+				else if (dual)
 				{
 					label = "SECOND PAD";
 					n64_input_partner_text(p, pairs[p], text, sizeof(text));
@@ -1638,7 +1659,7 @@ static void draw_controls(void)
 				char arrows[40];
 
 				chosen(x + 6, row_y - 15, x + w - 6, row_y + 5);
-				snprintf(arrows, sizeof(arrows), "<  %s  >", value);
+				snprintf(arrows, sizeof(arrows), fixed ? "%s" : "<  %s  >", value);
 				menu_text(menu.small, x + 14, row_y, TEXT_BRIGHT, label);
 				text_right_fit(menu.small, x + w - 14, row_y, TEXT_BRIGHT, arrows, w - 28 - label_width);
 			}
@@ -1653,7 +1674,7 @@ static void draw_controls(void)
 	switch (menu.control_row[menu.control_pad & 3])
 	{
 	case CONTROL_SCHEME:
-		help = scheme_help[chosen_controls->scheme < N64_SCHEME_COUNT ? chosen_controls->scheme : 0];
+		help = scheme_line(menu.control_pad);
 		break;
 	case CONTROL_CROUCH:
 		help = chosen_dual ? (chosen_controls->toggle_crouch ? "C-DOWN OR D-DOWN (EITHER PAD) CROUCHES OR STANDS" :
@@ -1672,11 +1693,16 @@ static void draw_controls(void)
 		help = chosen_dual ? "HOW FAST THE STICKS TURN YOU (1-10)" : "HOW FAST THE STICK TURNS YOU (1-10)";
 		break;
 	case CONTROL_C_SPEED:
-		help = chosen_dual ? "THE CONTROLLER IN YOUR OTHER HAND (AUTO: PORTS 1+3, 2+4)" :
+		help = chosen_gamecube ? "A GAMECUBE CONTROLLER HAS NO C BUTTONS" :
+			chosen_dual ? "THE CONTROLLER IN YOUR OTHER HAND (AUTO: PORTS 1+3, 2+4)" :
 			"HOW FAST THE C BUTTONS TURN YOU (1-10)";
 		break;
 	default:
-		help = !n64_input_rumble_present(menu.control_pad & 3) ? "NO RUMBLE PAK IN THIS CONTROLLER" :
+		/* (a GameCube controller's own motor: only with the 5 V a
+		passthrough cable may not carry) */
+		help = chosen_gamecube ? (chosen_controls->no_rumble ? "THE CONTROLLER STAYS STILL" :
+			"IT SHAKES ONLY IF ITS CABLE CARRIES 5 V") :
+			!n64_input_rumble_present(menu.control_pad & 3) ? "NO RUMBLE PAK IN THIS CONTROLLER" :
 			chosen_controls->no_rumble ? "THE RUMBLE PAK STAYS STILL" : "THE RUMBLE PAK SHAKES WITH SHOTS, HITS AND BLASTS";
 		break;
 	}
@@ -1809,15 +1835,83 @@ static void draw_pad(float x, float y, float s, int present)
 	disc(x + 84.f * s, y - 26.f * s, 5.f * s);
 }
 
+/* a GameCube controller seen from above, as draw_pad draws the N64 one,
+from a list of shapes (scale 1: about 240 across, 48 over its middle to 83
+under it): each a kind -- 1 a convex polygon (its corner count, then x, y
+each), 2 a disc (x, y, twice its radius), 3 a bar (x0, y0, x1, y1) -- and a
+colour (gamecube_colors; 0 the body, drawn with its shadow, 1 the shoulder
+buttons, behind it), ending in 0: the shoulders, the body (a middle, two
+round lobes and short, thick grips angled down and out with round ends),
+then Z, the main
+stick's gate and top, the D-pad, START, the C-stick's gate and top, A, B,
+and X and Y, each a bean around A (three segments of an arc, round ends) */
+static const signed char gamecube_shapes[] = {
+	3, 1, -86, -46, -46, -34, 3, 1, 46, -46, 86, -34, 1, 0, 8, -42, -38, 42, -38, 50, -28, 48, 24, 33, 36, -33, 36,
+	-48, 24, -50, -28, 1, 0, 12, -24, -8, -29, 10, -42, 23, -60, 28, -78, 23, -91, 10, -96, -8, -91, -26, -78, -39,
+	-60, -44, -42, -39, -29, -26, 1, 0, 4, -96, -6, -48, 16, -76, 66, -114, 54, 2, 0, -95, 62, 42, 1, 0, 12, 29, -26,
+	42, -39, 60, -44, 78, -39, 91, -26, 96, -8, 91, 10, 78, 23, 60, 28, 42, 23, 29, 10, 24, -8, 1, 0, 4, 114, 54, 76,
+	66, 48, 16, 96, -6, 2, 0, 95, 62, 42, 3, 5, 52, -43, 84, -36, 1, 3, 8, -41, -3, -51, 7, -65, 7, -75, -3, -75, -17,
+	-65, -27, -51, -27, -41, -17, 2, 4, -58, -10, 20, 3, 2, -41, 17, -27, 23, 3, 2, -37, 13, -31, 27, 2, 4, 0, -8, 9,
+	1, 3, 8, 43, 29, 37, 35, 27, 35, 21, 29, 21, 19, 27, 13, 37, 13, 43, 19, 2, 6, 32, 24, 15, 2, 7, 56, -8, 25, 2, 8,
+	38, 6, 13, 1, 9, 4, 69, -15, 80, -21, 83, -10, 71, -9, 1, 9, 4, 71, -9, 83, -10, 82, 1, 70, -3, 1, 9, 4, 70, -3,
+	82, 1, 76, 10, 67, 2, 2, 9, 75, -18, 12, 2, 9, 72, 6, 12, 1, 9, 4, 46, -20, 38, -28, 46, -33, 50, -22, 1, 9, 4, 50,
+	-22, 46, -33, 55, -34, 55, -23, 1, 9, 4, 55, -23, 55, -34, 64, -33, 61, -23, 2, 9, 42, -24, 11, 2, 9, 62, -28, 11,
+	0
+};
+
+static const unsigned long gamecube_colors[] = {PAD_BODY, 0xFFB4B6C0u, PAD_DARK, 0xFF343640u, 0xFFC4C6D0u,
+	0xFF8A70D8u, 0xFFF0C820u, 0xFF2EA052u, 0xFFD83C3Cu, 0xFFE4E6EEu};
+
+static void draw_gamecube_pad(float x, float y, float s)
+{
+	/* (the body's shadow; the shoulders, then the body; then the rest) */
+	for (int pass = 0; pass < 3; pass++)
+	{
+		const signed char *at = gamecube_shapes;
+		float ox = pass ? x : x + 3.f * s, oy = pass ? y : y + 4.f * s;
+		int last = -1;
+
+		while (*at)
+		{
+			int kind = at[0], color = at[1], corners = kind == 1 ? at[2] : 0;
+			const signed char *v = at + (kind == 1 ? 3 : 2);
+			int shown = !pass ? color == 0 : pass == 1 ? color <= 1 : color > 1;
+
+			at = v + (kind == 1 ? 2 * corners : kind == 2 ? 3 : 4);
+			if (!shown)
+				continue;
+			if (color != last)
+				flat_color(!pass ? PAD_SHADOW : gamecube_colors[color]);
+			last = color;
+			if (kind == 1)
+			{
+				float points[24];
+
+				for (int k = 0; k < 2 * corners && k < 24; k++)
+					points[k] = v[k];
+				fan(points, corners, ox, oy, s);
+			}
+			else if (kind == 2)
+				disc(ox + v[0] * s, oy + v[1] * s, v[2] * 0.5f * s);
+			else
+				bar(ox, oy, s, v[0], v[1], v[2], v[3]);
+		}
+	}
+}
+
 struct layout_entry
 {
 	const char *button, *action;
 };
 
 /* a button's name in its own colour: A blue, B green, the C buttons
-yellow, START red */
-static unsigned long button_color(const char *button)
+yellow, START red; a GameCube controller's A green, B red, C-stick yellow
+and Z purple */
+static unsigned long button_color(const char *button, int gamecube)
 {
+	if (gamecube)
+		return button[0] == 'A' && !button[1] ? 0xFF6CD890u : button[0] == 'B' && !button[1] ? 0xFFFF7C7Cu :
+			button[0] == 'C' ? 0xFFF4D24Cu : button[0] == 'Z' ? 0xFFB49CFFu : TEXT_BRIGHT;
 	if (button[0] == 'A' && (!button[1] || button[1] == ' '))
 		return 0xFF7C9CFFu;
 	if (button[0] == 'B' && (!button[1] || button[1] == ' '))
@@ -1835,11 +1929,28 @@ controllers, its sticks and triggers apart (draw_layout) */
 static int layout_entries(int port, struct layout_entry *entries)
 {
 	const struct n64_controls *controls = &n64_controls[port & 3];
-	int scheme = controls->scheme, count = 0;
+	int scheme = n64_controls_scheme(port), count = 0;
 	const char *crouch = controls->toggle_crouch ? "CROUCH (TOGGLE)" : "CROUCH";
 	const char *grenades = CAMPAIGN_CARTRIDGE ? "GRENADES; HOLD: SPEED" : "GRENADES; HOLD: LIGHT";
 
 #define ENTRY(b, a) (entries[count].button = (b), entries[count].action = (a), count++)
+	/* (a GameCube controller's) */
+	if (scheme == N64_SCHEME_GAMECUBE)
+	{
+		ENTRY("MAIN STICK", "WALK AND STRAFE");
+		ENTRY("C-STICK", "LOOK AND TURN");
+		ENTRY(controls->swap_fire ? "L" : "R", "FIRE");
+		ENTRY(controls->swap_fire ? "R" : "L", "THROW A GRENADE");
+		ENTRY("A", "JUMP");
+		ENTRY("B", "RELOAD / ACTION");
+		ENTRY("X", "MELEE");
+		ENTRY("Y / D-UP", "SWITCH WEAPON");
+		ENTRY("Z / D-LEFT", "ZOOM");
+		ENTRY("D-DOWN", crouch);
+		ENTRY("D-RIGHT", grenades);
+		ENTRY("START", "PAUSE");
+		return count;
+	}
 	if (N64_SCHEME_IS_DUAL(scheme))
 	{
 		ENTRY("A", "JUMP");
@@ -1944,8 +2055,9 @@ static void entries_place(const struct layout_entry *entries, int count, int row
 	}
 }
 
-/* the entries in two columns, rows apart from top */
-static void draw_entries(const struct layout_entry *entries, int count, int top, int rows, int spacing)
+/* the entries in two columns, rows apart from top (a GameCube controller's
+buttons in its own colours) */
+static void draw_entries(const struct layout_entry *entries, int count, int top, int rows, int spacing, int gamecube)
 {
 	struct entries_columns at;
 
@@ -1954,7 +2066,7 @@ static void draw_entries(const struct layout_entry *entries, int count, int top,
 	{
 		int c = (i / rows) & 1, y = top + (i % rows) * spacing;
 
-		text_fit(menu.small, at.x[c], y, button_color(entries[i].button), entries[i].button, at.name[c]);
+		text_fit(menu.small, at.x[c], y, button_color(entries[i].button, gamecube), entries[i].button, at.name[c]);
 		text_fit(menu.small, at.x[c] + at.name[c] + 10, y, TEXT_COLOR, entries[i].action, at.action[c]);
 	}
 }
@@ -1965,7 +2077,7 @@ static void pair_centered(int center, int y, const char *button, const char *act
 	int width = n64_text_width(menu.small, button) + 10 + n64_text_width(menu.small, action);
 	int x = center - (width < 270 ? width : 270) / 2;
 
-	menu_text(menu.small, x, y, button_color(button), button);
+	menu_text(menu.small, x, y, button_color(button, 0), button);
 	text_fit(menu.small, x + n64_text_width(menu.small, button) + 10, y, TEXT_COLOR, action,
 		270 - n64_text_width(menu.small, button) - 10);
 }
@@ -1975,7 +2087,7 @@ static void draw_layout(void)
 	int port = menu.layout_pad & 3;
 	const struct n64_controls *controls = &n64_controls[port];
 	struct layout_entry entries[16];
-	int count = layout_entries(port, entries);
+	int count = layout_entries(port, entries), scheme = n64_controls_scheme(port), gamecube = scheme == N64_SCHEME_GAMECUBE;
 	signed char pairs[4];
 	int owner[4];
 	char text[48];
@@ -1983,15 +2095,23 @@ static void draw_layout(void)
 	controls_owners(pairs, owner);
 	snprintf(text, sizeof(text), "PLAYER %d", port + 1);
 	page("CONTROL STYLE", text);
-	snprintf(text, sizeof(text), "<  %s  >", n64_scheme_name(controls->scheme));
+	/* (a GameCube controller: its set's one scheme, no stepping) */
+	snprintf(text, sizeof(text), gamecube ? "%s" : "<  %s  >", n64_scheme_name(scheme));
 	text_centered(menu.large, SCREEN_W / 2, 100, pulsing(), text);
-	text_centered_fit(menu.small, SCREEN_W / 2, 121, TEXT_COLOR,
-		scheme_help[controls->scheme < N64_SCHEME_COUNT ? controls->scheme : 0], SAFE_RIGHT - SAFE_LEFT);
-	if (!N64_SCHEME_IS_DUAL(controls->scheme))
+	text_centered_fit(menu.small, SCREEN_W / 2, 121, TEXT_COLOR, scheme_line(port), SAFE_RIGHT - SAFE_LEFT);
+	if (gamecube)
+	{
+		draw_gamecube_pad(SCREEN_W / 2, 192, 0.95f);
+		box(SAFE_LEFT, 286, SAFE_RIGHT, 428);
+		draw_entries(entries, count, 307, 7, 18, 1);
+		hints("B  BACK");
+		return;
+	}
+	if (!N64_SCHEME_IS_DUAL(scheme))
 	{
 		draw_pad(SCREEN_W / 2, 186, 0.95f, 1);
 		box(SAFE_LEFT, 286, SAFE_RIGHT, 428);
-		draw_entries(entries, count, 307, 7, 18);
+		draw_entries(entries, count, 307, 7, 18, 0);
 	}
 	else
 	{
@@ -2000,7 +2120,7 @@ static void draw_layout(void)
 		int partner = pairs[port];
 		int wanted = partner >= 0 ? partner : controls->partner ? (controls->partner - 1) & 3 : port ^ 2;
 		int own_left = wanted > port;
-		int left_aims = N64_SCHEME_DUAL_LEFT_AIMS(controls->scheme), turns = N64_SCHEME_DUAL_TURNS(controls->scheme);
+		int left_aims = N64_SCHEME_DUAL_LEFT_AIMS(scheme), turns = N64_SCHEME_DUAL_TURNS(scheme);
 
 		for (int hand = 0; hand < 2; hand++)
 		{
@@ -2035,7 +2155,7 @@ static void draw_layout(void)
 		}
 		box(SAFE_LEFT, 310, SAFE_RIGHT, 428);
 		text_centered(menu.small, SCREEN_W / 2, 328, TEXT_DIM, "EITHER CONTROLLER");
-		draw_entries(entries, count, 347, 5, 18);
+		draw_entries(entries, count, 347, 5, 18, 0);
 	}
 	hints("LEFT/RIGHT  CHANGE STYLE   B  BACK");
 }
@@ -2359,7 +2479,7 @@ static void draw_player_cards(const struct n64_menu_choice *c, int teams, int ch
 		if (teams)
 			text_centered(menu.small, center, y + 55, TEXT_BRIGHT, c->teams[slot] ? "BLUE TEAM" : "RED TEAM");
 		/* (two controllers: the other one's port, or that it is missing) */
-		if (N64_SCHEME_IS_DUAL(n64_controls[p].scheme) && !choosing_team)
+		if (N64_SCHEME_IS_DUAL(n64_controls_scheme(p)) && !choosing_team)
 		{
 			if (partner[p] >= 0)
 				snprintf(value, sizeof(value), "+ PORT %d", partner[p] + 1);

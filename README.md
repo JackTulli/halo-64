@@ -439,6 +439,29 @@ plays the standard scheme. In an emulator, two controllers can be mapped
 onto one modern gamepad (one to its left stick, the other to its right) for
 dual-stick play.
 
+**GameCube controller** (two sticks on one controller, as Halo's own
+Xbox controls): a GameCube controller plays the **GameCube** style, its own
+scheme, and never an N64 scheme; an N64 controller never sees it. The game
+reads the controller itself, so it needs a passthrough cable or adapter that
+connects the GameCube controller to the N64 port without converting its
+protocol. An adapter that turns a GameCube controller into an N64 controller
+(raphnet's GameCube to N64 adapter, for example) sends one stick, as an N64
+controller has, and plays as an N64 controller.
+
+The main stick walks and strafes and the C-stick looks; R fires and L throws a
+grenade, both analog; A jumps, B reloads, X is melee, Y switches weapons, Z
+zooms, and the D-pad and START do what they do in the standard scheme.
+CONTROL STYLE (Z on the CONTROLS page) shows the whole layout.
+
+FIRE BUTTON swaps R and L; C-STICK SPEED (the STICK SPEED row) sets how fast
+the C-stick turns; crouch, look and rumble are as for an N64 controller,
+and the port's N64 scheme is kept for when an N64 controller is back. A
+GameCube controller is never a two-controller scheme's second controller. Its
+own motor needs 5 V, which a passthrough cable may not carry: then it does
+not rumble (the game asks for it all the same, which does no harm).
+
+<!-- Other systems and controllers: a table of what works where goes here. -->
+
 On the CONTROLS page, **Z** opens **CONTROL STYLE**: the scheme drawn, the
 controller (or both controllers) and what each button does, with left and
 right stepping through the schemes.
