@@ -42,8 +42,7 @@ static int anamorphic;
 /* Settings: ANTI-ALIASING (the RDP's coverage on opaque surfaces, which the
 VI's filter smooths the edges with) and DEDITHER (the VI rebuilding colour
 from the 16-bit picture's dither; libdragon takes it at 320 across only
-with the VI's anti-aliasing filter, which is on either way: without the
-RDP's coverage it leaves the picture as it is) */
+with the VI's anti-aliasing filter): the VI's filters, display_filters */
 static int want_antialias, want_dedither;
 /* Settings: HUD RESOLUTION HIGH DETAIL (n64_render_set_hud_detail): the
 game's display at 640x240 at 240p, as high detail's, while its 3D stays at
@@ -62,8 +61,22 @@ static surface_t *hud_display;
 static int hud_on_display, hud_views_doubled, hud_scale_x, hud_scale_y;
 static int hud_clear_frames, hud_cleared_views;
 
+/* The VI's filters for a display, from the two settings as they are when it
+is made (a map's load makes the game's display again, after the menu has
+set them). With both off, the resample filter alone. The VI's anti-alias
+stage finds the pixels to smooth by the coverage the RDP keeps with each
+(vi.h). With ANTI-ALIASING off: rdpq's modes without anti-aliasing write
+full coverage (SOM_COVERAGE_DEST_ZAP); fill-mode draws are opaque colours
+(coverage's top bit set); libdragon's debug font (AA_REDUCED, a blender:
+coverage WRAP) draws over a box rdpq_paragraph_render fills first in
+standard mode (full coverage). rdpq_mode_antialias: with AA_NONE "the VI
+will not do anything to the image" even with FILTERS_RESAMPLE_ANTIALIAS.
+So the picture is expected to stay the same, and the VI no longer makes
+that stage's extra memory reads (vi.h: "extra memory bandwidth"). */
 static filter_options_t display_filters(void)
 {
+	if (!want_antialias && !want_dedither)
+		return FILTERS_RESAMPLE;
 	return want_dedither ? FILTERS_RESAMPLE_ANTIALIAS_DEDITHER : FILTERS_RESAMPLE_ANTIALIAS;
 }
 #define SCREEN_WIDTH screen_width
