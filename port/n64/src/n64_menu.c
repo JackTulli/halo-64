@@ -1905,15 +1905,57 @@ static int layout_entries(int port, struct layout_entry *entries)
 	return count;
 }
 
+/* where the entries go in two columns, rows to a column, inside the box
+(SAFE_LEFT to SAFE_RIGHT, 16 in from each side and 16 between the columns):
+each column's names as wide as its widest (at most 124), the first column
+as wide as its names and widest action (leaving the second 128 or more),
+the second in the rest; an action wider than its room condensed */
+#define ENTRIES_ROOM (SAFE_RIGHT - SAFE_LEFT - 48)
+
+struct entries_columns
+{
+	int x[2], name[2], action[2];
+};
+
+static void entries_place(const struct layout_entry *entries, int count, int rows, struct entries_columns *at)
+{
+	int actions[2] = {0, 0}, first;
+
+	at->name[0] = at->name[1] = 0;
+	for (int k = 0; k < count && k < 2 * rows; k++)
+	{
+		int c = k / rows, width = n64_text_width(menu.small, entries[k].button);
+
+		width = width < 124 ? width : 124;
+		at->name[c] = width > at->name[c] ? width : at->name[c];
+		width = n64_text_width(menu.small, entries[k].action);
+		actions[c] = width > actions[c] ? width : actions[c];
+	}
+	first = at->name[0] + 10 + actions[0];
+	if (first > ENTRIES_ROOM - 128)
+		first = ENTRIES_ROOM - 128;
+	at->x[0] = SAFE_LEFT + 16;
+	at->x[1] = at->x[0] + first + 16;
+	for (int c = 0; c < 2; c++)
+	{
+		at->action[c] = (c ? ENTRIES_ROOM - first : first) - at->name[c] - 10;
+		if (at->action[c] < 0)
+			at->action[c] = 0;
+	}
+}
+
 /* the entries in two columns, rows apart from top */
 static void draw_entries(const struct layout_entry *entries, int count, int top, int rows, int spacing)
 {
+	struct entries_columns at;
+
+	entries_place(entries, count, rows, &at);
 	for (int i = 0; i < count; i++)
 	{
-		int column = i / rows, x = SAFE_LEFT + 16 + column * 292, y = top + (i % rows) * spacing;
+		int c = (i / rows) & 1, y = top + (i % rows) * spacing;
 
-		text_fit(menu.small, x, y, button_color(entries[i].button), entries[i].button, 124);
-		text_fit(menu.small, x + 130, y, TEXT_COLOR, entries[i].action, 140);
+		text_fit(menu.small, at.x[c], y, button_color(entries[i].button), entries[i].button, at.name[c]);
+		text_fit(menu.small, at.x[c] + at.name[c] + 10, y, TEXT_COLOR, entries[i].action, at.action[c]);
 	}
 }
 
