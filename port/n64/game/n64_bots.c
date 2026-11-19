@@ -28,6 +28,7 @@ and it reloads, swaps to its other weapon when this one is empty and gets
 out of any vehicle it found itself in. It sees and fires along a clear line
 to the enemy: the level, vehicles, scenery and machines block it; bipeds,
 teammates included, do not (Halo's sight-blocking objects).
+A cloaked enemy it sees only within 2 units, or for 1 s after it fires.
 */
 
 #include "cseries.h"
@@ -805,8 +806,35 @@ static void resolve_weapons(
 
 /* ---------- thinking */
 
+/* whether a unit is hidden by its active camouflage from a bot so far
+away (horizontally): Halo's AI never sees one cloaked over half
+(actor_perception.c) but notices it when it fires (weapons.c makes the
+shot known, actors.c); a bot sees one within 2 units, or for 1 s after it
+fired */
+static boolean bot_camouflaged(
+	long unit_index,
+	real distance)
+{
+	struct unit_datum *unit = unit_get(unit_index);
+	long weapon_index;
+
+	if (unit->unit.active_camouflage <= 0.5f || distance < 2.f)
+		return FALSE;
+	weapon_index = unit_inventory_get_weapon(unit_index, unit->unit.current_weapon_index);
+	if (weapon_index != NONE)
+	{
+		long fired = weapon_get(weapon_index)->weapon.game_time_last_fired;
+
+		if (fired > 0 && game_time_get() - fired <= TICKS_PER_SECOND)
+			return FALSE;
+	}
+	return TRUE;
+}
+
 /* the nearest enemy's living unit: another team's player in a team game,
-any other player otherwise */
+any other player otherwise -- none it cannot see for its camouflage
+(bot_camouflaged: it would otherwise go straight for it, its way found
+from where it truly is) */
 static long nearest_enemy(
 	struct bot *bot,
 	real_point3d const *from)
@@ -831,6 +859,8 @@ static long nearest_enemy(
 		/* (a rider's own position is its seat's, in its vehicle: objects.c,
 		object_get_origin) */
 		d = horizontal_distance(from, object_get_origin(player->unit_index, &position));
+		if (bot_camouflaged(player->unit_index, d))
+			continue;
 		/* (the one it is fighting stays a little nearer than it is) */
 		if (player->unit_index == bot->target_unit)
 			d -= 3.f;
@@ -1219,9 +1249,11 @@ static void think(
 		}
 		if ((bot->sight_timer -= step) <= 0)
 		{
+			real range = horizontal_distance(&unit->object.position, &target_position);
+
+			/* (one hidden by its camouflage: no ray) */
 			bot->sight_timer = 10;
-			bot->target_visible =
-				horizontal_distance(&unit->object.position, &target_position) < SIGHT_RANGE &&
+			bot->target_visible = range < SIGHT_RANGE && !bot_camouflaged(bot->target_unit, range) &&
 				n64_ai_clusters_may_see(player->unit_index, bot->target_unit) &&
 				line_of_sight(&eye, &target_eye, sight_ignore);
 		}
