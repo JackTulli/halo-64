@@ -106,13 +106,13 @@ void n64_hud_set_zoom_shade(
 	return;
 }
 
-/* AUTO's look: BLEND or the slow choice, by the measure of the latest
-second of frames before the first game (the menu shows it once made), made
-now if not yet */
+/* AUTO's look: BLEND or the slow choice, by the system's speed
+(n64_render_slow: the measure of the latest second of frames before the
+first game; the menu shows it once made), made now if not yet */
 int n64_hud_zoom_shade_auto(
 	void)
 {
-	return n64_render_blend_choose() ? ZOOM_SHADE_SLOW : N64_ZOOM_SHADE_BLEND;
+	return n64_render_slow() ? ZOOM_SHADE_SLOW : N64_ZOOM_SHADE_BLEND;
 }
 
 /* (the module's, at each zoomed view) the setting, AUTO made its look: the

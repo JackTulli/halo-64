@@ -220,6 +220,8 @@ static struct
 	int no_particles;
 	/* 0 low, 1 medium, 2 high */
 	int view_model;
+	/* ARMS: N64_ARMS_* (n64_render_set_arms) */
+	int arms;
 	/* pixels, HUD_INSET_STEP at a time up to HUD_INSET_MAXIMUM */
 	int hud_inset;
 	int fps_counter;
@@ -970,8 +972,9 @@ enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE
 #define RUMBLE_PULSE_FRAMES 12
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
 enum { SETTING_CHUNKY, SETTING_HUD, SETTING_HUD_STYLE, SETTING_ZOOM_SHADE, SETTING_FIELD_OF_VIEW, SETTING_WIDESCREEN,
-	SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_PROJECTILES, SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_TERRAIN,
-	SETTING_STANDINS, SETTING_ANTIALIAS, SETTING_DEDITHER, SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
+	SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_PROJECTILES, SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_ARMS,
+	SETTING_TERRAIN, SETTING_STANDINS, SETTING_ANTIALIAS, SETTING_DEDITHER, SETTING_HUD_INSET, SETTING_COUNTER,
+	SETTING_BACK, SETTING_COUNT };
 
 /* the Settings rows shown: HUD RESOLUTION is not on the campaign cartridge
 (its level leaves no room for a 640x240 HUD after the menu: the row would do
@@ -1102,6 +1105,9 @@ static void settings_pack(unsigned char *bytes)
 	for (int p = 0; p < 4; p++)
 		if (n64_controls[p].partner)
 			bytes[42] |= (unsigned char)((((n64_controls[p].partner - 1) ^ p) & 3) << (p * 2));
+	/* (ARMS after it, N64_ARMS_*: 0, AUTO, in the records kept before it,
+	so that they load with AUTO; the player's choice kept as made) */
+	bytes[43] = (unsigned char)menu.arms;
 	for (int p = 0; p < 4; p++)
 	{
 		unsigned char *controls = bytes + SAVED_CONTROLS + p * 6;
@@ -1144,6 +1150,7 @@ static int settings_unpack(const unsigned char *bytes)
 	menu.field_of_view = bytes[40] >= FOV_MINIMUM && bytes[40] <= FOV_MAXIMUM && !(bytes[40] % FOV_STEP) ?
 		bytes[40] : FOV_DEFAULT;
 	menu.projectiles = bytes[41] < 2 ? bytes[41] + 1 : bytes[41] == 2 ? 0 : bytes[41] == 3 ? 3 : 1;
+	menu.arms = bytes[43] <= N64_ARMS_OFF ? bytes[43] : N64_ARMS_AUTO;
 	/* (the menu's display made next takes it too) */
 	n64_render_set_dedither(menu.dedither);
 	for (int p = 0; p < 4; p++)
@@ -2049,6 +2056,7 @@ static void draw_settings(int item)
 		[SETTING_PROJECTILES] = {"TRACERS AND GLOWING BOLTS; HEAVY: SHORT TRAILS,", "FULL: LONG TRAILS TOO (SLOWER; LESS IF NO ROOM)"},
 		[SETTING_DECALS] = {"BULLET HOLES, BLOOD AND SCORCH MARKS ON", "WALLS AND FLOORS (OFF: A LITTLE FASTER)"},
 		[SETTING_VIEW_MODEL] = {"YOUR GUN AND ARMS: HIGHER HAS MORE TRIANGLES;", "OFF IN SPLIT: LOW, NONE WITH 3-4 PLAYERS (FASTER)"},
+		[SETTING_ARMS] = {"THE ARMS THAT HOLD YOUR GUN; OFF: THE GUN ALONE", "(FASTER); AUTO: OFF AT THE N64'S DRAWING SPEED"},
 		[SETTING_TERRAIN] = {"FULL: GROUND DETAIL AT EVERY DISTANCE; HIGH: IT", "FADES; MEDIUM: LESS ON ROCK; LOW: NONE (FASTER)"},
 		/* (on the PC Expansion cartridge OFF puts the gun first: the local
 		player's view model's load may push the obstacles out, n64_render.c) */
@@ -2107,7 +2115,7 @@ static void draw_settings(int item)
 			label = "ZOOM SHADE";
 			/* (AUTO with the look it chose; AUTO alone until the first
 			game, which makes the choice) */
-			if (menu.zoom_shade == N64_ZOOM_SHADE_AUTO && !n64_render_blend_chosen)
+			if (menu.zoom_shade == N64_ZOOM_SHADE_AUTO && !n64_render_speed_known())
 				snprintf(value, sizeof(value), "AUTO");
 			else if (menu.zoom_shade == N64_ZOOM_SHADE_AUTO)
 				snprintf(value, sizeof(value), "AUTO (%s)", zoom_shade_names[n64_hud_zoom_shade_auto()]);
@@ -2142,6 +2150,17 @@ static void draw_settings(int item)
 			label = "VIEW MODEL";
 			snprintf(value, sizeof(value), "%s", menu.view_model == 3 ? "OFF IN SPLIT" : menu.view_model == 2 ? "HIGH" :
 				menu.view_model == 1 ? "MEDIUM" : "LOW");
+			break;
+		case SETTING_ARMS:
+			label = "ARMS";
+			/* (AUTO with what it chose; AUTO alone until the first game,
+			as ZOOM SHADE) */
+			if (menu.arms == N64_ARMS_AUTO && !n64_render_speed_known())
+				snprintf(value, sizeof(value), "AUTO");
+			else if (menu.arms == N64_ARMS_AUTO)
+				snprintf(value, sizeof(value), "AUTO (%s)", n64_render_slow() ? "OFF" : "ON");
+			else
+				snprintf(value, sizeof(value), "%s", menu.arms == N64_ARMS_OFF ? "OFF" : "ON");
 			break;
 		case SETTING_TERRAIN:
 			label = "TERRAIN DETAIL";
@@ -2987,6 +3006,11 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					menu.view_model = (menu.view_model + 3) % 4;
 				else if (setting == SETTING_VIEW_MODEL && (pad->right || pad->pressed.a))
 					menu.view_model = (menu.view_model + 1) % 4;
+				/* (AUTO, ON, OFF) */
+				if (setting == SETTING_ARMS && pad->left)
+					menu.arms = (menu.arms + 2) % 3;
+				else if (setting == SETTING_ARMS && (pad->right || pad->pressed.a))
+					menu.arms = (menu.arms + 1) % 3;
 				if (setting == SETTING_HUD_INSET && pad->left)
 					menu.hud_inset = (menu.hud_inset + HUD_INSET_MAXIMUM) % (HUD_INSET_MAXIMUM + HUD_INSET_STEP);
 				else if (setting == SETTING_HUD_INSET && (pad->right || pad->pressed.a))
@@ -3219,9 +3243,11 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_render_set_hud_detail(!CAMPAIGN_CARTRIDGE && !menu.hud_standard);
 			n64_hud_set_style(menu.hud_style);
 			n64_hud_set_zoom_shade(menu.zoom_shade);
-			/* (AUTO's choice made as the first game starts, from the latest
-			second of frames; kept from then on) */
-			n64_render_blend_choose();
+			/* (the system's speed, which the AUTO rows follow, measured as
+			the first game starts, from the latest second of frames; kept from
+			then on) */
+			n64_render_slow();
+			n64_render_set_arms(menu.arms);
 			n64_half_animation_rate = menu.half_animation;
 			n64_field_of_view = menu.field_of_view;
 			settings_save();

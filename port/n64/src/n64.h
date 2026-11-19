@@ -361,6 +361,13 @@ the first game's start) and returns n64_render_blend_slow */
 extern unsigned long n64_render_blend_ticks;
 extern int n64_render_blend_slow, n64_render_blend_chosen;
 int n64_render_blend_choose(void);
+/* the system's speed as the Settings' AUTO rows read it (ZOOM SHADE,
+ARMS): 1 where the system draws at about the N64's speed, 0 where it
+draws faster. It is the measure above, made once, as the first game starts
+(made at once if asked before), and kept until the power is off;
+n64_render_speed_known: whether it is made yet */
+int n64_render_slow(void);
+int n64_render_speed_known(void);
 /* loads rom:/levels/<map>.lvl and its textures (with low, the lighter
 <map>-low.lvl where there is one); FALSE if there is none */
 /* the game's local players (before its level loads: the model cache's tiers) */
@@ -419,6 +426,14 @@ void n64_render_set_chunky(int level); /* 0 off, 1 medium (4/5 width), 2 chunky 
 loaded: 0 low, 1 medium, 2 high -- the first-person weapons and arms at
 1.25 or 2 times the triangles (levels/<map>-fp1.mdl, -fp2) */
 void n64_render_set_view_model_quality(int quality);
+/* ARMS (Settings): the first-person arms, the hands model the weapon is
+held in. AUTO leaves them out where the system draws at about the N64's
+speed (n64_render_slow); ON draws them; OFF leaves them out. The weapon is
+drawn as ever. Set as a game starts; n64_render_arms_hidden: whether this
+game leaves them out (n64_render_game.c) */
+enum { N64_ARMS_AUTO, N64_ARMS_ON, N64_ARMS_OFF };
+void n64_render_set_arms(int arms);
+int n64_render_arms_hidden(void);
 /* (the custom cartridge) the first-person model handed to the renderer
 next is the arms, on: they keep the model cache's whole margin, the weapon
 a smaller one (n64_render.c load_model) */

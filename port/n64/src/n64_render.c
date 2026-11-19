@@ -670,6 +670,23 @@ int n64_render_view_models_hidden(void)
 	return view_models_hidden_in_split && renderer.view_total > 2;
 }
 
+/* Settings: ARMS (n64.h): whether this game leaves the first-person arms
+out, decided as it starts (AUTO: by the system's speed, which is measured
+once and then holds, so the arms do not change during a game). Left out,
+they are not drawn and so not loaded: the model cache loads a model when
+it is drawn */
+static int arms_hidden;
+
+void n64_render_set_arms(int arms)
+{
+	arms_hidden = arms == N64_ARMS_OFF || (arms == N64_ARMS_AUTO && n64_render_slow());
+}
+
+int n64_render_arms_hidden(void)
+{
+	return arms_hidden;
+}
+
 /* the game's views (objects.c: with three or four, every biped's pose
 every other tick) */
 int n64_view_total;
@@ -1902,6 +1919,18 @@ int n64_render_blend_choose(void)
 			!(n64_render_blend_ticks && TICKS_TO_US(n64_render_blend_ticks) < BLEND_FLOOR_US);
 	}
 	return n64_render_blend_slow;
+}
+
+/* (n64.h) the measure as the Settings' AUTO rows read it: they depend on
+this pair only, not on how the speed is measured */
+int n64_render_slow(void)
+{
+	return n64_render_blend_choose();
+}
+
+int n64_render_speed_known(void)
+{
+	return n64_render_blend_chosen;
 }
 
 /* a frame's sample: CPU ticks and RDP clocks since the frame before, into
