@@ -31,6 +31,10 @@ struct n64_hud64_entries
 	void (*game_collect)(int what, real alpha);
 	int (*game_collect_string)(wchar_t const *string);
 	int (*game_collect_button)(int kind);
+	int (*game_crosshair)(long bitmap_tag, short sequence, short frame, point2d const *offset, point2d const *placed,
+		real scale, int red);
+	void (*game_scope)(long mask_tag);
+	int (*game_crosshair_taken)(long bitmap_tag, short sequence, point2d const *offset);
 };
 
 #endif

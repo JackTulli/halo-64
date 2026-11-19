@@ -766,6 +766,8 @@ def badge_overrides(m):
 def load_design(design):
     sys.path.insert(0, str(Path(design).resolve()))
     import hud64_design as make  # noqa: E402  (the design, read only)
+    import hud64_reticles  # noqa: E402  (its reticles)
+    make.reticles = hud64_reticles
     text_and_grid_overrides(make)
     numeral_glyph_overrides(make)
     label_and_panel_overrides(make)
@@ -795,9 +797,10 @@ PROPORTIONAL_METERS = ("shield", "shield_s")
 # as the design's ticks already do); the design lights every meter from the left
 MIRRORED_METERS = ("shield", "shield_s")
 # (the health meters are the gauge's cells, their order already counted from the right -- apply_gauge)
-# (the reticle and the motion tracker
-# are Halo's own in either style -- their art ORIGINAL's -- so the design's
-# reticle, tracker and blips are not in the tables)
+# (the motion tracker is Halo's own in
+# either style -- its art ORIGINAL's -- so the design's tracker and blips are
+# not in the tables; its reticles are, as the style's own art for Halo's
+# items: reticle_header, hud64_reticles.py)
 REFS = ("weapon", "weapon_edge", "grenade", "grenade_edge", "ammo4", "ammo4_edge", "gren4", "gren4_edge", "plate",
         "plate4", "shield_frame", "health_frame", "shield_s_frame", "health_s_frame", "bar_slot", "button", "gren4_e",
         "gren4_e_edge", "health_slots", "health_s_slots", "badge_edge", "badge_slot", "badge_fill", "badge_crest")
@@ -888,6 +891,8 @@ class Data:
             self.setdata[skey] = self._set(skey)
         self.arrangements = self._arrangements()
         self._compact()
+        # (after the design's own: they keep their ids)
+        self.reticles = reticle_textures(self)
 
     def _compact(self):
         """the textures no table draws -- the parts stacked into one (_merge) -- dropped, the rest numbered
@@ -1591,6 +1596,206 @@ class Data:
         }
 
 
+# ---------------------------------------------------------------- the reticles (hud64_reticles.py)
+
+RET_SETS = ("full", "split", "full_ws", "split_ws")
+RET_HOW = {"whole": 0, "x": 1, "xy": 2}       # whole picture, left half (2 mirrored rectangles), quarter (4)
+RET_ATLAS_W = 32                               # texels across (IA4: 16 bytes a row; the least bytes of 32-128)
+
+
+def skyline(parts, base, width):
+    """places for parts (h x w bitmaps) on an atlas width wide whose columns
+    start at base: each at the lowest place it fits (then the leftmost), the
+    tallest first; -> {index: (s, t)}, the height used"""
+    tops = [base] * width
+    out = {}
+    for i in sorted(range(len(parts)), key=lambda i: (-parts[i].shape[0], -parts[i].shape[1], i)):
+        h, w = parts[i].shape
+        assert w <= width, (w, width)
+        best = None
+        for x in range(width - w + 1):
+            y = max(tops[x:x + w])
+            if best is None or y < best[1]:
+                best = (x, y)
+        x, y = best
+        out[i] = (x, y)
+        for c in range(x, x + w):
+            tops[c] = y + h
+    return out, max(tops)
+
+
+def reticle_textures(data):
+    """HUD STYLE 64's reticles as textures: for 4:3 and WIDESCREEN, one IA4
+    atlas holding every art's stored part (a quarter, a half or the whole
+    picture), the 2-4 player set in its first rows and the 1-player set
+    below them -- a 1-2 player context loads the whole atlas, a 3-4 player
+    context only those first rows (the same places: one table). The zoom
+    masks: the circle's I4 quarter, the sniper window's corner squares (I8:
+    their two alphas exactly those of the plain rectangles), its side
+    frames' ladder (I4, one period of 8 rows, drawn wrapped). Added after
+    the design's own textures, so theirs keep their ids. -> what the tables
+    need"""
+    R = data.make.reticles
+    out = {"arts": {}, "atlas": {}}
+    first_new = len(data.textures)
+    for ws in ("", "_ws"):
+        base, blits, shared = 0, [], {}
+        for half in ("split", "full"):
+            parts, keys = [], []
+            for name in R.ART:
+                a, c, sym = R.art(name, half + ws)
+                p = R.stored(a, c, sym)
+                e = dict(cx=c[0], cy=c[1], how=RET_HOW[sym], fw=a.shape[1], fh=a.shape[0])
+                out["arts"][(name, half + ws)] = e
+                # (one copy of a part both sets draw the same: the sniper's ring, the X, the mark, the dots, the
+                # labels -- kept with the 2-4 player set)
+                key = (p.tobytes(), p.shape)
+                if key in shared:
+                    e.update(shared[key])
+                    continue
+                parts.append(p)
+                keys.append((name, key))
+            pos, base = skyline(parts, base, RET_ATLAS_W)
+            for i, p in enumerate(parts):
+                s, t = pos[i]
+                blits.append((p, s, t))
+                name, key = keys[i]
+                place = dict(s=s, t=t, w=p.shape[1], h=p.shape[0])
+                out["arts"][(name, half + ws)].update(place)
+                shared[key] = place
+            if half == "split":
+                split_rows = base
+        rows = base
+        A = np.zeros((rows, RET_ATLAS_W), np.float32)
+        for p, s, t in blits:
+            A[t:t + p.shape[0], s:s + p.shape[1]] = p
+        group = "g240ws" if ws else "g240"
+        everything = data.add(Texture("reticles" + ws, "IA4", A, A, group))
+        first = data.add(Texture("reticles_split" + ws, "IA4", A[:split_rows], A[:split_rows], group))
+        out["atlas"][ws] = (everything, first, rows, split_rows)
+        # (TMEM: an atlas is loaded whole, 4 KB at most)
+        assert data.textures[everything].stride() * rows <= 4096, rows
+    q = R.circle_quarter()
+    out["circle"] = data.add(Texture("scope_circle", "I4", q, None, "g240"))
+    out["corner"] = [data.add(Texture("scope_corner" + k, "I8", R.sniper_corner(s), None, "g240"))
+                     for k, s in (("", 1.0), ("_split", 0.5))]
+    out["ladder"] = data.add(Texture("scope_ladder", "I4", R.sniper_ladder().astype(np.float32), None, "g240"))
+    out["views"] = [[R.zoom_view(s, ws) for ws in (False, True)] for s in (1.0, 0.5)]
+    # (HUD64_TEX_RET_FIRST: every reticle texture after the design's)
+    ids = [i for ws in ("", "_ws") for i in out["atlas"][ws][:2]] + [out["circle"], out["ladder"]] + out["corner"]
+    assert min(ids) >= first_new and len(data.textures) == first_new + len(set(ids)), ids
+    return out
+
+
+def reticle_context_ids(data, skey, split):
+    """a context's reticle textures: its aspect's atlas (all of it at 1-2 players, the 2-4 player rows at 3-4)
+    and the zoom masks"""
+    r = data.reticles
+    everything, first, _, _ = r["atlas"]["_ws" if skey.endswith("ws") else ""]
+    return {first if split else everything, r["circle"], r["corner"][1], r["ladder"]} | \
+        (set() if split else {r["corner"][0]})
+
+
+def fnv1a(text):
+    """the 32-bit FNV-1a hash of a tag's name (n64_hud64.c n64_hud64_reticle_bitmap)"""
+    h = 2166136261
+    for c in text.encode():
+        h = ((h ^ c) * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def reticle_header(data, w):
+    R, r = data.make.reticles, data.reticles
+    w("")
+    names = ("RETICLES", "WARNINGS", "SCOPE", "LINES", "LINES_SM", "PISTOL_MASK", "PISTOL_MASK_SPLIT", "SNIPER_MASK",
+             "SNIPER_MASK_SPLIT")
+    # (the C code's kind ranges -- masks from PISTOL_MASK on, the sniper's from SNIPER_MASK -- follow this order)
+    assert [getattr(R, n) for n in names] == list(R.BITMAPS)
+    w("/* HUD STYLE 64's reticles (tools/n64/hud64/hud64_reticles.py): the bitmaps whose items it draws, by the")
+    w("   hash of their tag's name (32-bit FNV-1a), and each one's kind */")
+    w("enum { " + ", ".join(f"HUD64_RETB_{n}" for n in names) + " };")
+    tags = [(b, b) for b in R.BITMAPS] + sorted(R.ALIASES.items())
+    hashes = [fnv1a(t) for t, _ in tags]
+    assert len(set(hashes)) == len(hashes)
+    w(f"#define HUD64_RET_NAMES {len(tags)}")
+    w("static const uint32_t hud64_ret_names[HUD64_RET_NAMES] = {")
+    for (t, _), h in zip(tags, hashes):
+        w(f"\t0x{h:08X}, /* {t} */")
+    w("};")
+    w("static const uint8_t hud64_ret_name_kind[HUD64_RET_NAMES] = {" +
+      ", ".join(f"HUD64_RETB_{names[R.BITMAPS.index(k)]}" for _, k in tags) + "};")
+    w("enum { " + ", ".join(f"HUD64_RETA_{a.upper()}" for a in R.ART) + ", HUD64_RETA_COUNT };")
+    w("/* Halo's item (its bitmap, sequence, frames, offset in its tag) -> the art, its aim pixel this far from the")
+    w("   view's */")
+    w("struct hud64_ret_item { uint8_t bitmap, sequence, frame0, frame1; int16_t ox, oy; uint8_t art; int8_t dx, dy; };")
+    w(f"#define HUD64_RET_ITEMS {len(R.ITEMS)}")
+    w("static const struct hud64_ret_item hud64_ret_items[HUD64_RET_ITEMS] = {")
+    for b, seq, f0, f1, (ox, oy), art, (dx, dy) in R.ITEMS:
+        w(f"\t{{HUD64_RETB_{names[R.BITMAPS.index(b)]}, {seq}, {f0}, {f1}, {ox}, {oy}, HUD64_RETA_{art.upper()}, "
+          f"{dx}, {dy}}},")
+    w("};")
+    w("/* an art in a set (full, split, full_ws, split_ws): its stored part's place in the atlas (texels), the aim")
+    w("   pixel in the whole picture, how stored (HUD64_RET_WHOLE: as it is; _HALF: the left half, centre column")
+    w("   included, drawn again mirrored; _QUARTER: the top-left quarter, drawn 4 times) */")
+    w("enum { HUD64_RET_WHOLE, HUD64_RET_HALF, HUD64_RET_QUARTER };")
+    w("struct hud64_ret_art { uint8_t s, t, w, h, cx, cy, how; };")
+    w("static const struct hud64_ret_art hud64_ret_arts[4][HUD64_RETA_COUNT] = {")
+    for st in RET_SETS:
+        cells = []
+        for a in R.ART:
+            e = r["arts"][(a, st)]
+            for k in ("s", "t", "w", "h", "cx", "cy"):
+                assert 0 <= e[k] < 256, (a, st, k)
+            cells.append(f"{{{e['s']}, {e['t']}, {e['w']}, {e['h']}, {e['cx']}, {e['cy']}, {e['how']}}}")
+        w(f"\t{{ /* {st} */")
+        for a, c in zip(R.ART, cells):
+            w(f"\t\t{c}, /* {a} */")
+        w("\t},")
+    w("};")
+    w("/* the first of the reticles' textures (they come after the design's): loaded without an upload recorded --")
+    w("   one or two a view, 1-2 a frame -- for the memory such a recording takes */")
+    w(f"#define HUD64_TEX_RET_FIRST {min(r['atlas'][''][0], r['atlas']['_ws'][0])}")
+    w("/* the atlases, 4:3 and WIDESCREEN: [0] every set (1-2 players' contexts), [1] its first rows, the 2-4 player")
+    w("   set's (3-4 players') */")
+    w("static const uint16_t hud64_ret_atlas[2][2] = {" +
+      ", ".join("{%d, %d}" % r["atlas"][k][:2] for k in ("", "_ws")) + "};")
+    w(f"#define HUD64_TEX_SCOPE_CIRCLE {r['circle']}")
+    w(f"#define HUD64_SCOPE_CIRCLE_SIZE {R.CIRCLE_N}")
+    w(f"static const uint16_t hud64_scope_corner[2] = {{{r['corner'][0]}, {r['corner'][1]}}};")
+    w(f"#define HUD64_TEX_SCOPE_LADDER {r['ladder']}")
+    w("/* a zoomed view, at 1 player and 2-4 players, 4:3 and WIDESCREEN (hud64_reticles.py zoom_view), in grid")
+    w("   pixels from the aim pixel: the sniper window's outline rectangle (exclusive), its corner squares' size (the")
+    w("   corner texture drawn into them), the rectangles darkened (x0, y0, x1, y1 exclusive; the outline's alpha 1,")
+    w("   the dark lines' 2), the side frames' bar across, the ladder's half height and texel rows a line; the")
+    w("   circle's half size */")
+    w("struct hud64_zoom { int8_t box[4], corner[2], rects[10][5], bar, top, step, circle[2]; };")
+    w("static const struct hud64_zoom hud64_zoom[2][2] = {")
+    for i in range(2):
+        cells = []
+        for v in r["views"][i]:
+            for k in ("box", "corner", "circle"):
+                assert all(-128 <= x < 128 for x in v[k]), (k, v[k])
+            assert len(v["rects"]) == 10 and all(-128 <= x < 128 for q in v["rects"] for x in q)
+            rects = ", ".join("{%d, %d, %d, %d, %d}" % q for q in v["rects"])
+            cells.append(f"{{{{{', '.join(map(str, v['box']))}}}, {{{v['corner'][0]}, {v['corner'][1]}}}, {{{rects}}}, "
+                         f"{v['bar']}, {v['top']}, {v['step']}, {{{v['circle'][0]}, {v['circle'][1]}}}}}")
+        w(f"\t{{{cells[0]},\n\t\t{cells[1]}}},")
+    w("};")
+    w("/* the masks' alphas: the circle's outside (its texture's outer value as the combiner gives it, the texel")
+    w("   times the primitive's 255: the RDP's (a x b + 128) >> 8), the sniper's outside, its window's outline, its")
+    w("   dark lines (Halo's) */")
+    w(f"#define HUD64_ALPHA_CIRCLE_OUT {(int(round(R.CIRCLE_OUT * 15)) * 17 * 255 + 128) >> 8}")
+    w(f"#define HUD64_ALPHA_SNIPER_OUT {int(np.round(R.SNIPER_DARK_OUT * 255))}")
+    w(f"#define HUD64_ALPHA_SNIPER_OUTLINE {int(np.round(R.SNIPER_DARK_OUTLINE * 255))}")
+    w(f"#define HUD64_ALPHA_SNIPER_LINES {int(np.round(R.SNIPER_DARK_LINES * 255))}")
+    # (the plain rectangles' alphas are the textures' own, as stored)
+    # (the sniper's fills against its corner texels as the combiner gives them: the same 5-bit blend weight, or a
+    # seam shows where a fill meets a corner -- the circle's 136 became 135, one 5-bit step darker in the fills)
+    corner = data.textures[r["corner"][0]].pixels()
+    for v in (int(np.round(R.SNIPER_DARK_OUT * 255)), int(np.round(R.SNIPER_DARK_OUTLINE * 255))):
+        assert v in corner and ((v * 255 + 128) >> 8) >> 3 == v >> 3, v
+
+
 # ---------------------------------------------------------------- outputs
 
 # what each arrangement draws (n64_hud64.c: ammo_full / ammo_split, shield,
@@ -1627,6 +1832,7 @@ def contexts(data):
                     if hl:
                         ids.add(hl[0])
                     ids |= {r[0] for r in d.get("meter_ramp", {}).get(k, (None, None)) if r}
+                ids |= reticle_context_ids(data, skey, split)
                 out[(si, wide, split)] = sorted(ids)
     return out
 
@@ -1820,6 +2026,7 @@ def header_lines(data):
     for full, short in m.SHORT_NAME.items():
         w(f'\t{{"{full}", "{short}"}},')
     w("};")
+    reticle_header(data, w)
     w("\n#endif")
     return L
 

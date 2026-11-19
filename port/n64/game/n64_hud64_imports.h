@@ -20,6 +20,7 @@ first, before cseries.h.
 #ifdef N64_DSO
 #define object_get_and_verify_type n64_hud64_import_object
 #define tag_get n64_hud64_import_tag
+#define tag_get_name n64_hud64_import_tag_name
 #endif
 
 #endif

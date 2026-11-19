@@ -3,10 +3,10 @@ from the design (tools/n64/hud64/hud64_design.py). Do not edit: regenerate (with
 #ifndef N64_HUD64_DATA_H
 #define N64_HUD64_DATA_H
 
-#define HUD64_TEXTURE_COUNT 104
+#define HUD64_TEXTURE_COUNT 112
 #define HUD64_FACE_COUNT 24
 /* the texture files' tables id (their header's version field): a file from other tables is refused */
-#define HUD64_TABLES_ID 0x3613
+#define HUD64_TABLES_ID 0xE42C
 #define HUD64_BLUE 0x2896FF
 #define HUD64_OUTLINE 0xAAD5FF
 #define HUD64_NUMBER 0xE6F0FF
@@ -729,5 +729,175 @@ static const struct hud64_weapon_name hud64_weapon_names[] = {
 	{"NEEDLER", "NEEDLER"},
 	{"FLAMETHROWER", "FLAMER"},
 };
+
+/* HUD STYLE 64's reticles (tools/n64/hud64/hud64_reticles.py): the bitmaps whose items it draws, by the
+   hash of their tag's name (32-bit FNV-1a), and each one's kind */
+enum { HUD64_RETB_RETICLES, HUD64_RETB_WARNINGS, HUD64_RETB_SCOPE, HUD64_RETB_LINES, HUD64_RETB_LINES_SM, HUD64_RETB_PISTOL_MASK, HUD64_RETB_PISTOL_MASK_SPLIT, HUD64_RETB_SNIPER_MASK, HUD64_RETB_SNIPER_MASK_SPLIT };
+#define HUD64_RET_NAMES 10
+static const uint32_t hud64_ret_names[HUD64_RET_NAMES] = {
+	0x7CC296C8, /* ui\hud\bitmaps\combined\hud_reticles */
+	0x8919E1B9, /* ui\hud\bitmaps\combined\hud_reticle_warnings */
+	0xC75D673B, /* ui\hud\bitmaps\sniper\hud_reticles_scope */
+	0x16570C8D, /* ui\hud\bitmaps\sniper\sniper_scope_crosshairs2 */
+	0x2B618276, /* ui\hud\bitmaps\sniper\sniper_scope_crosshairs_sm */
+	0x4C11EBCC, /* ui\hud\bitmaps\pistol\pistol_scope_mask */
+	0xEA83845C, /* ui\hud\bitmaps\pistol\pistol_scope_mask split */
+	0x334821C6, /* ui\hud\bitmaps\sniper\sniper_scope_mask2 */
+	0xCF36FDC5, /* ui\hud\bitmaps\sniper\sniper_scope_mask_sm */
+	0x7A2B2B6F, /* ui\hud\bitmaps\combined\hud_reticles\pc_expansion */
+};
+static const uint8_t hud64_ret_name_kind[HUD64_RET_NAMES] = {HUD64_RETB_RETICLES, HUD64_RETB_WARNINGS, HUD64_RETB_SCOPE, HUD64_RETB_LINES, HUD64_RETB_LINES_SM, HUD64_RETB_PISTOL_MASK, HUD64_RETB_PISTOL_MASK_SPLIT, HUD64_RETB_SNIPER_MASK, HUD64_RETB_SNIPER_MASK_SPLIT, HUD64_RETB_RETICLES};
+enum { HUD64_RETA_ASSAULT_RIFLE, HUD64_RETA_PISTOL, HUD64_RETA_SNIPER_RIFLE, HUD64_RETA_ROCKET_LAUNCHER, HUD64_RETA_SHOTGUN, HUD64_RETA_PLASMA_RIFLE, HUD64_RETA_PLASMA_PISTOL, HUD64_RETA_NEEDLER, HUD64_RETA_UNARMED, HUD64_RETA_WARTHOG_GUNNER, HUD64_RETA_GHOST, HUD64_RETA_SCORPION, HUD64_RETA_BANSHEE, HUD64_RETA_WARTHOG_DRIVER, HUD64_RETA_DOTS, HUD64_RETA_FUEL_ROD, HUD64_RETA_ROCKET_WARTHOG, HUD64_RETA_LABEL_2X, HUD64_RETA_LABEL_10X, HUD64_RETA_COUNT };
+/* Halo's item (its bitmap, sequence, frames, offset in its tag) -> the art, its aim pixel this far from the
+   view's */
+struct hud64_ret_item { uint8_t bitmap, sequence, frame0, frame1; int16_t ox, oy; uint8_t art; int8_t dx, dy; };
+#define HUD64_RET_ITEMS 25
+static const struct hud64_ret_item hud64_ret_items[HUD64_RET_ITEMS] = {
+	{HUD64_RETB_RETICLES, 0, 0, 0, 0, 0, HUD64_RETA_ASSAULT_RIFLE, 0, 0},
+	{HUD64_RETB_RETICLES, 1, 0, 0, 0, 0, HUD64_RETA_BANSHEE, 0, 0},
+	{HUD64_RETB_RETICLES, 2, 0, 0, 0, 0, HUD64_RETA_WARTHOG_GUNNER, 0, 0},
+	{HUD64_RETB_RETICLES, 3, 0, 0, 0, 0, HUD64_RETA_PLASMA_PISTOL, 0, 0},
+	{HUD64_RETB_RETICLES, 4, 0, 0, 0, 0, HUD64_RETA_PLASMA_RIFLE, 0, 0},
+	{HUD64_RETB_RETICLES, 6, 0, 0, 0, 0, HUD64_RETA_NEEDLER, 0, 0},
+	{HUD64_RETB_RETICLES, 7, 0, 0, 0, 0, HUD64_RETA_UNARMED, 0, 0},
+	{HUD64_RETB_RETICLES, 8, 0, 0, 0, 0, HUD64_RETA_PISTOL, 0, 0},
+	{HUD64_RETB_RETICLES, 9, 0, 0, 0, 0, HUD64_RETA_ROCKET_LAUNCHER, 0, 0},
+	{HUD64_RETB_RETICLES, 10, 0, 0, 0, 0, HUD64_RETA_SHOTGUN, 0, 0},
+	{HUD64_RETB_RETICLES, 11, 0, 0, 0, 0, HUD64_RETA_SCORPION, 0, 0},
+	{HUD64_RETB_RETICLES, 13, 0, 0, 0, 0, HUD64_RETA_GHOST, 0, 0},
+	{HUD64_RETB_RETICLES, 14, 0, 0, 0, -40, HUD64_RETA_WARTHOG_DRIVER, 0, -21},
+	{HUD64_RETB_RETICLES, 15, 0, 0, 0, 0, HUD64_RETA_FUEL_ROD, 0, 0},
+	{HUD64_RETB_RETICLES, 16, 0, 0, 0, 0, HUD64_RETA_ROCKET_WARTHOG, 0, 0},
+	{HUD64_RETB_SCOPE, 0, 0, 0, 0, 0, HUD64_RETA_SNIPER_RIFLE, 0, 0},
+	{HUD64_RETB_SCOPE, 1, 0, 0, 105, 105, HUD64_RETA_LABEL_2X, 52, 52},
+	{HUD64_RETB_SCOPE, 1, 0, 0, 67, 67, HUD64_RETA_LABEL_2X, 33, 33},
+	{HUD64_RETB_SCOPE, 1, 0, 0, 150, 104, HUD64_RETA_LABEL_2X, 75, 52},
+	{HUD64_RETB_SCOPE, 1, 1, 1, 150, 104, HUD64_RETA_LABEL_10X, 75, 52},
+	{HUD64_RETB_SCOPE, 1, 0, 0, 95, 60, HUD64_RETA_LABEL_2X, 47, 30},
+	{HUD64_RETB_SCOPE, 1, 1, 1, 95, 60, HUD64_RETA_LABEL_10X, 47, 30},
+	{HUD64_RETB_WARNINGS, 9, 0, 4, 0, 30, HUD64_RETA_DOTS, 0, 15},
+	{HUD64_RETB_WARNINGS, 9, 0, 4, 0, 15, HUD64_RETA_DOTS, 0, 8},
+	{HUD64_RETB_WARNINGS, 9, 0, 4, 0, 32, HUD64_RETA_DOTS, 0, 16},
+};
+/* an art in a set (full, split, full_ws, split_ws): its stored part's place in the atlas (texels), the aim
+   pixel in the whole picture, how stored (HUD64_RET_WHOLE: as it is; _HALF: the left half, centre column
+   included, drawn again mirrored; _QUARTER: the top-left quarter, drawn 4 times) */
+enum { HUD64_RET_WHOLE, HUD64_RET_HALF, HUD64_RET_QUARTER };
+struct hud64_ret_art { uint8_t s, t, w, h, cx, cy, how; };
+static const struct hud64_ret_art hud64_ret_arts[4][HUD64_RETA_COUNT] = {
+	{ /* full */
+		{15, 82, 14, 14, 13, 13, 2}, /* assault_rifle */
+		{13, 109, 7, 13, 6, 6, 1}, /* pistol */
+		{29, 23, 3, 3, 2, 2, 2}, /* sniper_rifle */
+		{13, 50, 17, 17, 16, 16, 2}, /* rocket_launcher */
+		{15, 67, 15, 15, 14, 14, 2}, /* shotgun */
+		{20, 109, 11, 11, 10, 10, 2}, /* plasma_rifle */
+		{0, 32, 13, 22, 12, 14, 1}, /* plasma_pistol */
+		{16, 122, 15, 5, 14, 4, 2}, /* needler */
+		{29, 26, 2, 2, 1, 1, 2}, /* unarmed */
+		{0, 84, 14, 14, 13, 13, 2}, /* warthog_gunner */
+		{0, 67, 15, 17, 14, 11, 1}, /* ghost */
+		{14, 96, 13, 13, 12, 12, 2}, /* scorpion */
+		{13, 32, 12, 18, 11, 10, 1}, /* banshee */
+		{0, 25, 5, 3, 4, 1, 1}, /* warthog_driver */
+		{0, 30, 15, 2, 7, 1, 0}, /* dots */
+		{0, 122, 16, 12, 15, 11, 2}, /* fuel_rod */
+		{0, 98, 13, 13, 12, 12, 2}, /* rocket_warthog */
+		{15, 16, 13, 7, 6, 3, 0}, /* label_2x */
+		{15, 9, 16, 7, 8, 3, 0}, /* label_10x */
+	},
+	{ /* split */
+		{0, 11, 7, 7, 6, 6, 2}, /* assault_rifle */
+		{28, 16, 4, 7, 3, 3, 1}, /* pistol */
+		{29, 23, 3, 3, 2, 2, 2}, /* sniper_rifle */
+		{7, 0, 9, 9, 8, 8, 2}, /* rocket_launcher */
+		{7, 9, 8, 8, 7, 7, 2}, /* shotgun */
+		{7, 24, 6, 6, 5, 5, 2}, /* plasma_rifle */
+		{0, 0, 7, 11, 6, 7, 1}, /* plasma_pistol */
+		{21, 29, 8, 3, 7, 2, 2}, /* needler */
+		{29, 26, 2, 2, 1, 1, 2}, /* unarmed */
+		{7, 17, 7, 7, 6, 6, 2}, /* warthog_gunner */
+		{16, 0, 8, 9, 7, 6, 1}, /* ghost */
+		{0, 18, 7, 7, 6, 6, 2}, /* scorpion */
+		{24, 0, 6, 9, 5, 5, 1}, /* banshee */
+		{0, 25, 5, 3, 4, 1, 1}, /* warthog_driver */
+		{0, 30, 15, 2, 7, 1, 0}, /* dots */
+		{21, 23, 8, 6, 7, 5, 2}, /* fuel_rod */
+		{14, 23, 7, 7, 6, 6, 2}, /* rocket_warthog */
+		{15, 16, 13, 7, 6, 3, 0}, /* label_2x */
+		{15, 9, 16, 7, 8, 3, 0}, /* label_10x */
+	},
+	{ /* full_ws */
+		{21, 60, 11, 14, 10, 13, 2}, /* assault_rifle */
+		{11, 75, 5, 13, 4, 6, 1}, /* pistol */
+		{10, 23, 3, 3, 2, 2, 2}, /* sniper_rifle */
+		{10, 28, 13, 17, 12, 16, 2}, /* rocket_launcher */
+		{21, 45, 11, 15, 10, 14, 2}, /* shotgun */
+		{0, 76, 9, 11, 8, 10, 2}, /* plasma_rifle */
+		{0, 28, 10, 22, 9, 14, 1}, /* plasma_pistol */
+		{0, 87, 11, 5, 10, 4, 2}, /* needler */
+		{30, 15, 2, 2, 1, 1, 2}, /* unarmed */
+		{0, 62, 11, 14, 10, 13, 2}, /* warthog_gunner */
+		{10, 45, 11, 17, 10, 11, 1}, /* ghost */
+		{11, 62, 10, 13, 9, 12, 2}, /* scorpion */
+		{23, 28, 9, 17, 8, 10, 1}, /* banshee */
+		{6, 23, 4, 3, 3, 1, 1}, /* warthog_driver */
+		{0, 26, 15, 2, 7, 1, 0}, /* dots */
+		{16, 87, 12, 12, 11, 11, 2}, /* fuel_rod */
+		{21, 74, 10, 13, 9, 12, 2}, /* rocket_warthog */
+		{0, 16, 13, 7, 6, 3, 0}, /* label_2x */
+		{5, 9, 16, 7, 8, 3, 0}, /* label_10x */
+	},
+	{ /* split_ws */
+		{21, 8, 6, 7, 5, 6, 2}, /* assault_rifle */
+		{27, 15, 3, 7, 2, 3, 1}, /* pistol */
+		{10, 23, 3, 3, 2, 2, 2}, /* sniper_rifle */
+		{5, 0, 7, 9, 6, 8, 2}, /* rocket_launcher */
+		{18, 0, 6, 8, 5, 7, 2}, /* shotgun */
+		{25, 22, 5, 6, 4, 5, 2}, /* plasma_rifle */
+		{0, 0, 5, 11, 4, 7, 1}, /* plasma_pistol */
+		{0, 23, 6, 3, 5, 2, 2}, /* needler */
+		{30, 15, 2, 2, 1, 1, 2}, /* unarmed */
+		{21, 15, 6, 7, 5, 6, 2}, /* warthog_gunner */
+		{12, 0, 6, 9, 5, 6, 1}, /* ghost */
+		{27, 8, 5, 7, 4, 6, 2}, /* scorpion */
+		{24, 0, 5, 8, 4, 5, 1}, /* banshee */
+		{6, 23, 4, 3, 3, 1, 1}, /* warthog_driver */
+		{0, 26, 15, 2, 7, 1, 0}, /* dots */
+		{19, 22, 6, 6, 5, 5, 2}, /* fuel_rod */
+		{13, 16, 6, 7, 5, 6, 2}, /* rocket_warthog */
+		{0, 16, 13, 7, 6, 3, 0}, /* label_2x */
+		{5, 9, 16, 7, 8, 3, 0}, /* label_10x */
+	},
+};
+/* the first of the reticles' textures (they come after the design's): loaded without an upload recorded --
+   one or two a view, 1-2 a frame -- for the memory such a recording takes */
+#define HUD64_TEX_RET_FIRST 104
+/* the atlases, 4:3 and WIDESCREEN: [0] every set (1-2 players' contexts), [1] its first rows, the 2-4 player
+   set's (3-4 players') */
+static const uint16_t hud64_ret_atlas[2][2] = {{104, 105}, {106, 107}};
+#define HUD64_TEX_SCOPE_CIRCLE 108
+#define HUD64_SCOPE_CIRCLE_SIZE 32
+static const uint16_t hud64_scope_corner[2] = {109, 110};
+#define HUD64_TEX_SCOPE_LADDER 111
+/* a zoomed view, at 1 player and 2-4 players, 4:3 and WIDESCREEN (hud64_reticles.py zoom_view), in grid
+   pixels from the aim pixel: the sniper window's outline rectangle (exclusive), its corner squares' size (the
+   corner texture drawn into them), the rectangles darkened (x0, y0, x1, y1 exclusive; the outline's alpha 1,
+   the dark lines' 2), the side frames' bar across, the ladder's half height and texel rows a line; the
+   circle's half size */
+struct hud64_zoom { int8_t box[4], corner[2], rects[10][5], bar, top, step, circle[2]; };
+static const struct hud64_zoom hud64_zoom[2][2] = {
+	{{{-98, -61, 99, 62}, {8, 8}, {{-90, -61, 91, -60, 1}, {-90, 61, 91, 62, 1}, {-98, -53, -97, 54, 1}, {98, -53, 99, 54, 1}, {-78, -1, -57, 2, 2}, {58, -1, 79, 2, 2}, {-57, 0, -33, 1, 2}, {34, 0, 58, 1, 2}, {0, 13, 1, 37, 2}, {-1, 37, 2, 61, 2}}, 93, 50, 1, {64, 64}},
+		{{-74, -61, 75, 62}, {6, 8}, {{-68, -61, 69, -60, 1}, {-68, 61, 69, 62, 1}, {-74, -53, -73, 54, 1}, {74, -53, 75, 54, 1}, {-59, -1, -43, 2, 2}, {44, -1, 60, 2, 2}, {-43, 0, -25, 1, 2}, {26, 0, 44, 1, 2}, {0, 13, 1, 37, 2}, {-1, 37, 2, 61, 2}}, 70, 50, 1, {48, 64}}},
+	{{{-49, -31, 50, 32}, {5, 5}, {{-44, -31, 45, -30, 1}, {-44, 31, 45, 32, 1}, {-49, -26, -48, 27, 1}, {49, -26, 50, 27, 1}, {-39, -1, -28, 2, 2}, {29, -1, 40, 2, 2}, {-28, 0, -16, 1, 2}, {17, 0, 29, 1, 2}, {0, 6, 1, 18, 2}, {-1, 18, 2, 31, 2}}, 44, 25, 2, {32, 32}},
+		{{-37, -31, 38, 32}, {4, 5}, {{-33, -31, 34, -30, 1}, {-33, 31, 34, 32, 1}, {-37, -26, -36, 27, 1}, {37, -26, 38, 27, 1}, {-29, -1, -21, 2, 2}, {22, -1, 30, 2, 2}, {-21, 0, -12, 1, 2}, {13, 0, 22, 1, 2}, {0, 6, 1, 18, 2}, {-1, 18, 2, 31, 2}}, 33, 25, 2, {24, 32}}},
+};
+/* the masks' alphas: the circle's outside (its texture's outer value as the combiner gives it, the texel
+   times the primitive's 255: the RDP's (a x b + 128) >> 8), the sniper's outside, its window's outline, its
+   dark lines (Halo's) */
+#define HUD64_ALPHA_CIRCLE_OUT 135
+#define HUD64_ALPHA_SNIPER_OUT 128
+#define HUD64_ALPHA_SNIPER_OUTLINE 178
+#define HUD64_ALPHA_SNIPER_LINES 120
 
 #endif
