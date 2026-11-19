@@ -238,6 +238,9 @@ static struct
 	int projectiles;
 	/* HUD STYLE 64: the HUD redrawn for the N64 (n64_hud_set_style) */
 	int hud_style;
+	/* ZOOM SHADE (HUD STYLE 64's): N64_ZOOM_SHADE_*, one of zoom_shades
+	(n64_hud_set_zoom_shade) */
+	int zoom_shade;
 	/* FIELD OF VIEW: degrees, FOV_MINIMUM to FOV_MAXIMUM a FOV_STEP at a
 	time (n64_field_of_view) */
 	int field_of_view;
@@ -966,15 +969,46 @@ enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE
 /* the buzz a controller gives when its rumble is turned on (frames) */
 #define RUMBLE_PULSE_FRAMES 12
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
-enum { SETTING_CHUNKY, SETTING_HUD, SETTING_HUD_STYLE, SETTING_FIELD_OF_VIEW, SETTING_WIDESCREEN, SETTING_ANIMATIONS, SETTING_PARTICLES,
-	SETTING_PROJECTILES, SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_TERRAIN, SETTING_STANDINS, SETTING_ANTIALIAS, SETTING_DEDITHER,
-	SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
+enum { SETTING_CHUNKY, SETTING_HUD, SETTING_HUD_STYLE, SETTING_ZOOM_SHADE, SETTING_FIELD_OF_VIEW, SETTING_WIDESCREEN,
+	SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_PROJECTILES, SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_TERRAIN,
+	SETTING_STANDINS, SETTING_ANTIALIAS, SETTING_DEDITHER, SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
+
 /* the Settings rows shown: HUD RESOLUTION is not on the campaign cartridge
 (its level leaves no room for a 640x240 HUD after the menu: the row would do
-nothing); a row's place in the list */
-#define SETTING_SHOWN(s) (!CAMPAIGN_CARTRIDGE || (s) != SETTING_HUD)
-#define SETTINGS_SHOWN (SETTING_COUNT - CAMPAIGN_CARTRIDGE)
-#define SETTING_PLACE(s) ((s) - (CAMPAIGN_CARTRIDGE && (s) > SETTING_HUD))
+nothing); ZOOM SHADE only with HUD STYLE 64 (it is that style's). setting_place
+counts the rows hidden here: change both */
+static int setting_shown(int s)
+{
+	return (!CAMPAIGN_CARTRIDGE || s != SETTING_HUD) && (s != SETTING_ZOOM_SHADE || menu.hud_style);
+}
+
+/* a row's place in the list (the rows shown before it: those before it, but
+for the hidden ones of setting_shown) */
+static int setting_place(int s)
+{
+	return s - (CAMPAIGN_CARTRIDGE && s > SETTING_HUD) - (s > SETTING_ZOOM_SHADE && !menu.hud_style);
+}
+#define SETTING_SHOWN(s) setting_shown(s)
+#define SETTINGS_SHOWN setting_place(SETTING_COUNT)
+#define SETTING_PLACE(s) setting_place(s)
+
+/* ZOOM SHADE's values, in the order the row steps through them, and their
+names (n64.h's N64_ZOOM_SHADE_*) */
+static const int zoom_shades[] = {N64_ZOOM_SHADE_AUTO, N64_ZOOM_SHADE_DITHER, N64_ZOOM_SHADE_BLEND};
+#define ZOOM_SHADE_COUNT ((int)(sizeof(zoom_shades) / sizeof(zoom_shades[0])))
+static const char *const zoom_shade_names[3] = {"AUTO", "DITHER", "BLEND"};
+
+/* the next or previous value of zoom_shades (from one not in it: AUTO) */
+static int zoom_shade_step(int shade, int step)
+{
+	int i = 0;
+
+	while (i < ZOOM_SHADE_COUNT && zoom_shades[i] != shade)
+		i++;
+	if (i == ZOOM_SHADE_COUNT)
+		return zoom_shades[0];
+	return zoom_shades[(i + step + ZOOM_SHADE_COUNT) % ZOOM_SHADE_COUNT];
+}
 #define FOV_DEFAULT 70
 #define FOV_MINIMUM 60
 #define FOV_MAXIMUM 110
@@ -1047,9 +1081,11 @@ static void settings_pack(unsigned char *bytes)
 	/* (byte 15, a bit each, 0 in the records kept before them: DECALS off,
 	ANTI-ALIASING on, DEDITHER on, HUD RESOLUTION STANDARD, HUD STYLE 64,
 	bit 4; OBSTACLE STAND-INS off, bit 5, so that a record from before the
-	row reads on) */
+	row reads on; ZOOM SHADE in bits 6 and 7, N64_ZOOM_SHADE_*: 0, AUTO, in
+	the records kept before it) */
 	bytes[15] = (unsigned char)((menu.no_decals != 0) | (menu.antialias != 0) << 1 | (menu.dedither != 0) << 2 |
-		(menu.hud_standard != 0) << 3 | (menu.hud_style != 0) << 4 | (menu.no_standins != 0) << 5);
+		(menu.hud_standard != 0) << 3 | (menu.hud_style != 0) << 4 | (menu.no_standins != 0) << 5 |
+		(menu.zoom_shade & 3) << 6);
 	/* (FIELD OF VIEW in degrees after the controllers', 0 in the records
 	kept before it: the default) */
 	bytes[40] = (unsigned char)menu.field_of_view;
@@ -1103,6 +1139,8 @@ static int settings_unpack(const unsigned char *bytes)
 	menu.hud_standard = (bytes[15] >> 3) & 1;
 	menu.no_standins = (bytes[15] >> 5) & 1;
 	menu.hud_style = (bytes[15] >> 4) & 1;
+	/* (a value the row does not offer: AUTO) */
+	menu.zoom_shade = zoom_shade_step((bytes[15] >> 6) & 3, 0);
 	menu.field_of_view = bytes[40] >= FOV_MINIMUM && bytes[40] <= FOV_MAXIMUM && !(bytes[40] % FOV_STEP) ?
 		bytes[40] : FOV_DEFAULT;
 	menu.projectiles = bytes[41] < 2 ? bytes[41] + 1 : bytes[41] == 2 ? 0 : bytes[41] == 3 ? 3 : 1;
@@ -2004,6 +2042,7 @@ static void draw_settings(int item)
 	static const char *const help[SETTING_COUNT][2] = {
 		[SETTING_CHUNKY] = {"MEDIUM 256 ACROSS, CHUNKY HALF, HIGH 640X240,", "ULTRA 480I (LESS WHERE THE MAP LEAVES NO ROOM)"},
 		[SETTING_HUD_STYLE] = {"ORIGINAL: HALO'S OWN HUD; 64: HALO'S HUD REDRAWN", "FOR THE N64'S SCREEN (LARGER TEXT AND NUMBERS)"},
+		[SETTING_ZOOM_SHADE] = {"OUTSIDE A ZOOMED SCOPE: BLEND SHADES (SLOWER),", "DITHER STIPPLES; AUTO MEASURES THE DRAWING SPEED"},
 		[SETTING_FIELD_OF_VIEW] = {"HOW WIDE YOU SEE IN FIRST PERSON, IN DEGREES", "ACROSS (70 AS IN HALO; WIDER DRAWS MORE: SLOWER)"},
 		[SETTING_ANIMATIONS] = {"HALF: POSES, YOUR GUN'S TOO, AT HALF THE RATE", "(HALVED AGAIN WITH 3 OR 4 PLAYERS)"},
 		[SETTING_PARTICLES] = {"MUZZLE FLASHES, SPARKS, DUST AND BLOOD", ""},
@@ -2063,6 +2102,17 @@ static void draw_settings(int item)
 		case SETTING_HUD_STYLE:
 			label = "HUD STYLE";
 			snprintf(value, sizeof(value), "%s", menu.hud_style ? "64" : "ORIGINAL");
+			break;
+		case SETTING_ZOOM_SHADE:
+			label = "ZOOM SHADE";
+			/* (AUTO with the look it chose; AUTO alone until the first
+			game, which makes the choice) */
+			if (menu.zoom_shade == N64_ZOOM_SHADE_AUTO && !n64_render_blend_chosen)
+				snprintf(value, sizeof(value), "AUTO");
+			else if (menu.zoom_shade == N64_ZOOM_SHADE_AUTO)
+				snprintf(value, sizeof(value), "AUTO (%s)", zoom_shade_names[n64_hud_zoom_shade_auto()]);
+			else
+				snprintf(value, sizeof(value), "%s", zoom_shade_names[menu.zoom_shade]);
 			break;
 		case SETTING_FIELD_OF_VIEW:
 			label = "FIELD OF VIEW";
@@ -2908,6 +2958,10 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					menu.hud_standard = !menu.hud_standard;
 				if (setting == SETTING_HUD_STYLE && (pad->left || pad->right || pad->pressed.a))
 					menu.hud_style = !menu.hud_style;
+				if (setting == SETTING_ZOOM_SHADE && pad->left)
+					menu.zoom_shade = zoom_shade_step(menu.zoom_shade, -1);
+				else if (setting == SETTING_ZOOM_SHADE && (pad->right || pad->pressed.a))
+					menu.zoom_shade = zoom_shade_step(menu.zoom_shade, 1);
 				if (setting == SETTING_ANIMATIONS && (pad->left || pad->right || pad->pressed.a))
 					menu.half_animation = !menu.half_animation;
 				if (setting == SETTING_WIDESCREEN && (pad->left || pad->right || pad->pressed.a))
@@ -3164,6 +3218,10 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 				menu.chunky == RESOLUTION_HIGH ? N64_DETAIL_HIGH : 0);
 			n64_render_set_hud_detail(!CAMPAIGN_CARTRIDGE && !menu.hud_standard);
 			n64_hud_set_style(menu.hud_style);
+			n64_hud_set_zoom_shade(menu.zoom_shade);
+			/* (AUTO's choice made as the first game starts, from the latest
+			second of frames; kept from then on) */
+			n64_render_blend_choose();
 			n64_half_animation_rate = menu.half_animation;
 			n64_field_of_view = menu.field_of_view;
 			settings_save();

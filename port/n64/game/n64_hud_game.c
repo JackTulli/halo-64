@@ -121,8 +121,8 @@ by their effectors only when zoomed. The N64's HUD draws one map a quad:
 drawing the first alone left two white bars on the screen, zoomed or not.
 The second is drawn instead, scrolled and faded as Halo has it (its
 texture coordinates are the first's times its scale plus its offset), in
-two pieces where the strip passes its map's end (it wraps); the mask's
-fading ends are left out */
+two pieces where the strip passes its map's end (it wraps), only where
+the mask is at least half opaque (below) */
 static void draw_masked_map(
 	struct rasterizer_dynamic_screen_geometry_parameters *parameters,
 	struct dynamic_screen_vertex *vertices)
@@ -150,6 +150,29 @@ static void draw_masked_map(
 	v0 = vertices[0].texture_coordinates.y * base_v * parameters->map_scale[1].j + offset_v;
 	u1 = vertices[2].texture_coordinates.x * base_u * parameters->map_scale[1].i + offset_u;
 	v1 = vertices[2].texture_coordinates.y * base_v * parameters->map_scale[1].j + offset_v;
+	/* (the strip only where its mask is at least half opaque, as far as the
+	Xbox shows the ticks -- the stock mask, Halo's angle_ticks_mask, 8x256,
+	rows 15 to 220; the mask's fading ends are not drawn) */
+	if (parameters->map[0] &&
+		parameters->map[0]->width == 8 && parameters->map[0]->height == 256)
+	{
+		real mask_scale = base_v * parameters->map_scale[0].j;
+		real mask_offset = parameters->map_offset[0] ? parameters->map_offset[0]->y : 0.f;
+		real m0 = vertices[0].texture_coordinates.y * mask_scale + mask_offset;
+		real m1 = vertices[2].texture_coordinates.y * mask_scale + mask_offset;
+
+		if (m1 > m0)
+		{
+			real f0 = PIN((15.f / 256.f - m0) / (m1 - m0), 0.f, 1.f);
+			real f1 = PIN((221.f / 256.f - m0) / (m1 - m0), 0.f, 1.f);
+			real height = y1 - y0, length = v1 - v0;
+
+			y1 = y0 + height * f1;
+			v1 = v0 + length * f1;
+			y0 += height * f0;
+			v0 += length * f0;
+		}
+	}
 	if (v1 < v0 || v1 - v0 > 1.f || u1 - u0 > 1.f || y1 <= y0)
 		return;
 	/* (within the map's first turn) */

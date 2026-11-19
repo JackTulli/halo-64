@@ -71,6 +71,9 @@ symbols in this file:
 #include "items/weapon_definitions.h"
 #include "items/weapons.h"
 #include "objects/objects.h"
+#ifdef HALO_N64
+#include "rasterizer/rasterizer.h"
+#endif
 #include "render/render.h"
 #include "saved games/game_state.h"
 #include "scenario/scenario.h"
@@ -425,18 +428,30 @@ over, the design drawing them */
 extern int n64_hud64_active;
 extern void n64_hud64_game_weapon(long weapon_index, boolean heat_hot);
 extern void n64_hud64_game_grenades(long unit_index, unsigned long fill, unsigned long edge);
+extern int n64_hud64_game_crosshair(long bitmap_tag, short sequence, short frame, point2d const *offset,
+	point2d const *placed, real scale, int red);
+extern int n64_hud64_game_crosshair_taken(long bitmap_tag, short sequence, point2d const *offset);
 
 /* HUD STYLE 64 draws the ammunition itself: of the weapon HUD it keeps
 only the zoom parts -- the elements that follow the zoom level (the
 sniper's angle ticks) and the numbers shown only when zoomed (its range
-readouts) -- as ORIGINAL draws them */
+readouts) -- as ORIGINAL draws them. Where the style drew the sniper's
+window, whose side frames stand for the angle ticks, it leaves out the
+stock angle ticks only (n64_hud64_scope_frames, n64_hud64.c
+n64_hud64_scope): a map's own zoom elements keep Halo's drawing */
 static boolean weapon_hud_zoom_parts_only;
+extern int n64_hud64_scope_frames;
 
 enum
 {
 	/* (hud_draw.c's _hud_number_show_only_when_zoomed_bit) */
 	_weapon_hud_number_show_only_when_zoomed_bit = 1
 };
+
+static boolean weapon_hud_angle_ticks(
+	struct static_hud_element_definition const *element);
+static void zoom_parts_window(
+	rectangle2d *window);
 #endif
 
 static void crosshairs_draw(
@@ -1115,6 +1130,12 @@ static void n64_weapon_hud_sprites(
 					(!mark && TEST_FLAG(item->flags, _hud_crosshair_only_on_default_zoom_bit) && zoom != 0) ||
 					item->sequence_index < 0)
 					continue;
+				/* (HUD STYLE 64: an item the style draws from its own art
+				needs no sprite of Halo's -- n64_hud64_game.c) */
+				if (n64_hud64_active &&
+					n64_hud64_game_crosshair_taken(element->crosshairs.bitmap.index, item->sequence_index,
+						&item->placement.offset))
+					continue;
 				if (!TEST_FLAG(item->flags, _hud_crosshair_not_a_sprite_bit))
 				{
 					if (item->sequence_index < group->sequences.count)
@@ -1481,6 +1502,19 @@ static void crosshairs_draw(
 #endif
 #ifdef HALO_N64
                                     if (sequence && (frame_index < 0 || frame_index >= sequence->sprites.count)) continue;
+									/* (HUD STYLE 64: the style's own art for Halo's
+									reticles, their zoom labels and the overheat dots,
+									where it has one -- n64_hud64_game.c; anything else,
+									a Custom Edition map's own reticles among them, is
+									Halo's quad below. Red: the aim state's flash, over
+									an enemy) */
+									if (n64_hud64_active &&
+										n64_hud64_game_crosshair(element->crosshairs.bitmap.index, item->sequence_index,
+											frame_index, &item->placement.offset, &golden_placement.offset, scale,
+											state_index == _crosshair_state_aim &&
+												TEST_FLAG(item->flags, _hud_crosshair_flashes_bit) &&
+												state->value.reference_data > 0))
+										continue;
 #endif
 									struct bitmap_data *bitmap = TAG_BLOCK_GET_ELEMENT(
 										&bitmap_group->bitmaps,
@@ -1586,6 +1620,11 @@ static void render_weapon_hud(
 	short state_index;
 	short map_type_flags;
 	short element_index;
+#ifdef HALO_N64
+	/* (the zoom parts are laid out on the scope: zoom_parts_window) */
+	rectangle2d window_bounds = render.camera.window_bounds;
+	boolean zoom_part;
+#endif
 
 	csmemset(
 		stack_buffer,
@@ -1934,9 +1973,12 @@ static void render_weapon_hud(
 			TEST_FLAG(map_type_flags, element->header.use_on_map_type))
 		{
 #ifdef HALO_N64
+			zoom_part = hud_multitexture_overlays_follow_zoom(&element->static_element.multitexture_overlays);
 			if (weapon_hud_zoom_parts_only &&
-				!hud_multitexture_overlays_follow_zoom(&element->static_element.multitexture_overlays))
+				(!zoom_part || (n64_hud64_scope_frames && weapon_hud_angle_ticks(&element->static_element))))
 				continue;
+			if (zoom_part)
+				zoom_parts_window(&render.camera.window_bounds);
 #endif
 			state_index = element->header.state_type;
 			hud_draw_static_element(
@@ -1945,6 +1987,9 @@ static void render_weapon_hud(
 				&element->static_element,
 				state_flags[state_index],
 				hud_state->last_weapon_flash_time[state_index]);
+#ifdef HALO_N64
+			render.camera.window_bounds = window_bounds;
+#endif
 		}
 	}
 
@@ -1963,9 +2008,11 @@ static void render_weapon_hud(
 			byte value;
 
 #ifdef HALO_N64
-			if (weapon_hud_zoom_parts_only &&
-				!hud_multitexture_overlays_follow_zoom(&element->meter_element.multitexture_overlays))
+			zoom_part = hud_multitexture_overlays_follow_zoom(&element->meter_element.multitexture_overlays);
+			if (weapon_hud_zoom_parts_only && !zoom_part)
 				continue;
+			if (zoom_part)
+				zoom_parts_window(&render.camera.window_bounds);
 #endif
 			state_index = element->header.state_type;
 			value = (byte)number_values[state_index];
@@ -1978,6 +2025,9 @@ static void render_weapon_hud(
 				state_flags[state_index],
 				(real)hud_state->last_weapon_flash_time[state_index],
 				0.0f);
+#ifdef HALO_N64
+			render.camera.window_bounds = window_bounds;
+#endif
 		}
 	}
 
@@ -1998,8 +2048,8 @@ static void render_weapon_hud(
 			short decimal_value;
 
 #ifdef HALO_N64
-			if (weapon_hud_zoom_parts_only &&
-				!TEST_FLAG(element->number_element.number_flags, _weapon_hud_number_show_only_when_zoomed_bit))
+			zoom_part = TEST_FLAG(element->number_element.number_flags, _weapon_hud_number_show_only_when_zoomed_bit);
+			if (weapon_hud_zoom_parts_only && !zoom_part)
 				continue;
 #endif
 			if (TEST_FLAG(
@@ -2041,6 +2091,10 @@ static void render_weapon_hud(
 				decimal_value = NONE;
 			}
 
+#ifdef HALO_N64
+			if (zoom_part)
+				zoom_parts_window(&render.camera.window_bounds);
+#endif
 			hud_draw_numbers(
 				local_player_index,
 				&definition->absolute_placement,
@@ -2050,6 +2104,9 @@ static void render_weapon_hud(
 				state_flags[state_index],
 				hud_state->last_weapon_flash_time[state_index],
 				0.0f);
+#ifdef HALO_N64
+			render.camera.window_bounds = window_bounds;
+#endif
 		}
 	}
 
@@ -2312,6 +2369,68 @@ void hud_render_weapon_interface(
 }
 
 /* ---------- private code */
+
+#ifdef HALO_N64
+/* (HUD STYLE 64) a static element on the stock sniper rifle's angle
+ticks' bitmap: where the style drew the sniper's window, its side frames
+stand for it. A map's own zoom elements use other bitmaps */
+static boolean weapon_hud_angle_ticks(
+	struct static_hud_element_definition const *element)
+{
+	long bitmap_index = element->interface_bitmap.index;
+
+	return bitmap_index != NONE &&
+		!strcmp(tag_get_name(bitmap_index), "weapons\\sniper rifle\\bitmaps\\angle_ticks_black");
+}
+
+/* The weapon HUD's zoom parts -- the sniper rifle's angle ticks (in HUD
+STYLE 64 only where the style draws no window of its own), its range
+readouts and a map's own zoom elements -- hang from a corner of the
+view's window, Halo's title-safe part, at the distances that line them
+up with the scope on the Xbox, whose frame is 48,36,592,444
+(rasterizer_xbox.c). The N64's frame is wider, 16,12,624,468
+(n64_render_game.c), so they stood 32 layout units left of and 24 above
+their place, the ticks off the scope's centre and the readouts on the
+scope's bottom edge. This gives them
+the window the Xbox would have for the view (compute_window_bounds with
+its frame: the views' outer edges on the frame, those between views 4
+units in, and the right edge 4 units in for a view in the left column),
+about the aim point, as hud_calculate_point centres the crosshairs: they
+keep the Xbox's distances from it. The HUD's inset does not move them.
+render_weapon_hud puts it in place for each zoom part, in both styles; the
+rest of the weapon HUD keeps the view's window */
+static void zoom_parts_window(
+	rectangle2d *window)
+{
+	rectangle2d const *screen = &rasterizer_globals.reserved04.screen_bounds;
+	rectangle2d const *view = &render.camera.viewport_bounds;
+	boolean split = view->x0 != screen->x0 || view->y0 != screen->y0 ||
+		view->x1 != screen->x1 || view->y1 != screen->y1;
+	short x0 = view->x0 == screen->x0 ? 48 : view->x0;
+	short y0 = view->y0 == screen->y0 ? 36 : view->y0;
+	short x1 = view->x1 == screen->x1 ? 592 : view->x1;
+	short y1 = view->y1 == screen->y1 ? 444 : view->y1;
+	short center_x = (short)((view->x0 + view->x1) / 2);
+	short center_y = (short)((view->y0 + view->y1) / 2);
+
+	if (split)
+	{
+		if (view->x0 != screen->x0)
+			x0 += 4;
+		else
+			x1 -= 4;
+		if (view->y0 != screen->y0)
+			y0 += 4;
+		else
+			y1 -= 4;
+	}
+	window->x0 = center_x - (x1 - x0) / 2;
+	window->x1 = window->x0 + (x1 - x0);
+	window->y0 = center_y - (y1 - y0) / 2;
+	window->y1 = window->y0 + (y1 - y0);
+	return;
+}
+#endif
 
 char *strip_path_name(
 	char *path)

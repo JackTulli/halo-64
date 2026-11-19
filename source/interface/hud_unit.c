@@ -97,6 +97,8 @@ over, the design drawing them */
 extern int n64_hud64_active;
 extern void n64_hud64_game_unit(long unit_index, struct unit_hud_interface_definition const *definition,
 	long player_index, long script_flags, struct n64_hud64_unit_state *state);
+extern int n64_hud64_game_crosshair(long bitmap_tag, short sequence, short frame, point2d const *offset,
+	point2d const *placed, real scale, int red);
 
 #endif
 
@@ -981,6 +983,16 @@ void hud_render_unit_interface(
 						draw_flags,
 						_hud_draw_in_multiplayer_bit,
 						local_player_count() > 1);
+#ifdef HALO_N64
+					/* (HUD STYLE 64: a seat's mark -- the Warthog driver's,
+					anchored at the view's centre -- from the style's own art,
+					n64_hud64_game.c) */
+					if (!n64_hud64_active || TEST_FLAG(draw_flags, _hud_draw_disabled_bit) ||
+						hud_definition->absolute_placement.corner != _hud_anchor_center ||
+						!n64_hud64_game_crosshair(hud_definition->background.interface_bitmap.index,
+							hud_definition->background.sequence_index, 0, &hud_definition->background.placement.offset,
+							&hud_definition->background.placement.offset, 1.0f, FALSE))
+#endif
 					hud_draw_static_element(
 						local_player_index,
 						&hud_definition->absolute_placement,

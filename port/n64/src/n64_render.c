@@ -1810,6 +1810,167 @@ int n64_render_screen_height(void)
 	return screen_height;
 }
 
+/* ---------- ZOOM SHADE AUTO's measure (n64.h)
+
+What decides BLEND's cost is how fast the RDP runs. Its blended fill reads
+and writes memory, which takes about the same time on the N64 and where the
+RDP runs faster (a whole 320x240 picture: about 2.6 ms on both); but the
+rest of a frame's drawing follows the RDP's clock, so where that clock runs
+faster the RDP finishes its frames early and BLEND's fill costs nothing
+there. So AUTO measures the RDP's clock against the CPU's counter (which
+runs at the same rate wherever the RDP runs faster: about 46.9 MHz, 781,250
+ticks a 60th of a second): the RDP's clock counter (DP_CLOCK, 24 bits)
+counts 62.5 MHz on the N64, so 4 RDP clocks for 3 CPU ticks is the N64's
+rate, 1.00. BLEND at a rate of 1.25 or more (where the RDP runs 1.5x, BLEND
+cost nothing measurable), or when a blended fill of a 320x240 picture took
+under 500 us: no RDP takes that little for 76,800 blended pixels (at one
+pixel a clock, its peak, the N64's takes 1,229 us; under 500 us it would
+run over 2.4x the N64's clock) -- an emulator that gives the RDP no time,
+which draws BLEND as fast as anything. Else the slow choice.
+
+The rate is measured over the latest second of frames before the first game:
+the two counters are read at each frame's end and summed in quarter seconds
+of frames (BLEND_PART_MS), of which the latest four make the second
+(BLEND_PARTS); a frame that took over 100 ms is left out, as the RDP's
+24-bit counter wraps in 0.18 s at 1.5x the N64's clock. The choice is made
+once, as the first game starts (n64_render_blend_choose), from that second
+-- or from what there is, if a game starts within a second of the first
+picture -- and kept until the power is off. (Where the RDP runs 1.5x, its
+clock ran at the N64's rate for the first 7 s after the first picture and at
+1.5x from then on: during the start's fill and the first seconds of frames
+the rate read 1.00, while every frame of the game read 1.50. The latest
+second before the game is what the game's drawing runs at.)
+
+The fill is timed once, at the start, before the first picture: into the
+game's z-buffer, which every frame clears before it uses it (nothing shown,
+no memory taken), with the VI showing a picture as in a game. Its end is
+the RDP's own: a SYNC_FULL's interrupt, the CPU's counter read in it. (The
+RSP's wait for the RDP, which rspq_wait ends on, polls the RDP's busy flag,
+which right after the RDP is given new commands may still read idle: the
+likely cause of a try that read a fill of 37 us on the N64, one in 20.)
+BLEND_TRIES tries, the longest kept, so that a short try cannot choose */
+#define BLEND_TRIES 3
+#define BLEND_FLOOR_US 500
+#define BLEND_PART_MS 250
+#define BLEND_PARTS 4 /* the latest second */
+_Static_assert(BLEND_PARTS * BLEND_PART_MS == 1000 && !(BLEND_PARTS & (BLEND_PARTS - 1)), "a second of parts, a power of 2");
+#define BLEND_FRAME_MAX_MS 100
+unsigned long n64_render_blend_ticks;
+int n64_render_blend_slow, n64_render_blend_chosen;
+
+static volatile int blend_ended;
+static volatile uint32_t blend_end_ticks;
+/* (the frames' measure) the last frame's counters; the latest quarter
+seconds of frames kept (a ring: CPU ticks and RDP clocks; 0 until made),
+how many there have been, and the one being summed */
+static int blend_started, blend_parts_done;
+static uint32_t blend_last_ticks, blend_last_clock;
+static uint32_t blend_part_ticks[BLEND_PARTS], blend_part_clocks[BLEND_PARTS];
+static uint32_t blend_sum_ticks, blend_sum_clocks;
+
+/* (the SYNC_FULL's callback, in the RDP's interrupt) */
+static void blend_end(void *arg)
+{
+	blend_end_ticks = TICKS_READ();
+	blend_ended = 1;
+}
+
+/* AUTO's choice, once (the first game's start, or the first zoomed view
+before it): from the latest second of frames, or all of them if there is
+less (none: the slow choice, but for an emulator's fill); 1 if BLEND is too
+slow */
+int n64_render_blend_choose(void)
+{
+	if (!n64_render_blend_chosen)
+	{
+		n64_render_blend_chosen = 1;
+		/* (under a second: the part being summed too; the ring's parts not
+		made yet are 0) */
+		if (blend_parts_done >= BLEND_PARTS)
+			blend_sum_ticks = blend_sum_clocks = 0;
+		for (int i = 0; i < BLEND_PARTS; i++)
+		{
+			blend_sum_ticks += blend_part_ticks[i];
+			blend_sum_clocks += blend_part_clocks[i];
+		}
+		/* slow under 1.25x the N64's clock: 4 RDP clocks for 3 CPU ticks is
+		1.00, so 1.25x is 5 for 3 (clocks x 3 against ticks x 5); and no
+		frames, the same; but for a fill under the floor (none ended: no
+		floor) */
+		n64_render_blend_slow = (!blend_sum_ticks ||
+			(unsigned long long)blend_sum_clocks * 3 < (unsigned long long)blend_sum_ticks * 5) &&
+			!(n64_render_blend_ticks && TICKS_TO_US(n64_render_blend_ticks) < BLEND_FLOOR_US);
+	}
+	return n64_render_blend_slow;
+}
+
+/* a frame's sample: CPU ticks and RDP clocks since the frame before, into
+the quarter second being summed; a full one into the ring */
+static void blend_sample(uint32_t ticks, uint32_t clocks)
+{
+	if (!ticks || ticks > TICKS_FROM_MS(BLEND_FRAME_MAX_MS))
+		return;
+	blend_sum_ticks += ticks;
+	blend_sum_clocks += clocks;
+	if (blend_sum_ticks >= TICKS_FROM_MS(BLEND_PART_MS))
+	{
+		blend_part_ticks[blend_parts_done & (BLEND_PARTS - 1)] = blend_sum_ticks;
+		blend_part_clocks[blend_parts_done & (BLEND_PARTS - 1)] = blend_sum_clocks;
+		blend_parts_done++;
+		blend_sum_ticks = blend_sum_clocks = 0;
+	}
+}
+
+/* (each frame's end, n64_render_frame_end, until the choice is made) */
+static void blend_frame(void)
+{
+	uint32_t now = TICKS_READ(), clock = *DP_CLOCK & 0xFFFFFF;
+
+	if (blend_started)
+		blend_sample(now - blend_last_ticks, (clock - blend_last_clock) & 0xFFFFFF);
+	blend_started = 1;
+	blend_last_ticks = now;
+	blend_last_clock = clock;
+}
+
+static void measure_blend(void)
+{
+	uint32_t ticks[BLEND_TRIES] = {0};
+
+	if (game_zbuf.buffer)
+	{
+		rdpq_attach(&game_zbuf, NULL);
+		rdpq_mode_push();
+		rdpq_set_mode_standard();
+		rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+		rdpq_set_prim_color(RGBA32(0, 0, 0, 135));
+		for (int i = 0; i < BLEND_TRIES; i++)
+		{
+			uint32_t start;
+
+			/* (everything before it done; then the fill alone, to the RDP's
+			interrupt at its end, a tenth of a second at most) */
+			rspq_wait();
+			blend_ended = 0;
+			start = TICKS_READ();
+			rdpq_fill_rectangle(0, 0, game_zbuf.width, game_zbuf.height);
+			rdpq_sync_full(blend_end, NULL);
+			rspq_flush();
+			while (!blend_ended && TICKS_READ() - start < TICKS_FROM_MS(100))
+				;
+			if (blend_ended)
+				ticks[i] = blend_end_ticks - start;
+		}
+		rdpq_mode_pop();
+		rdpq_detach_wait();
+	}
+	/* (the longest try's time, from 0: this runs once; 0 ticks: none ended) */
+	for (int i = 0; i < BLEND_TRIES; i++)
+		if (ticks[i] > n64_render_blend_ticks)
+			n64_render_blend_ticks = ticks[i];
+}
+
 void n64_render_initialize(void)
 {
 	char setting[16];
@@ -1878,6 +2039,8 @@ void n64_render_initialize(void)
 	}
 	/* and the RDP output's park, for the same reason (n64_render_park_rdp_output) */
 	record_rdp_output_park();
+	/* (ZOOM SHADE AUTO's fill: the RDP ready, the display up) */
+	measure_blend();
 	if (n64_debug_flag("debug_overview"))
 		debug_overview = 1;
 	debug_gpu_time = n64_debug_flag("debug_gpu_time");
@@ -6427,6 +6590,9 @@ void n64_render_frame_end(void)
 	else
 		rdpq_detach_show();
 	n64_render_wait_sync_full();
+	/* (ZOOM SHADE AUTO's measure, the first frames') */
+	if (!n64_render_blend_chosen)
+		blend_frame();
 	render_cpu_us = TICKS_TO_US(TICKS_READ() - render_start_ticks);
 	renderer.draw_ticks += TICKS_READ() - render_start_ticks;
 	if (!(renderer.frame_index % 120))
