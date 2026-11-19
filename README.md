@@ -445,8 +445,51 @@ scheme, and never an N64 scheme; an N64 controller never sees it. The game
 reads the controller itself, so it needs a passthrough cable or adapter that
 connects the GameCube controller to the N64 port without converting its
 protocol. An adapter that turns a GameCube controller into an N64 controller
-(raphnet's GameCube to N64 adapter, for example) sends one stick, as an N64
-controller has, and plays as an N64 controller.
+(raphnet's GameCube to N64 adapter, for example) sends only what an N64
+controller has (one analog stick; its C-stick can be mapped to the C buttons)
+and plays as an N64 controller.
+
+The cable to use: raphnet's
+[GameCube controller to N64 passthrough](https://www.raphnet-tech.com/products/gc_to_n64_passthrough/index.php),
+a plain cable that joins the GameCube controller's 3.3 V, ground and data to
+the N64 port's (the wiring table on that page). The N64 port has no 5 V, so the
+controller does not rumble through it, and a controller that needs 5 V to work
+at all (some third-party ones, as that page and
+[HayBox](https://github.com/JonnyHaystack/HayBox) say) does not work. raphnet
+lists Nintendo's own controllers as tested.
+
+A home-made cable joins a GameCube extension cable's socket end to an N64
+extension cable's plug end, wired as raphnet's table:
+
+| GameCube socket | N64 plug |
+|---|---|
+| pin 2 (data) | middle pin (data) |
+| pin 6 (3.43 V) | 3.3 V pin |
+| pins 3 and 4 (ground), pin 7 or the braid (shield) | ground pin |
+| pin 1 (5 V) and pin 5 | nothing: insulate each one |
+
+Sources for the pins:
+
+- GameCube: [int03's pinout](https://www.int03.co.uk/crema/hardware/gamecube/gc-control.html),
+  counted looking into the socket, turned so its outline matches int03's
+  drawing: top row 1, 2, 3 from left to right, bottom row 4, 5, 6. The
+  controller's plug is the mirror image; do not count from it. int03 also
+  gives pins 3 and 4 as ground, pin 7 as the shield ("usually common ground
+  with pin 3"), and pin 5 as not connected. The same numbers, with the wire
+  colours that differ between cables:
+  [NicoHood's wiki](https://github.com/NicoHood/Nintendo/wiki/Gamecube).
+- N64 port: [ConsoleMods](https://consolemods.org/wiki/N64:Connector_Pinouts),
+  looking into a port on the front of the N64: 3.3 V on the left, data in the
+  middle, ground on the right.
+- N64 plug: [Instructables](https://www.instructables.com/Use-an-Arduino-with-an-N64-controller/)
+  (step 1), looked at from its pin end and held the way it goes into the N64:
+  ground on the left, data in the middle, 3.3 V on the right (the mirror image
+  of the port).
+
+Wire colours differ from cable to cable: with both cables unplugged, find each
+wire from its pin with a continuity meter. Before plugging it in, check that no
+two wires touch and that 3.3 V and ground are not swapped: a swap or a short can
+damage the controller or the N64.
 
 The main stick walks and strafes and the C-stick looks; R fires and L throws a
 grenade, both analog; A jumps, B reloads, X is melee, Y switches weapons, Z
@@ -457,8 +500,9 @@ FIRE BUTTON swaps R and L; C-STICK SPEED (the STICK SPEED row) sets how fast
 the C-stick turns; crouch, look and rumble are as for an N64 controller,
 and the port's N64 scheme is kept for when an N64 controller is back. A
 GameCube controller is never a two-controller scheme's second controller. Its
-own motor needs 5 V, which a passthrough cable may not carry: then it does
-not rumble (the game asks for it all the same, which does no harm).
+own motor needs 5 V, which the N64 port does not have: through a passthrough
+it does not rumble (the game asks for it all the same; with no 5 V, the motor
+gets no power).
 
 <!-- Other systems and controllers: a table of what works where goes here. -->
 
