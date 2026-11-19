@@ -51,6 +51,16 @@ but the C buttons, which no longer walk: C up switches weapons, C down
 crouches, C left is melee, C right zooms. Without a second controller the
 first plays the standard way.
 
+Or a GameCube controller on a passive adapter, which the game reads itself
+(libdragon's JOYPAD_STYLE_GCN), with its two sticks as Halo's Xbox
+controller has them (gamecube_pad, the GAMECUBE scheme): the main stick
+walks and strafes, the C-stick looks; R fires and L throws a grenade,
+their analog travel passed on as the Xbox's triggers; A jumps, B reloads,
+X is melee, Y switches weapons (the Xbox's A, X, B and Y, where they sit
+around A); Z zooms; the D-pad and START as in the standard scheme. A
+GameCube controller always plays it, and never an N64 scheme: the port's
+N64 scheme is kept for an N64 controller.
+
 Test mode (a file "autotest" on the cartridge): the first two ports are
 driven by a script instead, so an unattended run exercises the game
 (n64_test_input).
@@ -241,17 +251,18 @@ static float look_speed(signed char setting)
 
 void n64_look_speed(int local_player_index, float *yaw, float *pitch)
 {
-	const struct n64_controls *controls = &n64_controls[n64_gamepad_ports[local_player_index & 3] & 3];
+	int port = n64_gamepad_ports[local_player_index & 3] & 3, scheme = n64_controls_scheme(port);
+	const struct n64_controls *controls = &n64_controls[port];
 	float stick_speed = look_speed(controls->stick_speed);
 	float c_speed = C_LOOK_SPEED * look_speed(controls->c_speed);
 
-	*yaw = controls->scheme == N64_SCHEME_NORTH ? c_speed : stick_speed;
-	*pitch = controls->scheme == N64_SCHEME_NORTH || controls->scheme == N64_SCHEME_GOLDENEYE ? c_speed : controls->scheme == N64_SCHEME_GOLDEN_STYLE ? c_speed / C_LOOK_SPEED : stick_speed;
+	*yaw = scheme == N64_SCHEME_NORTH ? c_speed : stick_speed;
+	*pitch = scheme == N64_SCHEME_NORTH || scheme == N64_SCHEME_GOLDENEYE ? c_speed : scheme == N64_SCHEME_GOLDEN_STYLE ? c_speed / C_LOOK_SPEED : stick_speed;
 }
 
 int n64_golden_selected(int local)
 {
-	return local >= 0 && local < 4 && n64_controls[n64_gamepad_ports[local] & 3].scheme == N64_SCHEME_GOLDEN_STYLE;
+	return local >= 0 && local < 4 && n64_controls_scheme(n64_gamepad_ports[local] & 3) == N64_SCHEME_GOLDEN_STYLE;
 }
 
 void n64_golden_move(int local, float *forward, float *strafe)
@@ -282,6 +293,88 @@ int n64_golden_raw(int local, float *x, float *y, int *aim)
 	*y = *aim ? pad->stick_y : (pad->buttons & N64_BUTTON_C_UP) ? 80.f : (pad->buttons & N64_BUTTON_C_DOWN) ? -80.f : 0.f;
 	if (controls->inverted) *y = -*y;
 	return 1;
+}
+
+/* ---------- a GameCube controller (N64_SCHEME_GAMECUBE) */
+
+/* Halo's own dead zone of each stick axis (input_xbox.c's
+GAMEPAD_STICK_DEAD_RANGE): a gamepad's value up to it does nothing, and
+the rest of the axis is spread over the whole range */
+#define HALO_STICK_DEAD 9000
+
+/* each GameCube stick's own range and dead zone, in libdragon's units (from
+the stick's origin, which libdragon reads when the controller is plugged
+in: a stick let go reads about 0). FULL: the travel that gives the Xbox
+stick all the way over, nine tenths of libdragon's nominal ranges (100 for
+the main stick, 76 for the C-stick), as the N64 stick's 80 is of its
+85-90, so that every controller's full travel walks and turns at full
+speed. DEAD: the travel that does nothing, as much of each stick's full
+travel as Halo's dead zone is of the N64 stick's (22 of 80) */
+#define GAMECUBE_STICK_FULL 90
+#define GAMECUBE_STICK_DEAD 25
+#define GAMECUBE_CSTICK_FULL 68
+#define GAMECUBE_CSTICK_DEAD 19
+/* a trigger (libdragon: 0 let go to about 200 all the way in, before its
+click): nothing up to REST, all the way (255) from FULL or at the click.
+Halo itself decides when a trigger is pressed and let go
+(input_update_analog_button_state: pressed 64 over the lowest it has been
+since it was let go, let go 32 under the highest it has been since), but
+its press point starts at 0 after every input_flush (each map load), where
+any value above 0 is a press: so a value under Halo's 64 is passed as 0,
+and the first press after a load needs the travel of every later one (a
+quarter of it), however far over its origin the trigger rests */
+#define GAMECUBE_TRIGGER_REST 10
+#define GAMECUBE_TRIGGER_FULL 160
+#define HALO_TRIGGER_PRESS 64
+
+/* a GameCube stick's axis as an Xbox stick's: nothing in its dead zone, Halo's
+dead zone's edge just outside it and all the way over at full (32767, or
+-32768 as stick gives the N64 stick all the way down or left) */
+static SHORT gamecube_axis(int value, int dead, int full)
+{
+	int size = value < 0 ? -value : value;
+	long scaled;
+
+	if (size <= dead)
+		return 0;
+	scaled = HALO_STICK_DEAD + (long)(size - dead) * (32768 - HALO_STICK_DEAD) / (full - dead);
+	if (value < 0)
+		return (SHORT)(scaled > 32768 ? -32768 : -scaled);
+	return (SHORT)(scaled > 32767 ? 32767 : scaled);
+}
+
+static unsigned char gamecube_trigger(int value, int click)
+{
+	long scaled;
+
+	if (click)
+		return 255;
+	if (value <= GAMECUBE_TRIGGER_REST)
+		return 0;
+	scaled = (long)(value - GAMECUBE_TRIGGER_REST) * 255 / (GAMECUBE_TRIGGER_FULL - GAMECUBE_TRIGGER_REST);
+	return (unsigned char)(scaled < HALO_TRIGGER_PRESS ? 0 : scaled > 255 ? 255 : scaled);
+}
+
+/* a GameCube controller as Halo's Xbox controller: the sticks into the
+gamepad (the main stick its left, the C-stick its right); the buttons as
+the standard scheme's N64 ones, which pad_to_gamepad turns into the Xbox's
+-- A jump, B reload / action, X melee (the standard's L), Y switch weapons
+(D-pad up), Z zoom (D-pad left), the D-pad and START as they are. The
+triggers: pad_to_gamepad (gamecube_trigger) */
+static unsigned short gamecube_pad(const struct n64_pad *pad, XINPUT_GAMEPAD *gamepad, SHORT *look_y)
+{
+	unsigned short in = pad->buttons;
+	unsigned short b = in & (N64_BUTTON_A | N64_BUTTON_B | N64_BUTTON_START |
+		N64_BUTTON_D_UP | N64_BUTTON_D_DOWN | N64_BUTTON_D_LEFT | N64_BUTTON_D_RIGHT);
+
+	if (in & N64_BUTTON_X) b |= N64_BUTTON_L;
+	if (in & N64_BUTTON_Y) b |= N64_BUTTON_D_UP;
+	if (in & N64_BUTTON_Z) b |= N64_BUTTON_D_LEFT;
+	gamepad->sThumbLX = gamecube_axis(pad->stick_x, GAMECUBE_STICK_DEAD, GAMECUBE_STICK_FULL);
+	gamepad->sThumbLY = gamecube_axis(pad->stick_y, GAMECUBE_STICK_DEAD, GAMECUBE_STICK_FULL);
+	gamepad->sThumbRX = gamecube_axis(pad->cstick_x, GAMECUBE_CSTICK_DEAD, GAMECUBE_CSTICK_FULL);
+	*look_y = gamecube_axis(pad->cstick_y, GAMECUBE_CSTICK_DEAD, GAMECUBE_CSTICK_FULL);
+	return b;
 }
 
 /* the C buttons and the D-pad swapped (N64_SCHEME_DPAD) */
@@ -347,8 +440,11 @@ n64_input_partners), or -1 */
 static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, int partner_port, XINPUT_GAMEPAD *gamepad)
 {
 	struct n64_controls *controls = &n64_controls[n64_port & 3];
-	int dual = N64_SCHEME_IS_DUAL(controls->scheme) && partner_port >= 0;
-	unsigned short b = controls->scheme == N64_SCHEME_DPAD ? swap_c_and_d(pad->buttons) : pad->buttons;
+	/* (a GameCube controller plays the GAMECUBE scheme, whatever N64 scheme
+	the port keeps) */
+	int gamecube = pad->style == N64_PAD_GAMECUBE, scheme = gamecube ? N64_SCHEME_GAMECUBE : controls->scheme;
+	int dual = N64_SCHEME_IS_DUAL(scheme) && partner_port >= 0;
+	unsigned short b = scheme == N64_SCHEME_DPAD ? swap_c_and_d(pad->buttons) : pad->buttons;
 	unsigned short pressed;
 	unsigned short jump = N64_BUTTON_A, grenade = N64_BUTTON_R, fire = N64_BUTTON_Z;
 	SHORT look_y;
@@ -362,11 +458,13 @@ static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, int partner_
 		n64_input_get(partner_port & 3, &partner);
 		b = dual_pads(controls, n64_port, pad, partner_port & 3, &partner, gamepad, &look_y);
 	}
+	else if (gamecube)
+		b = gamecube_pad(pad, gamepad, &look_y);
 	pressed = b & ~controls->last_buttons;
-	if (controls->scheme == N64_SCHEME_GOLDEN_STYLE) grenade = N64_BUTTON_D_LEFT;
+	if (scheme == N64_SCHEME_GOLDEN_STYLE) grenade = N64_BUTTON_D_LEFT;
 	/* (a two-controller scheme without its second controller: the standard
 	one) */
-	switch (dual ? -1 : controls->scheme)
+	switch (dual || gamecube ? -1 : scheme)
 	{
 	case -1:
 		break;
@@ -391,7 +489,7 @@ static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, int partner_
 		break;
 	}
 	gamepad->sThumbRY = !controls->inverted ? look_y : look_y == -32768 ? 32767 : (SHORT)-look_y;
-	if (controls->scheme == N64_SCHEME_BUMPER_JUMPER)
+	if (scheme == N64_SCHEME_BUMPER_JUMPER)
 	{
 		jump = N64_BUTTON_R;
 		grenade = N64_BUTTON_A;
@@ -417,6 +515,16 @@ static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, int partner_
 	controls->last_buttons = b;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] = (b & fire) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] = (b & grenade) ? 255 : 0;
+	/* (a GameCube controller's triggers: R fires, L throws a grenade, or
+	the other way round with fire and grenades swapped) */
+	if (gamecube)
+	{
+		unsigned char r = gamecube_trigger(pad->analog_r, (pad->buttons & N64_BUTTON_R) != 0);
+		unsigned char l = gamecube_trigger(pad->analog_l, (pad->buttons & N64_BUTTON_L) != 0);
+
+		gamepad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] = controls->swap_fire ? l : r;
+		gamepad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] = controls->swap_fire ? r : l;
+	}
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_A] = (b & jump) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_X] = (b & N64_BUTTON_B) ? 255 : 0;
 	gamepad->bAnalogButtons[XINPUT_GAMEPAD_B] = (b & N64_BUTTON_L) ? 255 : 0;
@@ -449,7 +557,7 @@ static void pad_to_gamepad(int n64_port, const struct n64_pad *pad, int partner_
 	}
 	if (crouch)
 		gamepad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
-	if (controls->scheme != N64_SCHEME_GOLDEN_STYLE && (b & N64_BUTTON_D_LEFT))
+	if (scheme != N64_SCHEME_GOLDEN_STYLE && (b & N64_BUTTON_D_LEFT))
 		gamepad->wButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
 	if (b & N64_BUTTON_START)
 		gamepad->wButtons |= XINPUT_GAMEPAD_START;

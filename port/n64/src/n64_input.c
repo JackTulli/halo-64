@@ -65,31 +65,39 @@ void n64_input_clear_pressed(void)
 
 const char *n64_scheme_name(int scheme)
 {
-	static const char *const names[N64_SCHEME_COUNT] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH",
-		"GOLDEN STYLE", "D-PAD MOVE", "DUAL MODERN", "DUAL MODERN LEFT", "DUAL CLASSIC", "DUAL CLASSIC LEFT"};
+	static const char *const names[N64_SCHEME_GAMECUBE + 1] = {"STANDARD", "BUMPER JUMPER", "GOLDENEYE", "NORTH",
+		"GOLDEN STYLE", "D-PAD MOVE", "DUAL MODERN", "DUAL MODERN LEFT", "DUAL CLASSIC", "DUAL CLASSIC LEFT",
+		"GAMECUBE"};
 
-	return names[scheme >= 0 && scheme < N64_SCHEME_COUNT ? scheme : 0];
+	return names[scheme >= 0 && scheme <= N64_SCHEME_GAMECUBE ? scheme : 0];
 }
 
 const char *n64_fire_button_name(int port)
 {
 	const struct n64_controls *controls = &n64_controls[port & 3];
+	int scheme = n64_controls_scheme(port);
 
 	/* (two controllers: the aiming hand's Z, or the other's when swapped) */
-	if (N64_SCHEME_IS_DUAL(controls->scheme))
-		return !N64_SCHEME_DUAL_LEFT_AIMS(controls->scheme) != !controls->swap_fire ? "LEFT Z" : "RIGHT Z";
-	return !controls->swap_fire ? "Z" : controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" :
-		controls->scheme == N64_SCHEME_GOLDEN_STYLE ? "D-LEFT" : "R";
+	if (N64_SCHEME_IS_DUAL(scheme))
+		return !N64_SCHEME_DUAL_LEFT_AIMS(scheme) != !controls->swap_fire ? "LEFT Z" : "RIGHT Z";
+	/* (a GameCube controller: its triggers, R firing) */
+	if (scheme == N64_SCHEME_GAMECUBE)
+		return !controls->swap_fire ? "R" : "L";
+	return !controls->swap_fire ? "Z" : scheme == N64_SCHEME_BUMPER_JUMPER ? "A" :
+		scheme == N64_SCHEME_GOLDEN_STYLE ? "D-LEFT" : "R";
 }
 
 const char *n64_grenade_button_name(int port)
 {
 	const struct n64_controls *controls = &n64_controls[port & 3];
+	int scheme = n64_controls_scheme(port);
 
-	if (N64_SCHEME_IS_DUAL(controls->scheme))
-		return !N64_SCHEME_DUAL_LEFT_AIMS(controls->scheme) != !controls->swap_fire ? "RIGHT Z" : "LEFT Z";
-	return controls->swap_fire ? "Z" : controls->scheme == N64_SCHEME_BUMPER_JUMPER ? "A" :
-		controls->scheme == N64_SCHEME_GOLDEN_STYLE ? "D-LEFT" : "R";
+	if (N64_SCHEME_IS_DUAL(scheme))
+		return !N64_SCHEME_DUAL_LEFT_AIMS(scheme) != !controls->swap_fire ? "RIGHT Z" : "LEFT Z";
+	if (scheme == N64_SCHEME_GAMECUBE)
+		return controls->swap_fire ? "R" : "L";
+	return controls->swap_fire ? "Z" : scheme == N64_SCHEME_BUMPER_JUMPER ? "A" :
+		scheme == N64_SCHEME_GOLDEN_STYLE ? "D-LEFT" : "R";
 }
 
 void n64_input_pairs(int players, signed char partner[4])
@@ -112,7 +120,9 @@ void n64_input_pairs(int players, signed char partner[4])
 		}
 		else if (!(players & (1 << port)))
 			continue;
-		if (!N64_SCHEME_IS_DUAL(controls->scheme))
+		/* (a GameCube controller plays its own scheme, never a
+		two-controller one) */
+		if (!N64_SCHEME_IS_DUAL(n64_controls_scheme(port)))
 			continue;
 		if (controls->partner)
 			order[count++] = (controls->partner - 1) & 3;
@@ -128,7 +138,8 @@ void n64_input_pairs(int players, signed char partner[4])
 		{
 			int other = order[i];
 
-			if (other == port || (taken & (1 << other)) || !joypad_is_connected(other))
+			/* (a GameCube controller is never a second controller) */
+			if (other == port || (taken & (1 << other)) || !joypad_is_connected(other) || n64_input_gamecube(other))
 				continue;
 			partner[port] = (signed char)other;
 			taken |= 1 << other;
@@ -145,6 +156,8 @@ void n64_input_partner_text(int port, int resolved, char *text, int size)
 		snprintf(text, size, resolved >= 0 ? "AUTO: PORT %d" : "AUTO: NONE FREE", resolved + 1);
 	else if (resolved == ((chosen - 1) & 3))
 		snprintf(text, size, "PORT %d", chosen);
+	else if (n64_input_gamecube((chosen - 1) & 3))
+		snprintf(text, size, "PORT %d (GAMECUBE)", chosen);
 	else
 		snprintf(text, size, joypad_is_connected((chosen - 1) & 3) ? "PORT %d (IN USE)" : "PORT %d (NO PAD)", chosen);
 }
@@ -166,6 +179,16 @@ void n64_input_partner_step(int port, int step)
 	controls->partner = choices[(at + count + (step < 0 ? -1 : 1)) % count];
 }
 
+int n64_input_gamecube(int port)
+{
+	return port >= 0 && port < 4 && joypad_is_connected(port) && joypad_get_style(port) == JOYPAD_STYLE_GCN;
+}
+
+int n64_controls_scheme(int port)
+{
+	return n64_input_gamecube(port) ? N64_SCHEME_GAMECUBE : n64_controls[port & 3].scheme;
+}
+
 void n64_input_get(int port, struct n64_pad *pad)
 {
 	joypad_inputs_t inputs;
@@ -178,6 +201,18 @@ void n64_input_get(int port, struct n64_pad *pad)
 	pad->connected = 1;
 	pad->stick_x = inputs.stick_x;
 	pad->stick_y = inputs.stick_y;
+	/* (a GameCube controller's own inputs; libdragon gives an N64
+	controller's made up from its C buttons and L and R, left at 0 here) */
+	if (n64_input_gamecube(port))
+	{
+		pad->style = N64_PAD_GAMECUBE;
+		pad->cstick_x = inputs.cstick_x;
+		pad->cstick_y = inputs.cstick_y;
+		pad->analog_l = inputs.analog_l;
+		pad->analog_r = inputs.analog_r;
+		if (inputs.btn.x) buttons |= N64_BUTTON_X;
+		if (inputs.btn.y) buttons |= N64_BUTTON_Y;
+	}
 	if (inputs.btn.a) buttons |= N64_BUTTON_A;
 	if (inputs.btn.b) buttons |= N64_BUTTON_B;
 	if (inputs.btn.z) buttons |= N64_BUTTON_Z;

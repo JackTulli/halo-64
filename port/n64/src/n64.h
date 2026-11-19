@@ -112,10 +112,17 @@ void *n64_animation_frame(long data_offset, long data_size, short frame_index, s
 struct n64_pad
 {
 	unsigned char connected;
-	unsigned char pad[3];
+	/* N64_PAD_N64, or N64_PAD_GAMECUBE: a GameCube controller on a passive
+	adapter (libdragon's JOYPAD_STYLE_GCN), whose C-stick, analog triggers
+	and X and Y are below; 0 on an N64 controller */
+	unsigned char style;
+	unsigned char analog_l, analog_r; /* 0 let go, about 200 all the way in (from the trigger's origin) */
 	signed char stick_x, stick_y;
-	unsigned short buttons; /* N64_BUTTON_* */
+	unsigned short buttons; /* N64_BUTTON_* (a GameCube controller's L and R: the triggers' clicks) */
+	signed char cstick_x, cstick_y; /* about -76 to 76, from the C-stick's origin */
 };
+
+enum { N64_PAD_N64, N64_PAD_GAMECUBE };
 
 enum
 {
@@ -133,6 +140,10 @@ enum
 	N64_BUTTON_C_DOWN = 1 << 11,
 	N64_BUTTON_C_LEFT = 1 << 12,
 	N64_BUTTON_C_RIGHT = 1 << 13,
+	/* a GameCube controller's (libdragon's C buttons from its C-stick are
+	in C_UP to C_RIGHT too) */
+	N64_BUTTON_X = 1 << 14,
+	N64_BUTTON_Y = 1 << 15,
 };
 
 /* what is kept from the first map on, made at boot, at the heap's bottom
@@ -146,6 +157,12 @@ void n64_particles_release(void);
 
 void n64_input_poll(void);
 void n64_input_get(int port, struct n64_pad *pad);
+/* a GameCube controller in a port (on a passive adapter: the game reads it
+itself) */
+int n64_input_gamecube(int port);
+/* the scheme a port plays: N64_SCHEME_GAMECUBE with a GameCube controller,
+else its N64 scheme */
+int n64_controls_scheme(int port);
 /* the buttons pressed on a port since this was last asked (N64_BUTTON_*:
 START, A, B and D-pad, gathered at every n64_input_poll, so that a press between
 two frames is not missed), and all of them forgotten */
@@ -181,6 +198,13 @@ enum
 	N64_SCHEME_DUAL_CLASSIC_LEFT, /* the same with the hands swapped */
 	N64_SCHEME_COUNT
 };
+
+/* a GameCube controller's scheme: its two sticks as Halo's own Xbox
+controls (xdk_input.c's gamecube_pad). A port's controller chooses the
+set: an N64 controller plays its N64 scheme (n64_controls.scheme, kept),
+a GameCube controller this one, which is never kept (the only one of its
+set) */
+#define N64_SCHEME_GAMECUBE N64_SCHEME_COUNT
 
 #define N64_SCHEME_IS_DUAL(scheme) ((scheme) >= N64_SCHEME_DUAL_MODERN && (scheme) <= N64_SCHEME_DUAL_CLASSIC_LEFT)
 /* the left hand aims (fires with its Z), the right one moves */

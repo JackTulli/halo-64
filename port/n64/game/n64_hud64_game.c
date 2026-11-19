@@ -88,17 +88,19 @@ static boolean uses_battery(
 controls (its controller port's: n64_gamepad_ports), as xdk_input.c's
 pad_to_gamepad maps the grenade: 'R', 'A' (bumper jumper), 'D' (the D-pad's
 left, Golden style) or 'Z' (fire and grenades swapped, or two controllers:
-the other hand's Z) */
+the other hand's Z); a GameCube controller's: 'L', or 'R' swapped */
 static char grenade_button_letter(
 	int local_player_index)
 {
 	extern int n64_gamepad_ports[4];
-	int port = n64_gamepad_ports[local_player_index & 3] & 3;
+	int port = n64_gamepad_ports[local_player_index & 3] & 3, scheme = n64_controls_scheme(port);
 	const struct n64_controls *controls = &n64_controls[port];
-	unsigned short grenade = controls->scheme == N64_SCHEME_GOLDEN_STYLE ? N64_BUTTON_D_LEFT :
-		controls->scheme == N64_SCHEME_BUMPER_JUMPER ? N64_BUTTON_A : N64_BUTTON_R;
+	unsigned short grenade = scheme == N64_SCHEME_GOLDEN_STYLE ? N64_BUTTON_D_LEFT :
+		scheme == N64_SCHEME_BUMPER_JUMPER ? N64_BUTTON_A : N64_BUTTON_R;
 
-	if (controls->swap_fire || (N64_SCHEME_IS_DUAL(controls->scheme) && n64_input_partners[port] >= 0))
+	if (scheme == N64_SCHEME_GAMECUBE)
+		return controls->swap_fire ? 'R' : 'L';
+	if (controls->swap_fire || (N64_SCHEME_IS_DUAL(scheme) && n64_input_partners[port] >= 0))
 		grenade = N64_BUTTON_Z;
 	return grenade == N64_BUTTON_Z ? 'Z' : grenade == N64_BUTTON_A ? 'A' : grenade == N64_BUTTON_D_LEFT ? 'D' : 'R';
 }
