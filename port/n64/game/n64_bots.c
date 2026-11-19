@@ -13,6 +13,7 @@ as it does a person's: the swap button (a person's held X) picks up a
 weapon (player_handle_weapon_swap), the action button gets out of a
 vehicle; the weapon wanted, triggers, grenades, melee, jump and reload go
 to unit_control.
+A bot charges the plasma pistol now and then, as Halo's jackals do.
 
 Their way of fighting is the Firefight Covenant's (n64_firefight.c), kept
 simple: each picks the nearest enemy (another team's player in a team game,
@@ -95,7 +96,7 @@ enum
 	_style_semi, /* pressed shot by shot */
 	_style_auto, /* held */
 	_style_explosive, /* pressed, never up close */
-	_style_pistol, /* the plasma pistol: pressed at a pace */
+	_style_pistol, /* the plasma pistol: pressed at a pace, held to charge */
 };
 
 /* the weapons it knows: how much it wants each, how it fires it and the
@@ -144,6 +145,9 @@ static struct bot_pistol
 	{ 5, 5, 17, 23, 33 }, /* 0.175-0.55 s, 0.75-1.1 s */
 	{ 5, 9, 18, 15, 23 } /* 0.3-0.6 s, 0.5-0.75 s */
 };
+/* (in 100: the jackals' special_fire_chance, 0.2 minor and 0.3 major, a
+roll each special_fire_delay of 5 s, overcharge their special_fire_mode) */
+static short const charge_chance[4] = { 10, 20, 30, 30 };
 /* (in 100, a roll a second: Halo's marines roll throw_grenade_chance 0.25
 each throw_grenade_delay of 1 s, a30's actor variants) */
 static short const grenade_chance[4] = { 10, 15, 20, 25 };
@@ -198,13 +202,17 @@ struct bot
 	the count's rate (n64_bot_pose_interval) */
 	boolean firing;
 	/* the plasma pistol (bot_trigger_tick): its next press (a game tick)
-	and the ticks between presses while it fires (0: not firing it) */
+	and the ticks between presses while it fires (0: not firing it); the
+	time to its next roll to charge it, and whether it holds the trigger
+	to charge it */
 	long next_shot;
 	short shot_ticks;
+	short charge_timer;
+	boolean charging;
 };
 
 /* New LOD fields extend the old prefix; read diagnostic stride from DWARF. */
-typedef char n64_bot_observer_stride[sizeof(struct bot) == 276 ? 1 : -1];
+typedef char n64_bot_observer_stride[sizeof(struct bot) == 280 ? 1 : -1];
 typedef char n64_bot_observer_ghost_offset[offsetof(struct bot, ghost_profile) == 246 ? 1 : -1];
 
 static struct
@@ -1155,6 +1163,7 @@ static void think(
 	if (unit->object.parent_object_index != NONE)
 	{
 		bot->shot_ticks = 0;
+		bot->charging = FALSE;
 		if (bot->action_timer > 0)
 			bot->action_timer -= step;
 		else
@@ -1520,6 +1529,35 @@ static void think(
 	else
 		bot->trigger_down = FALSE;
 
+	/* the plasma pistol charged now and then, as Halo's jackals do it (a30's
+	jackal actor variants: special_fire_mode overcharge, special_fire_
+	situation enemy visible; actor_combat.c holds the trigger between bursts
+	and lets go when one begins): a roll at most every 5 s, in a pause, with
+	the enemy in sight 4 to 15 units away (the jackals' maximum_firing_
+	range); the trigger then held until the bolt is fully charged and let go
+	in a burst with the enemy in sight -- or 5 s after the roll whatever */
+	if (bot->charge_timer > 0)
+		bot->charge_timer -= step;
+	if (weapon->style != _style_pistol)
+		bot->charging = FALSE;
+	else if (bot->charging)
+	{
+		if (bot->charge_timer <= 0 || (bot->fire_timer > 0 && bot->target_visible &&
+			weapon_get(current_weapon)->weapon.triggers[0].state == _trigger_charged))
+		{
+			/* (let go: the charged bolt; the next press a pace later) */
+			bot->charging = FALSE;
+			bot->charge_timer = 5 * TICKS_PER_SECOND;
+			bot->next_shot = game_time_get() + pistol_fire[combat_skill].shot_ticks;
+		}
+	}
+	else if (bot->fire_timer < 0 && bot->charge_timer <= 0 && bot->target_visible &&
+		distance >= 4.f && distance <= 15.f)
+	{
+		bot->charge_timer = 5 * TICKS_PER_SECOND;
+		bot->charging = (short)(bot_random() % 100) < charge_chance[combat_skill];
+	}
+
 	/* melee up close */
 	if (bot->melee_timer > 0)
 		bot->melee_timer -= step;
@@ -1572,8 +1610,9 @@ static void think(
 
 /* the plasma pistol's trigger each tick, whatever the bot's thinking rate
 (its bolt goes as the trigger is let go, its tag giving it no rate of fire
-of its own): while it fires, pressed for a tick each shot_ticks, so 5 or 6
-bolts a second whether it thinks every tick or every eighth */
+of its own): held while it charges; while it fires, pressed for a tick
+each shot_ticks, so 5 or 6 bolts a second whether it thinks every tick or
+every eighth */
 static void bot_trigger_tick(
 	struct bot *bot,
 	struct player_action *action,
@@ -1581,7 +1620,9 @@ static void bot_trigger_tick(
 {
 	boolean down;
 
-	if (bot->shot_ticks > 0)
+	if (bot->charging)
+		down = TRUE;
+	else if (bot->shot_ticks > 0)
 	{
 		down = now >= bot->next_shot;
 		if (down)
@@ -1672,7 +1713,7 @@ void n64_bots_actions(
 		bot_trigger_tick(bot, action, now);
 		bot->firing = (action->control_flags & (FLAG(_unit_control_weapon_primary_trigger_bit) |
 			FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_use_equipment_bit))) != 0 ||
-			bot->shot_ticks > 0;
+			bot->shot_ticks > 0 || bot->charging;
 	}
 	bot_profile_poll();
 }
