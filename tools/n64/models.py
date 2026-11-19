@@ -1112,6 +1112,8 @@ class ModelConverter:
                 shaders.append(self.shader_texture(datum))
             gc, gp = self.block(a + mf["geometries"])
             geometry_map = {}
+            # this model's geometries by their converted contents (geometry)
+            geometry_by_contents = {}
 
             budget = self.budgets.get(tag.index, MODEL_BUDGET)
             big_static = set()
@@ -1130,6 +1132,7 @@ class ModelConverter:
                 if gi in geometry_map:
                     return geometry_map[gi]
                 first = len(batches)
+                marks = len(vertex_data), len(index_data)
                 pc, pp = self.block(gp + gi * gsize + gf["parts"])
                 part_size = self.defs.size("ModelGeometryPart")
                 total = sum(self.part_triangle_count(pp + p * part_size) for p in range(pc))
@@ -1140,23 +1143,52 @@ class ModelConverter:
                     self.convert_part(pp + p * part_size, nodes_inverse, u_scale, v_scale,
                                       shaders, batches, vertex_data, index_data, keep,
                                       detail=tag.index in self.first_person, hands=tag.index in self.hands)
+                # a geometry whose converted batches are the same as an earlier
+                # one's of this model (the draw data its batches reference: the
+                # texture's name (a hash of its sprite file) and size, flags,
+                # segments, vertices, indices) is that one:
+                # its batches and data are taken back and its permutations point
+                # to the earlier one (Chronopolis C3's arms and biped: 8 and 9
+                # permutations, each the same geometry, converted 8 and 9 times)
+                textures = self.textures.textures
+                contents = tuple(
+                    ((textures[texture].name, textures[texture].width, textures[texture].height) if texture >= 0
+                     else texture, flags, tri_count,
+                     tuple((node, slot, count, bytes(vertex_data[pair * 32:(pair + count // 2) * 32]))
+                           for node, slot, count, pair in segs),
+                     bytes(index_data[index_offset:index_offset + 3 * tri_count]))
+                    for texture, flags, segs, tri_count, index_offset in batches[first:])
+                if contents and contents in geometry_by_contents:
+                    del batches[first:]
+                    del vertex_data[marks[0]:]
+                    del index_data[marks[1]:]
+                    geometry_map[gi] = geometry_by_contents[contents]
+                    return geometry_map[gi]
                 geometry_map[gi] = len(geometry_records)
                 geometry_records.append((first, len(batches) - first))
+                geometry_by_contents.setdefault(contents, geometry_map[gi])
                 return geometry_map[gi]
 
             rc, rp = self.block(a + mf["regions"])
             first_region = len(region_records)
+            # each region's first permutation's source geometry (the far
+            # version's test below)
+            first_sources = []
             for r in range(rc):
                 pc, pp = self.block(rp + r * rsize + rf["permutations"])
                 first_permutation = len(permutation_records)
                 for p in range(max(pc, 0)):
                     raw = self.map.read(pp + p * psize, psize)
                     choice = -1
+                    source = -1
                     for lod in self.lod_preferences.get(tag.index, LOD_PREFERENCE):
                         gi = struct.unpack_from("<h", raw, pf[lod_fields[lod]])[0]
                         if 0 <= gi < gc:
                             choice = geometry(gi)
+                            source = gi
                             break
+                    if p == 0:
+                        first_sources.append(source)
                     permutation_records.append(choice)
                 region_records.append((max(pc, 0), first_permutation))
             near_count = len(batches) - first_batch
@@ -1167,9 +1199,11 @@ class ModelConverter:
                 # a far version with textured cut-out parts no lighter than
                 # the near one (a snow pine's needles are cards the simplifier
                 # cannot merge) is only the model's data twice over
-                first_geometries = {permutation_records[region_records[r][1]] for r in range(first_region, len(region_records))
-                                    if region_records[r][0] > 0}
-                near_triangles = sum(batches[b][3] for g in first_geometries if g >= 0
+                # (counted by source geometry, each once: two regions whose
+                # identical geometries now share a record count twice, as when
+                # each had a record of its own)
+                near_triangles = sum(batches[b][3] for gi in set(first_sources) if gi >= 0
+                                     for g in (geometry_map[gi],)
                                      for b in range(geometry_records[g][0], geometry_records[g][0] + geometry_records[g][1]))
                 far_triangles = sum(b[3] for b in batches[far_first:])
                 if any(b[1] & MATERIAL_ALPHA_TEST for b in batches[far_first:]) and \
