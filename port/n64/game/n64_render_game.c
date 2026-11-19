@@ -721,6 +721,18 @@ node_remap[n]) */
 
 static boolean first_person_begun;
 
+/* whether a first-person model is the arms: the game's first-person hands
+(the game globals' first-person interface), which hold every weapon */
+static boolean first_person_arms(
+	long model_index)
+{
+	struct game_globals *globals = scenario_get_game_globals();
+	struct game_globals_first_person_interface *interface = globals && globals->first_person_interface.count ?
+		TAG_BLOCK_GET_ELEMENT(&globals->first_person_interface, 0, struct game_globals_first_person_interface) : NULL;
+
+	return interface && interface->hands.index == model_index;
+}
+
 void n64_first_person_model_draw(
 	long model_index,
 	struct real_matrix4x3 const *node_matrices,
@@ -735,8 +747,10 @@ void n64_first_person_model_draw(
 
 	if (no_draw < 0)
 		no_draw = n64_debug_flag("debug_fp_nodraw");
-	/* (Settings: VIEW MODEL "off in split", with three or four views) */
-	if (model_index == NONE || no_draw || n64_render_view_models_hidden())
+	/* (Settings: VIEW MODEL "off in split", with three or four views; ARMS:
+	the arms left out in this game, the weapon drawn) */
+	if (model_index == NONE || no_draw || n64_render_view_models_hidden() ||
+		(n64_render_arms_hidden() && first_person_arms(model_index)))
 		return;
 	if (!first_person_begun)
 	{
@@ -748,23 +762,17 @@ void n64_first_person_model_draw(
 	n64.node_matrices = (const float *)node_matrices;
 	n64.tier = N64_TIER_FIRST_PERSON;
 #if defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS)
-	{
-		/* the arms (the game's first-person hands) rank last, with
-		decoration, and are not kept as the view models are: they are the
-		least the player needs to see in a first-person view, the weapon is
-		not (n64_render.c load_model). On the custom cartridge they are kept
-		and keep the first-person tier, but not the weapon's smaller margin */
-		struct game_globals *globals = scenario_get_game_globals();
-		struct game_globals_first_person_interface *interface = globals && globals->first_person_interface.count ?
-			TAG_BLOCK_GET_ELEMENT(&globals->first_person_interface, 0, struct game_globals_first_person_interface) : NULL;
-
+	/* the arms rank last, with decoration, and are not kept as the view
+	models are: they are the least the player needs to see in a
+	first-person view, the weapon is not (n64_render.c load_model). On the
+	custom cartridge they are kept and keep the first-person tier, but not
+	the weapon's smaller margin */
 #ifdef HALO_N64_PC_EXPANSION
-		if (interface && interface->hands.index == model_index)
-			n64.tier = N64_TIER_DECORATION;
+	if (first_person_arms(model_index))
+		n64.tier = N64_TIER_DECORATION;
 #else
-		n64_render_view_model_arms(interface && interface->hands.index == model_index);
+	n64_render_view_model_arms(first_person_arms(model_index));
 #endif
-	}
 #endif
 	n64.head_node = -1;
 	n64.head_mask[0] = n64.head_mask[1] = 0;

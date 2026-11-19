@@ -105,6 +105,12 @@ symbols in this file:
 #include "units/unit_definitions.h"
 #include "units/units.h"
 
+#ifdef HALO_N64
+/* HUD STYLE 64 (port/n64/game/n64_hud64_game.c): a scope's mask */
+extern int n64_hud64_active;
+extern void n64_hud64_game_scope(long mask_tag);
+#endif
+
 /* ---------- constants */
 
 enum
@@ -699,6 +705,13 @@ void interface_draw_screen(
 
 				if (mask_tag_index != NONE)
 				{
+#ifdef HALO_N64
+					/* (HUD STYLE 64: the mask drawn by the style where it
+					has one, under the view's HUD -- n64_hud64_game.c; the
+					N64 draws no screen effect) */
+					if (n64_hud64_active)
+						n64_hud64_game_scope(mask_tag_index);
+#endif
 					parameters.convolution_mask = TAG_BLOCK_GET_ELEMENT(
 						&bitmap_group_get(mask_tag_index)->bitmaps,
 						0,
