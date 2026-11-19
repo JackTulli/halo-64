@@ -173,6 +173,35 @@ const char *n64_menu_game_variant(int type) { return type >= 0 && type < GAME_TY
 int n64_menu_game_teams(int type) { return type >= 0 && type < GAME_TYPE_COUNT && game_types[type].teams; }
 int n64_menu_game_bots(int type) { return type >= 0 && type < GAME_TYPE_COUNT && game_types[type].bot_match; }
 
+/* the index-th player's colour, as before (its place's; the team's with
+teams), but in a local multiplayer game without teams the colour its
+controller's player chose (the pause menu's COLOR page) */
+static int player_colour(const struct n64_menu_choice *c, int index)
+{
+	int chosen = n64_controls[c->ports[index] & 3].colour;
+
+	if (c->firefight || c->campaign)
+		return player_colors[index & 3];
+	if (n64_menu_game_teams(c->game_type))
+		return c->teams[index] ? 3 : 2;
+	if (!N64_PLAYER_COLOURS || c->online || !chosen)
+		return player_colors[index & 3];
+	return chosen - 1;
+}
+
+/* a player card's colour: the menu's own shade of the four colours the
+players' places have, chosen or not (so that a chosen RED and a place's red
+look alike); Halo's for the others */
+static unsigned long card_colour(const struct n64_menu_choice *c, int index)
+{
+	int colour = player_colour(c, index);
+
+	for (int i = 0; i < 4; i++)
+		if (colour == player_colors[i])
+			return player_rgb[i];
+	return (unsigned long)n64_profile_color_table[colour];
+}
+
 int n64_menu_map_from_folder(const char *folder)
 {
 	for (int i = 0; i < MAP_COUNT; i++)
@@ -1027,7 +1056,7 @@ static unsigned char saved_checksum(const unsigned char *bytes)
 	return (unsigned char)(sum ^ (sum >> 8) ^ (sum >> 16));
 }
 
-static void settings_pack(unsigned char *bytes)
+static __attribute__((cold)) void settings_pack(unsigned char *bytes)
 {
 	memset(bytes, 0, SAVED_BYTES);
 	memcpy(bytes, "H64S", 4);
@@ -1077,11 +1106,24 @@ static void settings_pack(unsigned char *bytes)
 		controls[4] = (unsigned char)n64_controls[p].stick_speed;
 		controls[5] = (unsigned char)n64_controls[p].c_speed;
 	}
+	/* (bytes 44 to 46, five bits a controller from the lowest: its player's
+	colour, 0 none -- its place's -- in the records kept before there was
+	one) */
+	if (N64_PLAYER_COLOURS)
+	{
+		unsigned long colours = 0;
+
+		for (int p = 0; p < 4; p++)
+			colours |= (unsigned long)(n64_controls[p].colour & 31) << (p * 5);
+		bytes[44] = (unsigned char)colours;
+		bytes[45] = (unsigned char)(colours >> 8);
+		bytes[46] = (unsigned char)(colours >> 16);
+	}
 	bytes[SAVED_BYTES - 1] = saved_checksum(bytes);
 }
 
 /* the record's settings taken, each checked (out of range: its default) */
-static int settings_unpack(const unsigned char *bytes)
+static __attribute__((cold)) int settings_unpack(const unsigned char *bytes)
 {
 	if (memcmp(bytes, "H64S", 4) || bytes[4] != SAVED_VERSION || bytes[SAVED_BYTES - 1] != saved_checksum(bytes))
 		return 0;
@@ -1125,6 +1167,14 @@ static int settings_unpack(const unsigned char *bytes)
 			int other = (bytes[42] >> (p * 2)) & 3;
 
 			n64_controls[p].partner = other ? (unsigned char)((p ^ other) + 1) : 0;
+		}
+		if (N64_PLAYER_COLOURS)
+		{
+			/* (its player's colour, bytes 44 to 46; over N64_COLOURS: none) */
+			unsigned long colours = bytes[44] | (unsigned long)bytes[45] << 8 | (unsigned long)bytes[46] << 16;
+			int colour = (int)(colours >> (p * 5)) & 31;
+
+			n64_controls[p].colour = (unsigned char)(colour <= N64_COLOURS ? colour : 0);
 		}
 	}
 	return 1;
@@ -2313,7 +2363,9 @@ static void draw_player_cards(const struct n64_menu_choice *c, int teams, int ch
 		}
 		snprintf(value, sizeof(value), "PLAYER %d", p + 1);
 		text_centered(menu.large, center, y + 26, TEXT_BRIGHT, value);
-		panel(x + 12, y + 36, x + w - 12, y + 62, 0xFF000000 | (teams ? team_rgb[c->teams[slot]] : player_rgb[slot & 3]));
+		/* (the colour the player plays in) */
+		panel(x + 12, y + 36, x + w - 12, y + 62, 0xFF000000 | (teams ? team_rgb[c->teams[slot]] :
+			card_colour(c, slot)));
 		if (teams)
 			text_centered(menu.small, center, y + 55, TEXT_BRIGHT, c->teams[slot] ? "BLUE TEAM" : "RED TEAM");
 		/* (two controllers: the other one's port, or that it is missing) */
@@ -3100,8 +3152,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 		}
 		c->score = game_types[c->game_type].scores[score_index];
 		for (int i = 0; i < c->player_count; i++)
-			c->colors[i] = DIFFICULTY_GAME(c) ? player_colors[i & 3] :
-				n64_menu_game_teams(c->game_type) ? (c->teams[i] ? 3 : 2) : player_colors[i & 3];
+			c->colors[i] = player_colour(c, i);
 
 		/* (the settings kept when their page is left) */
 		if (screen != previous_screen && (previous_screen == SCREEN_SETTINGS || previous_screen == SCREEN_CONTROLS ||

@@ -2548,6 +2548,8 @@ name measured), squeezed with the anamorphic picture as the HUD is */
 #define PAUSE_TEXT 0xFF8CC0FFu
 #define PAUSE_BRIGHT 0xFFFFFFFFu
 #define PAUSE_DIM 0xC05880B0u
+/* (the pause screens run only while a game is paused: compiled for size) */
+#define PAUSE_CODE __attribute__((cold))
 
 static const unsigned long pause_team_colors[2] = { 0xFFD03838u, 0xFF3C6CE0u };
 
@@ -2558,7 +2560,10 @@ static float pause_x(float x)
 	return pause_middle + (x - pause_middle) * pause_squeeze;
 }
 
-static void pause_fill(float x0, float y0, float x1, float y1, unsigned long argb)
+/* (hot for size, not speed: it runs only while a game is paused, but its
+callers are cold, and without it GCC made out-of-line copies of libdragon's
+inline rdpq calls for it, 488 bytes more) */
+static __attribute__((hot)) void pause_fill(float x0, float y0, float x1, float y1, unsigned long argb)
 {
 	rdpq_sync_pipe();
 	rdpq_set_mode_standard();
@@ -2596,7 +2601,24 @@ static void pause_text(float x, int y, int align, unsigned long color, const cha
 	n64_text_draw_scaled(hud_font, pause_x(x), y, color, text, pause_squeeze);
 }
 
-void n64_hud_pause(const struct n64_pause_screen *screen)
+/* a colour's swatch, w by h at x (its left), its top at y: framed, so that
+a dark colour shows on the panel */
+static PAUSE_CODE void pause_swatch(float x, int y, int w, int h, int unit, unsigned long argb)
+{
+	pause_box(x - unit, y - unit, x + w + unit, y + h + unit, PAUSE_TEXT);
+	pause_box(x, y, x + w, y + h, 0xFF000000u | argb);
+}
+
+/* the colour named after a player on a controller: the team's, or without
+teams the Spartan's (none in an online game's rows) */
+static PAUSE_CODE const char *pause_colour_name(const struct n64_score_row *row)
+{
+	if (!N64_PLAYER_COLOURS || !row->human)
+		return NULL;
+	return row->team >= 0 ? (row->team ? "BLUE" : "RED") : row->colour ? n64_colour_names[row->colour - 1] : NULL;
+}
+
+PAUSE_CODE void n64_hud_pause(const struct n64_pause_screen *screen)
 {
 	int width = n64_render_screen_width(), height = n64_render_screen_height();
 	/* (480 lines: two pixels where 240 have one; the font stays itself) */
@@ -2634,8 +2656,10 @@ void n64_hud_pause(const struct n64_pause_screen *screen)
 	for (i = 0; i < rows; i++)
 	{
 		const struct n64_score_row *row = &screen->rows[i];
+		const char *named = pause_colour_name(row);
 
-		name_width = MAX(name_width, n64_text_width(hud_font, row->name));
+		name_width = MAX(name_width, n64_text_width(hud_font, row->name) +
+			(named ? gap + n64_text_width(hud_font, named) : 0));
 		score_width = MAX(score_width, n64_text_width(hud_font, row->score));
 		snprintf(number, sizeof(number), "%d", row->kills);
 		kills_width = MAX(kills_width, n64_text_width(hud_font, number));
@@ -2698,7 +2722,13 @@ void n64_hud_pause(const struct n64_pause_screen *screen)
 			pause_box(x0 + pad - 2 * unit, y - unit, x1 - pad + 2 * unit, y + pitch - unit, PAUSE_HUMAN);
 		if (row->team >= 0)
 			pause_box(x0 + pad, y, x0 + pad + cap, y + cap, pause_team_colors[row->team & 1]);
+		/* (without teams, the Spartan's colour in the team's place) */
+		else if (N64_PLAYER_COLOURS && row->colour)
+			pause_swatch(x0 + pad, y, cap, cap, unit, (unsigned long)n64_profile_color_table[row->colour - 1]);
 		pause_text(name_x, y + cap, PAUSE_LEFT, color, row->name);
+		if (pause_colour_name(row))
+			pause_text(name_x + n64_text_width(hud_font, row->name) + gap, y + cap, PAUSE_LEFT, PAUSE_TEXT,
+				pause_colour_name(row));
 		pause_text(score_x, y + cap, PAUSE_RIGHT, color, row->score);
 		snprintf(number, sizeof(number), "%d", row->kills);
 		pause_text(kills_x, y + cap, PAUSE_RIGHT, color, number);
@@ -2709,16 +2739,37 @@ void n64_hud_pause(const struct n64_pause_screen *screen)
 	y += 4 * unit;
 
 	/* The native blue buttons now expose Controls without leaving the match. */
-	for (i = 0; i < 2; i++)
 	{
-		float bx = x0 + pad + i * (button_width + gap);
-		if (screen->selected == i)
+		/* (with Color, three options in the two places: they move by one
+		as the selection passes either place; a bar under them shows which.
+		shown: the first option in the places) */
+		static int shown;
+		int options = N64_PLAYER_COLOURS && screen->options > 2 ? 3 : 2;
+
+		shown = options > 2 ? MAX(MIN(shown, screen->selected), screen->selected - 1) : 0;
+		for (i = 0; i < 2; i++)
 		{
-			pause_box(bx, y, bx + button_width, y + box_height, PAUSE_CHOSEN);
-			pause_frame(bx, y, bx + button_width, y + box_height, unit, PAUSE_FRAME);
+			int option = shown + i;
+			float bx = x0 + pad + i * (button_width + gap);
+			if (screen->selected == option)
+			{
+				pause_box(bx, y, bx + button_width, y + box_height, PAUSE_CHOSEN);
+				pause_frame(bx, y, bx + button_width, y + box_height, unit, PAUSE_FRAME);
+			}
+			pause_text(bx + button_width * 0.5f, y + (box_height + cap) / 2, PAUSE_CENTRE,
+				screen->selected == option ? PAUSE_BRIGHT : PAUSE_TEXT,
+				option == options - 1 ? "MAIN MENU" : option ? "COLOR" : "CONTROLS");
 		}
-		pause_text(bx + button_width * 0.5f, y + (box_height + cap) / 2, PAUSE_CENTRE,
-			screen->selected == i ? PAUSE_BRIGHT : PAUSE_TEXT, i ? "MAIN MENU" : "CONTROLS");
+		if (options > 2)
+		{
+			/* the bar: a dim track under the two places, 2 units high, its
+			bright thumb two thirds of it, under the options shown */
+			float bx = x0 + pad, length = 2 * button_width + gap;
+			int by = y + box_height + 2 * unit;
+
+			pause_box(bx, by, bx + length, by + 2 * unit, PAUSE_DIM);
+			pause_box(bx + length * shown / 3, by, bx + length * (shown + 2) / 3, by + 2 * unit, PAUSE_FRAME);
+		}
 	}
 	pause_text(x1 - pad, y + (box_height + cap) / 2, PAUSE_RIGHT, PAUSE_DIM, "START RESUME");
 	hud.tmem_pixels = NULL;
@@ -2735,7 +2786,11 @@ static void pause_text_fit(float x, int y, int align, unsigned long color, const
 	n64_text_draw_scaled(hud_font, pause_x(x), y, color, text, pause_squeeze * scale);
 }
 
-void n64_hud_pause_controls(const int *ports, int count, const int *selected_rows)
+/* the CONTROLS page, or with colours the COLOR page: the same panels and
+headings, and in place of the controls' rows the player's colour, a framed
+swatch (BLACK shows) four letters high and square on the screen, and its
+name */
+static PAUSE_CODE void pause_page(const int *ports, int count, const int *selected_rows, const signed char *colours)
 {
 	static const char *const names[CONTROL_COUNT] = {"SCHEME", "CROUCH", "LOOK", "FIRE", "STICK", "C LOOK", "RUMBLE"};
 	int width = n64_render_screen_width(), height = n64_render_screen_height();
@@ -2773,6 +2828,19 @@ void n64_hud_pause_controls(const int *ports, int count, const int *selected_row
 		else
 			snprintf(text, sizeof(text), "PLAYER %d  -  PORT %d", i + 1, port + 1);
 		pause_text_fit((x0 + x1) * 0.5f, y0 + cap + 2 * unit, PAUSE_CENTRE, PAUSE_BRIGHT, text, x1 - x0 - 8 * unit);
+		if (N64_PLAYER_COLOURS && colours)
+		{
+			/* (centred in the room under the heading; wide: twice as many
+			pixels across at 640 by 240) */
+			int size = 4 * cap, y = (y0 + cap + 5 * unit + y1 - size - cap - 4 * unit) / 2;
+			int wide = width >= 640 && height < 480 ? 2 : 1;
+
+			pause_swatch((x0 + x1) * 0.5f - size * wide / 2, y, size * wide, size, unit,
+				(unsigned long)n64_profile_color_table[colours[i]]);
+			pause_text_fit((x0 + x1) * 0.5f, y + size + 4 * unit + cap, PAUSE_CENTRE, PAUSE_BRIGHT,
+				n64_colour_names[colours[i]], x1 - x0 - 8 * unit);
+			continue;
+		}
 		for (r = 0; r < CONTROL_COUNT; r++)
 		{
 			int y = y0 + cap + 5 * unit + r * pitch, selected = selected_rows[port] == r;
@@ -2802,7 +2870,22 @@ void n64_hud_pause_controls(const int *ports, int count, const int *selected_row
 			pause_text_fit(x1 - 4 * unit, y + cap, PAUSE_RIGHT, selected ? PAUSE_BRIGHT : PAUSE_TEXT, value, (x1 - x0 - 12 * unit) / 2);
 		}
 	}
-	pause_text_fit(pause_middle, height - 15 * unit, PAUSE_CENTRE, PAUSE_TEXT, "OWN PAD: UP/DOWN ROW  LEFT/RIGHT CHANGE", width - 12 * unit);
-	pause_text_fit(pause_middle, height - 5 * unit, PAUSE_CENTRE, PAUSE_DIM, "A CYCLE   B BACK   START RESUME", width - 12 * unit);
+	pause_text_fit(pause_middle, height - 15 * unit, PAUSE_CENTRE, PAUSE_TEXT,
+		colours ? "OWN PAD: LEFT/RIGHT COLOR" : "OWN PAD: UP/DOWN ROW  LEFT/RIGHT CHANGE", width - 12 * unit);
+	pause_text_fit(pause_middle, height - 5 * unit, PAUSE_CENTRE, PAUSE_DIM,
+		colours ? "A NEXT   B BACK   START RESUME" : "A CYCLE   B BACK   START RESUME", width - 12 * unit);
 	hud.tmem_pixels = NULL;
 }
+
+void n64_hud_pause_controls(const int *ports, int count, const int *selected_rows)
+{
+	pause_page(ports, count, selected_rows, NULL);
+}
+
+#if N64_PLAYER_COLOURS
+void n64_hud_pause_colours(const int *ports, int count, const signed char *colours)
+{
+	pause_page(ports, count, NULL, colours);
+}
+#endif
+
