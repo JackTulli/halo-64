@@ -20,12 +20,13 @@ anyone else otherwise), goes for it along Halo's own paths while it is out
 of sight, keeps its weapon's range and strafes when in sight, fires in
 bursts (held for the automatic weapons, pressed shot by shot for the rest)
 with an aim that misses by more at an easier skill, throws grenades now and
-then, meleees up close and works its way around whatever stops it. With no
-enemy in sight it goes for a better weapon lying near, and it reloads,
-swaps to its other weapon when this one is empty and gets out of any
-vehicle it found itself in. It sees and fires along a clear line to the
-enemy: the level, vehicles, scenery and machines block it; bipeds,
-teammates included, do not (Halo's sight-blocking objects).
+then (never at an enemy beside a teammate), meleees up close and works its
+way around whatever stops it. With no enemy in sight it goes for a better
+weapon lying near, and it reloads, swaps to its other weapon when this one
+is empty and gets out of any vehicle it found itself in. It sees and fires
+along a clear line to the enemy: the level, vehicles, scenery and machines
+block it; bipeds, teammates included, do not (Halo's sight-blocking
+objects).
 */
 
 #include "cseries.h"
@@ -123,7 +124,9 @@ static struct bot_weapon
 static real const aim_error[4] = { 0.16f, 0.09f, 0.055f, 0.03f };
 static short const burst_ticks[4] = { 8, 12, 16, 22 };
 static short const pause_ticks[4] = { 34, 22, 14, 8 };
-static short const grenade_chance[4] = { 2, 4, 6, 8 }; /* in 1000 a tick */
+/* (in 100, a roll a second: Halo's marines roll throw_grenade_chance 0.25
+each throw_grenade_delay of 1 s, a30's actor variants) */
+static short const grenade_chance[4] = { 10, 15, 20, 25 };
 
 /* their armour in free-for-all games (Halo's colour indices: pink, orange,
 purple, cyan, cobalt, brown, teal, sage, salmon, tan, maroon, white) */
@@ -800,6 +803,34 @@ static long nearest_enemy(
 	return best;
 }
 
+/* whether a teammate (a player of its team in a team game, not itself)
+stands within 3 units of a point: no grenade there */
+static boolean teammate_near(
+	struct bot *bot,
+	real_point3d const *point)
+{
+	struct player_datum *self = player_get(bot->player_index);
+	struct data_iterator iterator;
+	struct player_datum *player;
+
+	if (!game_engine_has_teams())
+		return FALSE;
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL)
+	{
+		real_point3d position;
+
+		if (iterator.datum_index == bot->player_index || player->team_index != self->team_index ||
+			!unit_alive(player->unit_index))
+		{
+			continue;
+		}
+		if (distance_squared3d(object_get_origin(player->unit_index, &position), point) < 3.f * 3.f)
+			return TRUE;
+	}
+	return FALSE;
+}
+
 /* the search going on: this tick's part, and once it is over the path to
 its bot (a bot that died or changed bodies since gives it up); the next
 search may begin TICKS_BETWEEN_PATHS after */
@@ -1446,15 +1477,35 @@ static void think(
 		flags |= FLAG(_unit_control_use_equipment_bit);
 		bot->melee_timer = 30;
 	}
-	/* a grenade now and then */
+	/* a grenade now and then: of a kind it has (the one wanted, as
+	player_control.c picks one: the one in hand, else the next it has some
+	of -- a throw takes the kind in hand, units.c); a roll a second with the
+	enemy in sight 4 to 14 units away (a30's marines: 3 to 14), 6 s at
+	least between throws, and none with a teammate within 3 units of the
+	enemy (Halo's AI keeps its friends out of the blast: actor_combat.c) */
+	{
+		short grenade = unit->unit.current_grenade_index;
+
+		if (grenade == NONE || !unit_get_grenade_count(player->unit_index, grenade))
+			grenade = unit_inventory_next_grenade(player->unit_index, grenade, 1);
+		action->desired_grenade_index = grenade;
+	}
+	/* (the timer counted down before the test: a roll each second, not
+	each second and a thought) */
 	if (bot->grenade_timer > 0)
 		bot->grenade_timer -= step;
-	else if (bot->target_visible && distance > 6.f && distance < 18.f &&
-		(long)(bot_random() % 1000) < grenade_chance[bots.skill] * step)
+	if (bot->grenade_timer <= 0 && bot->target_visible && distance >= 4.f && distance <= 14.f &&
+		unit_get_grenade_count(player->unit_index, unit->unit.current_grenade_index) > 0 &&
+		!teammate_near(bot, &target_position))
 	{
-		/* (the grenade button sets both, as player_control.c does) */
-		flags |= FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_weapon_secondary_trigger_bit);
-		bot->grenade_timer = 6 * TICKS_PER_SECOND;
+		if ((short)(bot_random() % 100) < grenade_chance[bots.skill])
+		{
+			/* (the grenade button sets both, as player_control.c does) */
+			flags |= FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_weapon_secondary_trigger_bit);
+			bot->grenade_timer = 6 * TICKS_PER_SECOND;
+		}
+		else
+			bot->grenade_timer = TICKS_PER_SECOND;
 	}
 
 	if (forward > 1.f) forward = 1.f;
