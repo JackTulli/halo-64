@@ -23,8 +23,9 @@ with an aim that misses by more at an easier skill, throws grenades now and
 then, meleees up close and works its way around whatever stops it. With no
 enemy in sight it goes for a better weapon lying near, and it reloads,
 swaps to its other weapon when this one is empty and gets out of any
-vehicle it found itself in. It never fires through a teammate: a shot needs
-a clear line (objects included) to the enemy.
+vehicle it found itself in. It sees and fires along a clear line to the
+enemy: the level, vehicles, scenery and machines block it; bipeds,
+teammates included, do not (Halo's sight-blocking objects).
 */
 
 #include "cseries.h"
@@ -390,7 +391,8 @@ static short bot_detail(
 
 		if (unit_index != NONE && object_try_and_get(unit_index))
 		{
-			real d = distance_squared3d(&object_get(unit_index)->object.position,
+			real_point3d position;
+			real d = distance_squared3d(object_get_origin(unit_index, &position),
 				&object_get(bot->unit_index)->object.position);
 
 			if (d < nearest)
@@ -776,13 +778,16 @@ static long nearest_enemy(
 	data_iterator_new(&iterator, player_data);
 	while ((player = data_iterator_next(&iterator)) != NULL)
 	{
+		real_point3d position;
 		real d;
 
 		if (iterator.datum_index == bot->player_index || !unit_alive(player->unit_index))
 			continue;
 		if (teams && player->team_index == self->team_index)
 			continue;
-		d = horizontal_distance(from, &object_get(player->unit_index)->object.position);
+		/* (a rider's own position is its seat's, in its vehicle: objects.c,
+		object_get_origin) */
+		d = horizontal_distance(from, object_get_origin(player->unit_index, &position));
 		/* (the one it is fighting stays a little nearer than it is) */
 		if (player->unit_index == bot->target_unit)
 			d -= 3.f;
@@ -1119,15 +1124,33 @@ static void think(
 	}
 	if (bot->target_unit != NONE)
 	{
-		unit_get_camera_position(bot->target_unit, &target_eye);
-		target_position = object_get(bot->target_unit)->object.position;
+		/* (the object the ray leaves out: the bot itself, or a rider's
+		vehicle) */
+		long sight_ignore = player->unit_index;
+
+		/* a rider: where it truly is (its own position is its seat's, in
+		its vehicle: objects.c, object_get_origin), its body to aim at --
+		Halo's AI fires at a target's centre of mass (actor_combat.c) -- and
+		no stop at its own vehicle, which Halo's AI leaves out of its sight
+		test (actor_perception.c, ai_test_line_of_sight) */
+		if (object_get(bot->target_unit)->object.parent_object_index != NONE)
+		{
+			object_get_origin(bot->target_unit, &target_position);
+			unit_get_center_of_mass(bot->target_unit, &target_eye);
+			sight_ignore = object_get_ultimate_parent(bot->target_unit);
+		}
+		else
+		{
+			unit_get_camera_position(bot->target_unit, &target_eye);
+			target_position = object_get(bot->target_unit)->object.position;
+		}
 		if ((bot->sight_timer -= step) <= 0)
 		{
 			bot->sight_timer = 10;
 			bot->target_visible =
 				horizontal_distance(&unit->object.position, &target_position) < SIGHT_RANGE &&
 				n64_ai_clusters_may_see(player->unit_index, bot->target_unit) &&
-				line_of_sight(&eye, &target_eye, player->unit_index);
+				line_of_sight(&eye, &target_eye, sight_ignore);
 		}
 		if (bot->target_visible || (bot->last_seen.x == 0.f && bot->last_seen.y == 0.f))
 			bot->last_seen = target_eye;
