@@ -9,21 +9,26 @@ by the game's own rules -- whose actions (the stick, the aim, the buttons)
 come from here instead of a controller. update_client_dequeue (player_
 queues_new.c, HALO_N64) hands each tick's actions to n64_bots_actions, which
 writes the bots' own; players_update_before_game then applies them exactly
-as it does a person's: the action button picks up a weapon (player_handle_
-action), swaps them, gets out of a vehicle; triggers, grenades, melee, jump
-and reload go to unit_control.
+as it does a person's: the swap button (a person's held X) picks up a
+weapon (player_handle_weapon_swap), the action button gets out of a
+vehicle; the weapon wanted, triggers, grenades, melee, jump and reload go
+to unit_control.
+A bot charges the plasma pistol now and then, as Halo's jackals do.
 
 Their way of fighting is the Firefight Covenant's (n64_firefight.c), kept
 simple: each picks the nearest enemy (another team's player in a team game,
 anyone else otherwise), goes for it along Halo's own paths while it is out
 of sight, keeps its weapon's range and strafes when in sight, fires in
-bursts (held for the automatic weapons, pressed shot by shot for the rest)
-with an aim that misses by more at an easier skill, throws grenades now and
-then, meleees up close and works its way around whatever stops it. With no
-enemy in sight it goes for a better weapon lying near, and it reloads,
-swaps to its other weapon when this one is empty and gets out of any
-vehicle it found itself in. It never fires through a teammate: a shot needs
-a clear line (objects included) to the enemy.
+bursts (held for the automatic weapons, pressed shot by shot for the rest,
+the plasma pistol at the pace of Halo's own) with an aim that misses by
+more at an easier skill, throws grenades now and then (never at an enemy
+beside a teammate), meleees up close and works its way around whatever
+stops it. With no enemy in sight it goes for a better weapon lying near,
+and it reloads, swaps to its other weapon when this one is empty and gets
+out of any vehicle it found itself in. It sees and fires along a clear line
+to the enemy: the level, vehicles, scenery and machines block it; bipeds,
+teammates included, do not (Halo's sight-blocking objects).
+A cloaked enemy it sees only within 2 units, or for 1 s after it fires.
 */
 
 #include "cseries.h"
@@ -92,6 +97,7 @@ enum
 	_style_semi, /* pressed shot by shot */
 	_style_auto, /* held */
 	_style_explosive, /* pressed, never up close */
+	_style_pistol, /* the plasma pistol: pressed at a pace, held to charge */
 };
 
 /* the weapons it knows: how much it wants each, how it fires it and the
@@ -113,7 +119,7 @@ static struct bot_weapon
 	{ "weapons\\plasma rifle\\plasma rifle", 6, _style_auto, 3.f, 12.f },
 	{ "weapons\\needler\\needler", 5, _style_auto, 4.f, 14.f },
 	{ "weapons\\flamethrower\\flamethrower", 4, _style_auto, 1.5f, 5.f },
-	{ "weapons\\plasma pistol\\plasma pistol", 3, _style_semi, 3.f, 12.f },
+	{ "weapons\\plasma pistol\\plasma pistol", 3, _style_pistol, 3.f, 12.f },
 };
 #define NUMBER_OF_BOT_WEAPONS ((short)(sizeof(bot_weapons) / sizeof(bot_weapons[0])))
 
@@ -121,7 +127,31 @@ static struct bot_weapon
 static real const aim_error[4] = { 0.16f, 0.09f, 0.055f, 0.03f };
 static short const burst_ticks[4] = { 8, 12, 16, 22 };
 static short const pause_ticks[4] = { 34, 22, 14, 8 };
-static short const grenade_chance[4] = { 2, 4, 6, 8 }; /* in 1000 a tick */
+/* the plasma pistol as a30's plasma-pistol actors fire it (their actor
+variants: grunt minor at easy, jackal minor at normal, grunt major at
+heroic, jackal major at legendary): a press each so many ticks (its
+trigger has no rate of fire of its own, its bolt going as it is let go:
+rate_of_fire 5 a second at easy and normal, 6 at heroic and legendary),
+its bursts and the pauses between them (burst_duration and burst_
+separation, in ticks) */
+static struct bot_pistol
+{
+	short shot_ticks;
+	short burst_least, burst_most;
+	short pause_least, pause_most;
+} const pistol_fire[4] =
+{
+	{ 6, 8, 21, 36, 51 }, /* 0.25-0.7 s, 1.2-1.7 s */
+	{ 6, 12, 26, 45, 60 }, /* 0.4-0.85 s, 1.5-2 s */
+	{ 5, 5, 17, 23, 33 }, /* 0.175-0.55 s, 0.75-1.1 s */
+	{ 5, 9, 18, 15, 23 } /* 0.3-0.6 s, 0.5-0.75 s */
+};
+/* (in 100: the jackals' special_fire_chance, 0.2 minor and 0.3 major, a
+roll each special_fire_delay of 5 s, overcharge their special_fire_mode) */
+static short const charge_chance[4] = { 10, 20, 30, 30 };
+/* (in 100, a roll a second: Halo's marines roll throw_grenade_chance 0.25
+each throw_grenade_delay of 1 s, a30's actor variants) */
+static short const grenade_chance[4] = { 10, 15, 20, 25 };
 
 /* their armour in free-for-all games (Halo's colour indices: pink, orange,
 purple, cyan, cobalt, brown, teal, sage, salmon, tan, maroon, white) */
@@ -172,10 +202,18 @@ struct bot
 	/* its action fires (a trigger, a grenade, a melee): its pose is kept at
 	the count's rate (n64_bot_pose_interval) */
 	boolean firing;
+	/* the plasma pistol (bot_trigger_tick): its next press (a game tick)
+	and the ticks between presses while it fires (0: not firing it); the
+	time to its next roll to charge it, and whether it holds the trigger
+	to charge it */
+	long next_shot;
+	short shot_ticks;
+	short charge_timer;
+	boolean charging;
 };
 
 /* New LOD fields extend the old prefix; read diagnostic stride from DWARF. */
-typedef char n64_bot_observer_stride[sizeof(struct bot) == 268 ? 1 : -1];
+typedef char n64_bot_observer_stride[sizeof(struct bot) == 280 ? 1 : -1];
 typedef char n64_bot_observer_ghost_offset[offsetof(struct bot, ghost_profile) == 246 ? 1 : -1];
 
 static struct
@@ -309,6 +347,14 @@ static real bot_random_real(
 	return (real)(bot_random() & 0xFFFF) / 32768.f - 1.f;
 }
 
+/* least to most, both included */
+static short bot_random_range(
+	short least,
+	short most)
+{
+	return (short)(least + (short)(bot_random() % (unsigned long)(most - least + 1)));
+}
+
 static real horizontal_distance(
 	real_point3d const *a,
 	real_point3d const *b)
@@ -389,7 +435,8 @@ static short bot_detail(
 
 		if (unit_index != NONE && object_try_and_get(unit_index))
 		{
-			real d = distance_squared3d(&object_get(unit_index)->object.position,
+			real_point3d position;
+			real d = distance_squared3d(object_get_origin(unit_index, &position),
 				&object_get(bot->unit_index)->object.position);
 
 			if (d < nearest)
@@ -759,8 +806,35 @@ static void resolve_weapons(
 
 /* ---------- thinking */
 
+/* whether a unit is hidden by its active camouflage from a bot so far
+away (horizontally): Halo's AI never sees one cloaked over half
+(actor_perception.c) but notices it when it fires (weapons.c makes the
+shot known, actors.c); a bot sees one within 2 units, or for 1 s after it
+fired */
+static boolean bot_camouflaged(
+	long unit_index,
+	real distance)
+{
+	struct unit_datum *unit = unit_get(unit_index);
+	long weapon_index;
+
+	if (unit->unit.active_camouflage <= 0.5f || distance < 2.f)
+		return FALSE;
+	weapon_index = unit_inventory_get_weapon(unit_index, unit->unit.current_weapon_index);
+	if (weapon_index != NONE)
+	{
+		long fired = weapon_get(weapon_index)->weapon.game_time_last_fired;
+
+		if (fired > 0 && game_time_get() - fired <= TICKS_PER_SECOND)
+			return FALSE;
+	}
+	return TRUE;
+}
+
 /* the nearest enemy's living unit: another team's player in a team game,
-any other player otherwise */
+any other player otherwise -- none it cannot see for its camouflage
+(bot_camouflaged: it would otherwise go straight for it, its way found
+from where it truly is) */
 static long nearest_enemy(
 	struct bot *bot,
 	real_point3d const *from)
@@ -775,13 +849,18 @@ static long nearest_enemy(
 	data_iterator_new(&iterator, player_data);
 	while ((player = data_iterator_next(&iterator)) != NULL)
 	{
+		real_point3d position;
 		real d;
 
 		if (iterator.datum_index == bot->player_index || !unit_alive(player->unit_index))
 			continue;
 		if (teams && player->team_index == self->team_index)
 			continue;
-		d = horizontal_distance(from, &object_get(player->unit_index)->object.position);
+		/* (a rider's own position is its seat's, in its vehicle: objects.c,
+		object_get_origin) */
+		d = horizontal_distance(from, object_get_origin(player->unit_index, &position));
+		if (bot_camouflaged(player->unit_index, d))
+			continue;
 		/* (the one it is fighting stays a little nearer than it is) */
 		if (player->unit_index == bot->target_unit)
 			d -= 3.f;
@@ -792,6 +871,34 @@ static long nearest_enemy(
 		}
 	}
 	return best;
+}
+
+/* whether a teammate (a player of its team in a team game, not itself)
+stands within 3 units of a point: no grenade there */
+static boolean teammate_near(
+	struct bot *bot,
+	real_point3d const *point)
+{
+	struct player_datum *self = player_get(bot->player_index);
+	struct data_iterator iterator;
+	struct player_datum *player;
+
+	if (!game_engine_has_teams())
+		return FALSE;
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL)
+	{
+		real_point3d position;
+
+		if (iterator.datum_index == bot->player_index || player->team_index != self->team_index ||
+			!unit_alive(player->unit_index))
+		{
+			continue;
+		}
+		if (distance_squared3d(object_get_origin(player->unit_index, &position), point) < 3.f * 3.f)
+			return TRUE;
+	}
+	return FALSE;
 }
 
 /* the search going on: this tick's part, and once it is over the path to
@@ -932,8 +1039,10 @@ static boolean follow_path(
 	return FALSE;
 }
 
-/* a better weapon than the worse of its two lying near enough and in
-sight, or NONE */
+/* a better weapon lying near enough and in sight, or NONE: with two
+carried a pickup is a swap that drops the weapon in hand (players.c,
+player_handle_weapon_swap), so it must beat that one; with fewer, any
+weapon the game would give it (an add, or a fresher copy of its own) */
 static long find_better_weapon(
 	struct bot *bot,
 	struct unit_datum *unit,
@@ -941,25 +1050,19 @@ static long find_better_weapon(
 {
 	struct object_iterator iterator;
 	struct object_datum *object;
-	short carried = 0, worst = 99, i;
+	short carried = 0, worst = 0, i;
+	long in_hand = unit_inventory_get_weapon(bot->unit_index, unit->unit.current_weapon_index);
+	boolean armed = in_hand != NONE;
 	long best = NONE, second = NONE;
 	real best_value = 0.f, second_value = 0.f;
 
 	for (i = 0; i < MAXIMUM_WEAPONS_PER_UNIT; i++)
 	{
-		long weapon_index = unit_inventory_get_weapon(bot->unit_index, i);
-
-		if (weapon_index != NONE)
-		{
-			short score = weapon_can_be_fired(weapon_index) ? weapon_score(weapon_index) : 0;
-
+		if (unit_inventory_get_weapon(bot->unit_index, i) != NONE)
 			carried++;
-			if (score < worst)
-				worst = score;
-		}
 	}
-	if (carried < 2)
-		worst = 0;
+	if (carried >= 2 && armed && weapon_can_be_fired(in_hand))
+		worst = weapon_score(in_hand);
 	object_iterator_new(&iterator, _object_mask_weapon, 0);
 	while ((object = object_iterator_next(&iterator)) != NULL)
 	{
@@ -971,6 +1074,11 @@ static long find_better_weapon(
 			continue;
 		score = weapon_score(weapon_index);
 		if (score <= worst || !weapon_can_be_fired(weapon_index))
+			continue;
+		/* (none the game would not give it: a kind it carries, unless the
+		one in its hands is older -- units.c, unit_approve_weapon_swap, as
+		players.c offers a person a weapon on the ground) */
+		if (armed && !unit_approve_weapon_swap(bot->unit_index, weapon_index))
 			continue;
 		distance = horizontal_distance(&unit->object.position, &object->object.position);
 		if (distance > WEAPON_SEARCH_RANGE || fabsf(object->object.position.z - unit->object.position.z) > 2.5f)
@@ -1084,6 +1192,8 @@ static void think(
 	/* in a vehicle: out (the action button) */
 	if (unit->object.parent_object_index != NONE)
 	{
+		bot->shot_ticks = 0;
+		bot->charging = FALSE;
 		if (bot->action_timer > 0)
 			bot->action_timer -= step;
 		else
@@ -1117,15 +1227,35 @@ static void think(
 	}
 	if (bot->target_unit != NONE)
 	{
-		unit_get_camera_position(bot->target_unit, &target_eye);
-		target_position = object_get(bot->target_unit)->object.position;
+		/* (the object the ray leaves out: the bot itself, or a rider's
+		vehicle) */
+		long sight_ignore = player->unit_index;
+
+		/* a rider: where it truly is (its own position is its seat's, in
+		its vehicle: objects.c, object_get_origin), its body to aim at --
+		Halo's AI fires at a target's centre of mass (actor_combat.c) -- and
+		no stop at its own vehicle, which Halo's AI leaves out of its sight
+		test (actor_perception.c, ai_test_line_of_sight) */
+		if (object_get(bot->target_unit)->object.parent_object_index != NONE)
+		{
+			object_get_origin(bot->target_unit, &target_position);
+			unit_get_center_of_mass(bot->target_unit, &target_eye);
+			sight_ignore = object_get_ultimate_parent(bot->target_unit);
+		}
+		else
+		{
+			unit_get_camera_position(bot->target_unit, &target_eye);
+			target_position = object_get(bot->target_unit)->object.position;
+		}
 		if ((bot->sight_timer -= step) <= 0)
 		{
+			real range = horizontal_distance(&unit->object.position, &target_position);
+
+			/* (one hidden by its camouflage: no ray) */
 			bot->sight_timer = 10;
-			bot->target_visible =
-				horizontal_distance(&unit->object.position, &target_position) < SIGHT_RANGE &&
+			bot->target_visible = range < SIGHT_RANGE && !bot_camouflaged(bot->target_unit, range) &&
 				n64_ai_clusters_may_see(player->unit_index, bot->target_unit) &&
-				line_of_sight(&eye, &target_eye, player->unit_index);
+				line_of_sight(&eye, &target_eye, sight_ignore);
 		}
 		if (bot->target_visible || (bot->last_seen.x == 0.f && bot->last_seen.y == 0.f))
 			bot->last_seen = target_eye;
@@ -1182,14 +1312,21 @@ static void think(
 				move.j = dy / length;
 			}
 			moving = length > 0.35f;
-			/* there: the action button picks it up (it faces it too) */
+			/* there: the swap button picks it up (it faces it too) once
+			the game offers it, as it offers it a player (players.c sets the
+			player's action result as it looks over the objects near) -- a
+			player's held X (player_control.c), whose one press is enough
+			here; the action button beside a weapon only reloads (players.c,
+			player_handle_action) */
 			if (length < 1.1f)
 			{
 				if (bot->action_timer > 0)
 					bot->action_timer -= step;
-				else
+				else if (player->action_object_index == bot->goal_weapon &&
+					(player->action_result == _player_action_result_swap_for_weapon ||
+					player->action_result == _player_action_result_add_weapon_to_inventory))
 				{
-					flags |= FLAG(_unit_control_action_bit);
+					flags |= FLAG(_unit_control_swap_weapons_bit);
 					bot->action_timer = 20;
 				}
 			}
@@ -1328,7 +1465,9 @@ static void think(
 	}
 
 	/* its weapon: reloaded when empty, the other one when this one is
-	spent */
+	spent (the weapon wanted, as a person's switch asks for it: player_
+	control.c's desired_weapon_index; the swap button takes one from the
+	ground) */
 	if (bot->reload_timer > 0)
 		bot->reload_timer -= step;
 	if (bot->swap_timer > 0)
@@ -1349,7 +1488,7 @@ static void think(
 
 				if (other != NONE && other != current_weapon && weapon_can_be_fired(other))
 				{
-					flags |= FLAG(_unit_control_swap_weapons_bit);
+					action->desired_weapon_index = i;
 					bot->swap_timer = TICKS_PER_SECOND;
 					break;
 				}
@@ -1363,46 +1502,93 @@ static void think(
 	}
 
 	/* firing: bursts and pauses while the enemy is in sight and range (an
-	explosive one never up close) */
+	explosive one never up close; the plasma pistol pressed at its pace each
+	tick, bot_trigger_tick) */
+	bot->shot_ticks = 0;
 	if (bot->target_visible && distance < weapon->far_range + 6.f && current_weapon != NONE &&
 		!(weapon->style == _style_explosive && distance < 4.f) && bot->swap_timer <= 0)
 	{
+		struct bot_pistol const *pistol = &pistol_fire[combat_skill];
+
 		if (bot->fire_timer > 0)
 		{
 			bot->fire_timer -= step;
-			bot->trigger_down = weapon->style == _style_auto ? TRUE : !bot->trigger_down;
-			if (bot->trigger_down)
+			if (weapon->style == _style_pistol)
+				bot->shot_ticks = pistol->shot_ticks;
+			else
 			{
-				trigger = 1.f;
-				flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
+				bot->trigger_down = weapon->style == _style_auto ? TRUE : !bot->trigger_down;
+				if (bot->trigger_down)
+				{
+					trigger = 1.f;
+					flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
+				}
 			}
 			/* (longer pauses with many bots: fewer shots in the air, each one
 			an object of its own a tick, its ray every tick -- the count's
 			share of a pause: 1 up to 3 bots, 1.5 to 6, 2 to 8, 2.5 to 10, 3
 			past; half again for a bot far and in no view, which fights the
-			other bots out there) */
+			other bots out there. The plasma pistol's are a30's at any count) */
 			if (bot->fire_timer <= 0)
 			{
-				short halves = bots.created <= 3 ? 2 : bots.created <= 6 ? 3 : bots.created <= 8 ? 4 :
-					bots.created <= 10 ? 5 : 6;
+				if (weapon->style == _style_pistol)
+					bot->fire_timer = -bot_random_range(pistol->pause_least, pistol->pause_most);
+				else
+				{
+					short halves = bots.created <= 3 ? 2 : bots.created <= 6 ? 3 : bots.created <= 8 ? 4 :
+						bots.created <= 10 ? 5 : 6;
 
-				if (bot_detail(bot) == _bot_detail_least)
-					halves += halves / 2;
-				bot->fire_timer = -(short)((pause_ticks[combat_skill] + bot_random() % 10) * halves / 2);
+					if (bot_detail(bot) == _bot_detail_least)
+						halves += halves / 2;
+					bot->fire_timer = -(short)(bot_random_range(pause_ticks[combat_skill], pause_ticks[combat_skill] + 9) *
+						halves / 2);
+				}
 			}
 		}
 		else
 		{
 			bot->fire_timer += step;
 			bot->trigger_down = FALSE;
-			/* (a quarter shorter with more than eight bots) */
+			/* (a quarter shorter with more than eight bots; the plasma
+			pistol's a30's at any count) */
 			if (bot->fire_timer >= 0)
-				bot->fire_timer = (short)((burst_ticks[combat_skill] + bot_random() % 8) *
-					(bots.created > 8 ? 3 : 4) / 4);
+				bot->fire_timer = weapon->style == _style_pistol ?
+					bot_random_range(pistol->burst_least, pistol->burst_most) :
+					(short)(bot_random_range(burst_ticks[combat_skill], burst_ticks[combat_skill] + 7) *
+						(bots.created > 8 ? 3 : 4) / 4);
 		}
 	}
 	else
 		bot->trigger_down = FALSE;
+
+	/* the plasma pistol charged now and then, as Halo's jackals do it (a30's
+	jackal actor variants: special_fire_mode overcharge, special_fire_
+	situation enemy visible; actor_combat.c holds the trigger between bursts
+	and lets go when one begins): a roll at most every 5 s, in a pause, with
+	the enemy in sight 4 to 15 units away (the jackals' maximum_firing_
+	range); the trigger then held until the bolt is fully charged and let go
+	in a burst with the enemy in sight -- or 5 s after the roll whatever */
+	if (bot->charge_timer > 0)
+		bot->charge_timer -= step;
+	if (weapon->style != _style_pistol)
+		bot->charging = FALSE;
+	else if (bot->charging)
+	{
+		if (bot->charge_timer <= 0 || (bot->fire_timer > 0 && bot->target_visible &&
+			weapon_get(current_weapon)->weapon.triggers[0].state == _trigger_charged))
+		{
+			/* (let go: the charged bolt; the next press a pace later) */
+			bot->charging = FALSE;
+			bot->charge_timer = 5 * TICKS_PER_SECOND;
+			bot->next_shot = game_time_get() + pistol_fire[combat_skill].shot_ticks;
+		}
+	}
+	else if (bot->fire_timer < 0 && bot->charge_timer <= 0 && bot->target_visible &&
+		distance >= 4.f && distance <= 15.f)
+	{
+		bot->charge_timer = 5 * TICKS_PER_SECOND;
+		bot->charging = (short)(bot_random() % 100) < charge_chance[combat_skill];
+	}
 
 	/* melee up close */
 	if (bot->melee_timer > 0)
@@ -1412,15 +1598,35 @@ static void think(
 		flags |= FLAG(_unit_control_use_equipment_bit);
 		bot->melee_timer = 30;
 	}
-	/* a grenade now and then */
+	/* a grenade now and then: of a kind it has (the one wanted, as
+	player_control.c picks one: the one in hand, else the next it has some
+	of -- a throw takes the kind in hand, units.c); a roll a second with the
+	enemy in sight 4 to 14 units away (a30's marines: 3 to 14), 6 s at
+	least between throws, and none with a teammate within 3 units of the
+	enemy (Halo's AI keeps its friends out of the blast: actor_combat.c) */
+	{
+		short grenade = unit->unit.current_grenade_index;
+
+		if (grenade == NONE || !unit_get_grenade_count(player->unit_index, grenade))
+			grenade = unit_inventory_next_grenade(player->unit_index, grenade, 1);
+		action->desired_grenade_index = grenade;
+	}
+	/* (the timer counted down before the test: a roll each second, not
+	each second and a thought) */
 	if (bot->grenade_timer > 0)
 		bot->grenade_timer -= step;
-	else if (bot->target_visible && distance > 6.f && distance < 18.f &&
-		(long)(bot_random() % 1000) < grenade_chance[bots.skill] * step)
+	if (bot->grenade_timer <= 0 && bot->target_visible && distance >= 4.f && distance <= 14.f &&
+		unit_get_grenade_count(player->unit_index, unit->unit.current_grenade_index) > 0 &&
+		!teammate_near(bot, &target_position))
 	{
-		/* (the grenade button sets both, as player_control.c does) */
-		flags |= FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_weapon_secondary_trigger_bit);
-		bot->grenade_timer = 6 * TICKS_PER_SECOND;
+		if ((short)(bot_random() % 100) < grenade_chance[bots.skill])
+		{
+			/* (the grenade button sets both, as player_control.c does) */
+			flags |= FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_weapon_secondary_trigger_bit);
+			bot->grenade_timer = 6 * TICKS_PER_SECOND;
+		}
+		else
+			bot->grenade_timer = TICKS_PER_SECOND;
 	}
 
 	if (forward > 1.f) forward = 1.f;
@@ -1432,6 +1638,40 @@ static void think(
 	action->throttle.i = forward;
 	action->throttle.j = strafe;
 	action->primary_trigger = trigger;
+}
+
+/* the plasma pistol's trigger each tick, whatever the bot's thinking rate
+(its bolt goes as the trigger is let go, its tag giving it no rate of fire
+of its own): held while it charges; while it fires, pressed for a tick
+each shot_ticks, so 5 or 6 bolts a second whether it thinks every tick or
+every eighth */
+static void bot_trigger_tick(
+	struct bot *bot,
+	struct player_action *action,
+	long now)
+{
+	boolean down;
+
+	if (bot->charging)
+		down = TRUE;
+	else if (bot->shot_ticks > 0)
+	{
+		down = now >= bot->next_shot;
+		if (down)
+			bot->next_shot = now + bot->shot_ticks;
+	}
+	else
+		return;
+	if (down)
+	{
+		action->control_flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
+		action->primary_trigger = 1.f;
+	}
+	else
+	{
+		action->control_flags &= ~FLAG(_unit_control_weapon_primary_trigger_bit);
+		action->primary_trigger = 0.f;
+	}
 }
 
 /* update_client_dequeue's (player_queues_new.c, HALO_N64): a tick's
@@ -1502,8 +1742,10 @@ void n64_bots_actions(
 			*action = bot->last_action;
 			action->control_flags &= ~pressed;
 		}
+		bot_trigger_tick(bot, action, now);
 		bot->firing = (action->control_flags & (FLAG(_unit_control_weapon_primary_trigger_bit) |
-			FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_use_equipment_bit))) != 0;
+			FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_use_equipment_bit))) != 0 ||
+			bot->shot_ticks > 0 || bot->charging;
 	}
 	bot_profile_poll();
 }
