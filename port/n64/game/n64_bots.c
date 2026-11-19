@@ -18,15 +18,15 @@ Their way of fighting is the Firefight Covenant's (n64_firefight.c), kept
 simple: each picks the nearest enemy (another team's player in a team game,
 anyone else otherwise), goes for it along Halo's own paths while it is out
 of sight, keeps its weapon's range and strafes when in sight, fires in
-bursts (held for the automatic weapons, pressed shot by shot for the rest)
-with an aim that misses by more at an easier skill, throws grenades now and
-then (never at an enemy beside a teammate), meleees up close and works its
-way around whatever stops it. With no enemy in sight it goes for a better
-weapon lying near, and it reloads, swaps to its other weapon when this one
-is empty and gets out of any vehicle it found itself in. It sees and fires
-along a clear line to the enemy: the level, vehicles, scenery and machines
-block it; bipeds, teammates included, do not (Halo's sight-blocking
-objects).
+bursts (held for the automatic weapons, pressed shot by shot for the rest,
+the plasma pistol at the pace of Halo's own) with an aim that misses by
+more at an easier skill, throws grenades now and then (never at an enemy
+beside a teammate), meleees up close and works its way around whatever
+stops it. With no enemy in sight it goes for a better weapon lying near,
+and it reloads, swaps to its other weapon when this one is empty and gets
+out of any vehicle it found itself in. It sees and fires along a clear line
+to the enemy: the level, vehicles, scenery and machines block it; bipeds,
+teammates included, do not (Halo's sight-blocking objects).
 */
 
 #include "cseries.h"
@@ -95,6 +95,7 @@ enum
 	_style_semi, /* pressed shot by shot */
 	_style_auto, /* held */
 	_style_explosive, /* pressed, never up close */
+	_style_pistol, /* the plasma pistol: pressed at a pace */
 };
 
 /* the weapons it knows: how much it wants each, how it fires it and the
@@ -116,7 +117,7 @@ static struct bot_weapon
 	{ "weapons\\plasma rifle\\plasma rifle", 6, _style_auto, 3.f, 12.f },
 	{ "weapons\\needler\\needler", 5, _style_auto, 4.f, 14.f },
 	{ "weapons\\flamethrower\\flamethrower", 4, _style_auto, 1.5f, 5.f },
-	{ "weapons\\plasma pistol\\plasma pistol", 3, _style_semi, 3.f, 12.f },
+	{ "weapons\\plasma pistol\\plasma pistol", 3, _style_pistol, 3.f, 12.f },
 };
 #define NUMBER_OF_BOT_WEAPONS ((short)(sizeof(bot_weapons) / sizeof(bot_weapons[0])))
 
@@ -124,6 +125,25 @@ static struct bot_weapon
 static real const aim_error[4] = { 0.16f, 0.09f, 0.055f, 0.03f };
 static short const burst_ticks[4] = { 8, 12, 16, 22 };
 static short const pause_ticks[4] = { 34, 22, 14, 8 };
+/* the plasma pistol as a30's plasma-pistol actors fire it (their actor
+variants: grunt minor at easy, jackal minor at normal, grunt major at
+heroic, jackal major at legendary): a press each so many ticks (its
+trigger has no rate of fire of its own, its bolt going as it is let go:
+rate_of_fire 5 a second at easy and normal, 6 at heroic and legendary),
+its bursts and the pauses between them (burst_duration and burst_
+separation, in ticks) */
+static struct bot_pistol
+{
+	short shot_ticks;
+	short burst_least, burst_most;
+	short pause_least, pause_most;
+} const pistol_fire[4] =
+{
+	{ 6, 8, 21, 36, 51 }, /* 0.25-0.7 s, 1.2-1.7 s */
+	{ 6, 12, 26, 45, 60 }, /* 0.4-0.85 s, 1.5-2 s */
+	{ 5, 5, 17, 23, 33 }, /* 0.175-0.55 s, 0.75-1.1 s */
+	{ 5, 9, 18, 15, 23 } /* 0.3-0.6 s, 0.5-0.75 s */
+};
 /* (in 100, a roll a second: Halo's marines roll throw_grenade_chance 0.25
 each throw_grenade_delay of 1 s, a30's actor variants) */
 static short const grenade_chance[4] = { 10, 15, 20, 25 };
@@ -177,10 +197,14 @@ struct bot
 	/* its action fires (a trigger, a grenade, a melee): its pose is kept at
 	the count's rate (n64_bot_pose_interval) */
 	boolean firing;
+	/* the plasma pistol (bot_trigger_tick): its next press (a game tick)
+	and the ticks between presses while it fires (0: not firing it) */
+	long next_shot;
+	short shot_ticks;
 };
 
 /* New LOD fields extend the old prefix; read diagnostic stride from DWARF. */
-typedef char n64_bot_observer_stride[sizeof(struct bot) == 268 ? 1 : -1];
+typedef char n64_bot_observer_stride[sizeof(struct bot) == 276 ? 1 : -1];
 typedef char n64_bot_observer_ghost_offset[offsetof(struct bot, ghost_profile) == 246 ? 1 : -1];
 
 static struct
@@ -312,6 +336,14 @@ static real bot_random_real(
 	void)
 {
 	return (real)(bot_random() & 0xFFFF) / 32768.f - 1.f;
+}
+
+/* least to most, both included */
+static short bot_random_range(
+	short least,
+	short most)
+{
+	return (short)(least + (short)(bot_random() % (unsigned long)(most - least + 1)));
 }
 
 static real horizontal_distance(
@@ -1122,6 +1154,7 @@ static void think(
 	/* in a vehicle: out (the action button) */
 	if (unit->object.parent_object_index != NONE)
 	{
+		bot->shot_ticks = 0;
 		if (bot->action_timer > 0)
 			bot->action_timer -= step;
 		else
@@ -1428,42 +1461,60 @@ static void think(
 	}
 
 	/* firing: bursts and pauses while the enemy is in sight and range (an
-	explosive one never up close) */
+	explosive one never up close; the plasma pistol pressed at its pace each
+	tick, bot_trigger_tick) */
+	bot->shot_ticks = 0;
 	if (bot->target_visible && distance < weapon->far_range + 6.f && current_weapon != NONE &&
 		!(weapon->style == _style_explosive && distance < 4.f) && bot->swap_timer <= 0)
 	{
+		struct bot_pistol const *pistol = &pistol_fire[combat_skill];
+
 		if (bot->fire_timer > 0)
 		{
 			bot->fire_timer -= step;
-			bot->trigger_down = weapon->style == _style_auto ? TRUE : !bot->trigger_down;
-			if (bot->trigger_down)
+			if (weapon->style == _style_pistol)
+				bot->shot_ticks = pistol->shot_ticks;
+			else
 			{
-				trigger = 1.f;
-				flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
+				bot->trigger_down = weapon->style == _style_auto ? TRUE : !bot->trigger_down;
+				if (bot->trigger_down)
+				{
+					trigger = 1.f;
+					flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
+				}
 			}
 			/* (longer pauses with many bots: fewer shots in the air, each one
 			an object of its own a tick, its ray every tick -- the count's
 			share of a pause: 1 up to 3 bots, 1.5 to 6, 2 to 8, 2.5 to 10, 3
 			past; half again for a bot far and in no view, which fights the
-			other bots out there) */
+			other bots out there. The plasma pistol's are a30's at any count) */
 			if (bot->fire_timer <= 0)
 			{
-				short halves = bots.created <= 3 ? 2 : bots.created <= 6 ? 3 : bots.created <= 8 ? 4 :
-					bots.created <= 10 ? 5 : 6;
+				if (weapon->style == _style_pistol)
+					bot->fire_timer = -bot_random_range(pistol->pause_least, pistol->pause_most);
+				else
+				{
+					short halves = bots.created <= 3 ? 2 : bots.created <= 6 ? 3 : bots.created <= 8 ? 4 :
+						bots.created <= 10 ? 5 : 6;
 
-				if (bot_detail(bot) == _bot_detail_least)
-					halves += halves / 2;
-				bot->fire_timer = -(short)((pause_ticks[combat_skill] + bot_random() % 10) * halves / 2);
+					if (bot_detail(bot) == _bot_detail_least)
+						halves += halves / 2;
+					bot->fire_timer = -(short)(bot_random_range(pause_ticks[combat_skill], pause_ticks[combat_skill] + 9) *
+						halves / 2);
+				}
 			}
 		}
 		else
 		{
 			bot->fire_timer += step;
 			bot->trigger_down = FALSE;
-			/* (a quarter shorter with more than eight bots) */
+			/* (a quarter shorter with more than eight bots; the plasma
+			pistol's a30's at any count) */
 			if (bot->fire_timer >= 0)
-				bot->fire_timer = (short)((burst_ticks[combat_skill] + bot_random() % 8) *
-					(bots.created > 8 ? 3 : 4) / 4);
+				bot->fire_timer = weapon->style == _style_pistol ?
+					bot_random_range(pistol->burst_least, pistol->burst_most) :
+					(short)(bot_random_range(burst_ticks[combat_skill], burst_ticks[combat_skill] + 7) *
+						(bots.created > 8 ? 3 : 4) / 4);
 		}
 	}
 	else
@@ -1517,6 +1568,37 @@ static void think(
 	action->throttle.i = forward;
 	action->throttle.j = strafe;
 	action->primary_trigger = trigger;
+}
+
+/* the plasma pistol's trigger each tick, whatever the bot's thinking rate
+(its bolt goes as the trigger is let go, its tag giving it no rate of fire
+of its own): while it fires, pressed for a tick each shot_ticks, so 5 or 6
+bolts a second whether it thinks every tick or every eighth */
+static void bot_trigger_tick(
+	struct bot *bot,
+	struct player_action *action,
+	long now)
+{
+	boolean down;
+
+	if (bot->shot_ticks > 0)
+	{
+		down = now >= bot->next_shot;
+		if (down)
+			bot->next_shot = now + bot->shot_ticks;
+	}
+	else
+		return;
+	if (down)
+	{
+		action->control_flags |= FLAG(_unit_control_weapon_primary_trigger_bit);
+		action->primary_trigger = 1.f;
+	}
+	else
+	{
+		action->control_flags &= ~FLAG(_unit_control_weapon_primary_trigger_bit);
+		action->primary_trigger = 0.f;
+	}
 }
 
 /* update_client_dequeue's (player_queues_new.c, HALO_N64): a tick's
@@ -1587,8 +1669,10 @@ void n64_bots_actions(
 			*action = bot->last_action;
 			action->control_flags &= ~pressed;
 		}
+		bot_trigger_tick(bot, action, now);
 		bot->firing = (action->control_flags & (FLAG(_unit_control_weapon_primary_trigger_bit) |
-			FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_use_equipment_bit))) != 0;
+			FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_use_equipment_bit))) != 0 ||
+			bot->shot_ticks > 0;
 	}
 	bot_profile_poll();
 }
