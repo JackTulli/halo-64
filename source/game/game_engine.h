@@ -540,4 +540,11 @@ real game_engine_get_damage_multiplier(
 	long damaging_player_index,
 	long damaged_player_index);
 
+#ifdef HALO_N64_CUSTOM_MAPS
+extern boolean game_engine_spawn_given_starting_weapons;
+
+boolean game_engine_make_room_for_spawn(
+	void);
+#endif
+
 #endif // __GAME_ENGINE_H

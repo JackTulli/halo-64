@@ -624,4 +624,13 @@ __inline void object_get_render_bounding_sphere(
 }
 
 
+#ifdef HALO_N64_CUSTOM_MAPS
+/* (the custom cartridge: making room for a player's spawn, game_engine.c) */
+void objects_compact_memory(void);
+boolean objects_last_new_lacked_room(void);
+/* (whether a view drew the object in the current frame or the two before
+it: port/n64/game/n64_render_game.c) */
+boolean n64_object_recently_seen(long object_index);
+#endif
+
 #endif // __OBJECTS_H

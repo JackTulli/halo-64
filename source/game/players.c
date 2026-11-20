@@ -1373,6 +1373,18 @@ static void player_spawn(
 					&placement_data,
 					&change_color);
 				unit_index = object_new(&placement_data);
+#ifdef HALO_N64_CUSTOM_MAPS
+				{
+					/* (the custom cartridge: no room in the object memory for
+					the biped: room made, one deleted item at a time,
+					game_engine.c game_engine_make_room_for_spawn) */
+					short tries;
+
+					for (tries = 0; unit_index == NONE && objects_last_new_lacked_room() && tries < 32 &&
+						game_engine_make_room_for_spawn(); tries++)
+						unit_index = object_new(&placement_data);
+				}
+#endif
 				if (unit_index != NONE)
 				{
 					unit = unit_try_and_get(unit_index);
@@ -3680,11 +3692,38 @@ void players_update_before_game(
 						game_engine_should_spawn_player(iterator.datum_index))
 					{
 						game_engine_prespawn_player_update(iterator.datum_index);
+#ifdef HALO_N64_CUSTOM_MAPS
+						unit_initial_weapon_failure_clear();
+#endif
 						player_spawn(iterator.datum_index);
+#ifdef HALO_N64_CUSTOM_MAPS
+						game_engine_spawn_given_starting_weapons = FALSE;
+#endif
 						if (player->unit_index != NONE)
 							game_engine_postspawn_player_update(iterator.datum_index);
 						else
 							player->respawn_timer = 1;
+#ifdef HALO_N64_CUSTOM_MAPS
+						/* (the custom cartridge: a unit spawned with its initial
+						weapons as its loadout (no starting weapons given), one of
+						which found no room, gets them: each it lacks made again,
+						and while one finds no room, room made one deleted item at
+						a time, at most 32 for them all, game_engine.c
+						game_engine_make_room_for_spawn; the unit is got again by
+						its index after each, unit_lacks_initial_weapons) */
+						if (player->unit_index != NONE &&
+							!game_engine_spawn_given_starting_weapons &&
+							unit_initial_weapon_failed(player->unit_index) &&
+							unit_lacks_initial_weapons(player->unit_index, FALSE))
+						{
+							short tries;
+
+							for (tries = 0; unit_lacks_initial_weapons(player->unit_index, TRUE) && tries < 32 &&
+								game_engine_make_room_for_spawn(); tries++)
+								;
+						}
+						unit_initial_weapon_failure_clear();
+#endif
 #ifdef HALO_N64_ONLINE
 						/* (an online game's: where the Link's unit is, n64_online_game.c) */
 						{
