@@ -204,6 +204,9 @@ struct n64_controls
 	/* a two-controller scheme's second controller: 0 automatic (n64_input_pairs),
 	else its port + 1 */
 	unsigned char partner;
+	/* the player's colour, chosen on the pause menu's COLOR page: 0 none
+	(the player's place's colour), else a Halo colour (N64_COLOURS) + 1 */
+	unsigned char colour;
 	/* (xdk_input.c's) the buttons last read */
 	unsigned short last_buttons;
 };
@@ -726,6 +729,20 @@ int n64_menu_map_from_folder(const char *folder);
 const char *n64_menu_game_variant(int game_type);
 int n64_menu_game_teams(int game_type);
 int n64_menu_game_bots(int game_type);
+/* Halo's colours for multiplayer players (saved games/player_profile.c's
+profile_color_table, the ui's colors_list names; port/n64/game/n64_game.c):
+0x00RRGGBB, the name. N64_PLAYER_COLOURS: the players' colours on the pause
+menu and in the settings record at all -- not on the campaign cartridge (a
+campaign of one player) nor the online cartridge (online games only), whose
+programs leave that code out */
+#if defined(HALO_N64_CAMPAIGN) || defined(HALO_N64_ONLINE)
+#define N64_PLAYER_COLOURS 0
+#else
+#define N64_PLAYER_COLOURS 1
+#endif
+#define N64_COLOURS 18
+extern const long n64_profile_color_table[N64_COLOURS];
+extern const char n64_colour_names[N64_COLOURS][7];
 
 /* ---------- the HUD (n64_hud.c): drawn by the game's own HUD code
 (port/n64/game/n64_hud_game.c passes its quads, text and blips on).
@@ -969,6 +986,8 @@ struct n64_score_row
 	short kills, deaths;
 	signed char team; /* 0 red, 1 blue; -1 without teams */
 	unsigned char human;
+	/* without teams, the Spartan's colour: Halo's colour + 1 (0 none) */
+	unsigned char colour;
 };
 
 #define N64_SCORE_ROWS 16
@@ -979,11 +998,16 @@ struct n64_pause_screen
 	const char *note; /* under the title: the teams' scores, Firefight's wave */
 	const struct n64_score_row *rows;
 	int row_count;
-	int selected; /* 0 Controls, 1 Main Menu */
+	int selected; /* 0 Controls, then Color (with 3 options), the last Main Menu */
+	/* (3: the options are Controls, Color and Main Menu, selected 0 to 2,
+	two shown at a time; else 2: Controls and Main Menu) */
+	int options;
 };
 
 void n64_hud_pause(const struct n64_pause_screen *screen);
 void n64_hud_pause_controls(const int *ports, int count, const int *selected_rows);
+/* the COLOR page: each player's panel, its colour (a Halo colour) */
+void n64_hud_pause_colours(const int *ports, int count, const signed char *colours);
 
 /* ---------- online games (HALO_N64_ONLINE; port/n64/docs/online): the
 cartridge plays its player's own unit in a local game of the Link's map --

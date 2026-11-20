@@ -432,6 +432,9 @@ static int n64_score_rows(
 		row.kills = player->statistics.kills[0];
 		row.deaths = player->statistics.deaths;
 		row.team = teams ? (signed char)(player->team_index & 1) : -1;
+		/* (the Spartan's colour without teams) */
+		if (N64_PLAYER_COLOURS && !teams)
+			row.colour = (unsigned char)(PIN(player->network_player_data.primary_color_index, 0, N64_COLOURS - 1) + 1);
 		score = game_engine->get_player_score ?
 			game_engine->get_player_score(player_index, _get_score_individual) : row.kills;
 		for (at = count; at > 0 && n64_score_ahead(&row, score, &rows[at - 1], scores[at - 1], first_team); at--)
@@ -510,13 +513,16 @@ void n64_game_results(
 
 /* ---------- the pause menu: START during a game stops its clock and shows
 the scoreboard over it (n64_hud_pause), every player and bot; START (or B)
-goes back to the game. Controls is selected first; left/right selects it
-or Main Menu, A opens it. Every joined pad edits only its own Controls
-panel; B returns to the scoreboard, START resumes. Meanwhile the
+goes back to the game. Controls is selected first; left/right selects it,
+Color (where the players choose their colours) or Main Menu, A opens it.
+Every joined pad edits only its own Controls panel, or its own colour on the
+Color page (n64_pause_colour_step); B returns to the scoreboard, START
+resumes. Meanwhile the
 game's gamepads read as untouched, its sounds are silent and the Rumble
 Paks still; the frames go on being drawn (main_loop draws a paused game) */
 
 static boolean n64_paused;
+/* (n64_pause_controls: the page open, 0 none, 1 Controls, 2 Color) */
 static int n64_pause_controls, n64_pause_selected;
 static int n64_pause_control_rows[4];
 static signed char n64_pause_stick[4];
@@ -546,6 +552,54 @@ static unsigned short n64_pause_directions(int port)
 	n64_pause_stick[port] = direction;
 	return direction == 1 ? N64_BUTTON_D_UP : direction == 2 ? N64_BUTTON_D_DOWN :
 		direction == 3 ? N64_BUTTON_D_LEFT : N64_BUTTON_D_RIGHT;
+}
+
+/* whether the scoreboard offers COLOR, between CONTROLS and MAIN MENU: not
+in an online game (the N64 sends the Link no colour) nor a campaign, nor in
+a team game (Firefight's too), where Halo's armour is the team's whatever
+the player's (game_engine_player_get_change_color) */
+static int n64_pause_colours(void)
+{
+	return N64_PLAYER_COLOURS && !n64_choice.online && !n64_choice.campaign &&
+		!(game_engine && game_engine_has_teams());
+}
+
+/* the index-th player on a controller (NULL: none) */
+static struct player_datum *n64_pause_local_player(int index)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL)
+		if (player->local_player_index == index) return player;
+	return NULL;
+}
+
+/* the player's next or last colour (any of Halo's, as its colour picker
+offers them: another player's too), at once: the player's own, which its
+next unit takes (game_engine_player_get_change_color), its unit's now
+(base_change_colors[0]: the colour its model and first-person arms are
+drawn in), the game's start's, and the port's saved choice
+(n64_controls_save) */
+static void n64_pause_colour_step(int index, int port, int step)
+{
+	struct player_datum *player = n64_pause_local_player(index);
+	struct unit_datum *unit;
+	int colour, k;
+
+	if (!player) return;
+	colour = (PIN(player->network_player_data.primary_color_index, 0, N64_COLOURS - 1) + step + N64_COLOURS) %
+		N64_COLOURS;
+	player->network_player_data.primary_color_index = (short)colour;
+	n64_choice.colors[index] = colour;
+	n64_controls[port].colour = (unsigned char)(colour + 1);
+	unit = player->unit_index != NONE ? unit_try_and_get(player->unit_index) : NULL;
+	/* (as player_profile_get_rgb_color makes it) */
+	if (unit)
+		for (k = 0; k < 3; k++)
+			unit->object.base_change_colors[0].n[k] = ((n64_profile_color_table[colour] >> (16 - 8 * k)) & 0xFF) /
+				255.f;
 }
 
 static void n64_pause_controls_input(int port, unsigned short pressed)
@@ -644,7 +698,18 @@ void n64_game_pause_frame(
 		}
 		else
 			for (port = 0; port < 4; port++)
-				n64_pause_controls_input(port, presses[port] | n64_pause_directions(port));
+			{
+				unsigned short buttons = presses[port] | n64_pause_directions(port);
+				int index = n64_pause_player(port);
+
+				/* (the Color page: left, right or A steps the pad's own
+				player's colour) */
+				if (N64_PLAYER_COLOURS && n64_pause_controls == 2 && index >= 0 &&
+					(buttons & (N64_BUTTON_D_LEFT | N64_BUTTON_D_RIGHT | N64_BUTTON_A)))
+					n64_pause_colour_step(index, port, buttons & N64_BUTTON_D_LEFT ? -1 : 1);
+				else if (n64_pause_controls == 1)
+					n64_pause_controls_input(port, buttons);
+			}
 	}
 	else
 	{
@@ -653,10 +718,13 @@ void n64_game_pause_frame(
 			unsigned short buttons;
 			if (n64_pause_player(port) < 0) continue;
 			buttons = presses[port] | n64_pause_directions(port);
-			if (buttons & (N64_BUTTON_D_LEFT | N64_BUTTON_D_UP)) n64_pause_selected = 0;
-			else if (buttons & (N64_BUTTON_D_RIGHT | N64_BUTTON_D_DOWN)) n64_pause_selected = 1;
+			/* (a step left or right, stopping at either end; the last
+			option is Main Menu) */
+			if (buttons & (N64_BUTTON_D_LEFT | N64_BUTTON_D_UP)) n64_pause_selected = MAX(n64_pause_selected - 1, 0);
+			else if (buttons & (N64_BUTTON_D_RIGHT | N64_BUTTON_D_DOWN))
+				n64_pause_selected = MIN(n64_pause_selected + 1, 1 + n64_pause_colours());
 			if (!(buttons & N64_BUTTON_A)) continue;
-			if (!n64_pause_selected) n64_pause_controls = 1;
+			if (n64_pause_selected < 1 + n64_pause_colours()) n64_pause_controls = n64_pause_selected + 1;
 			else
 			{
 				n64_pause_end();
@@ -682,6 +750,16 @@ void n64_game_pause_frame(
 	}
 	for (port = 0; port < 4; port++)
 		n64_input_rumble(port, 0.f, 0.f);
+	if (N64_PLAYER_COLOURS && n64_pause_controls == 2)
+	{
+		signed char colours[4];
+		int i;
+
+		for (i = 0; i < n64_choice.player_count && i < 4; i++)
+			colours[i] = (signed char)PIN(n64_choice.colors[i], 0, N64_COLOURS - 1);
+		n64_hud_pause_colours(n64_choice.ports, n64_choice.player_count, colours);
+		return;
+	}
 	if (n64_pause_controls)
 	{
 		n64_hud_pause_controls(n64_choice.ports, n64_choice.player_count, n64_pause_control_rows);
@@ -705,6 +783,7 @@ void n64_game_pause_frame(
 		screen.rows = scores->rows;
 		screen.row_count = scores->valid ? scores->count : 0;
 		screen.selected = n64_pause_selected;
+		screen.options = 2;
 		n64_hud_pause(&screen);
 		return;
 	}
@@ -737,6 +816,7 @@ void n64_game_pause_frame(
 	screen.rows = rows;
 	screen.row_count = n64_score_rows(rows, NULL, N64_SCORE_ROWS);
 	screen.selected = n64_pause_selected;
+	screen.options = 2 + n64_pause_colours();
 	n64_hud_pause(&screen);
 }
 
@@ -1816,7 +1896,7 @@ void n64_game_tick(
 
 /* ---------- player colours (saved games/player_profile.c is left out) */
 
-static long const n64_profile_color_table[18] =
+long const n64_profile_color_table[N64_COLOURS] =
 {
 	0x00FFFFFF, 0x00000000, 0x00FE0000, 0x000201E3, 0x00707E71, 0x00FFFF01,
 	0x0000FF01, 0x00FF56B9, 0x00AB10F4, 0x0001FFFF, 0x006493ED, 0x00FF7F00,
@@ -1838,6 +1918,17 @@ real_rgb_color player_profile_get_rgb_color(
 }
 
 word player_profile_number_of_available_primary_colors(void) { return NUMBEROF(n64_profile_color_table); }
+
+#if N64_PLAYER_COLOURS
+/* (their names, as the ui's colour picker shows them: ui.map's
+ui\shell\main_menu\settings_select\player_setup\player_profile_edit\
+color_edit\colors_list) */
+char const n64_colour_names[N64_COLOURS][7] =
+{
+	"WHITE", "BLACK", "RED", "BLUE", "GRAY", "YELLOW", "GREEN", "PINK", "PURPLE", "CYAN", "COBALT", "ORANGE",
+	"TEAL", "SAGE", "BROWN", "TAN", "MAROON", "SALMON",
+};
+#endif
 
 #ifdef HALO_N64_PC_EXPANSION
 int n64_game_pc_equipment_enabled(void)
