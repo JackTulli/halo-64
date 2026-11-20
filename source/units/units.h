@@ -738,6 +738,11 @@ void unit_adjust_projectile_ray(
 	boolean use_aiming_vector);
 boolean unit_clip_to_aiming_bounds(long unit_index, real_vector3d *vector, boolean use_aiming_screen);
 long unit_inventory_get_weapon(long unit_index, short index);
+#ifdef HALO_N64_CUSTOM_MAPS
+boolean unit_initial_weapon_failed(long unit_index);
+void unit_initial_weapon_failure_clear(void);
+boolean unit_lacks_initial_weapons(long unit_index, boolean make);
+#endif
 short unit_inventory_next_weapon(
 	long unit_index,
 	short current_index,

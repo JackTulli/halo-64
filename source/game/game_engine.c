@@ -2966,6 +2966,86 @@ static boolean find_closest_player_callback(
 	return result;
 }
 
+#ifdef HALO_N64_CUSTOM_MAPS
+/* (the custom cartridge: whether the spawn being made was given starting
+weapons -- the scenario's starting equipment for the game type or the N64
+menu's loadout, game_engine_postspawn_player_update below -- rather than its unit's
+initial weapons; players.c players_update_before_game clears it before the
+spawn's game_engine_postspawn_player_update) */
+boolean game_engine_spawn_given_starting_weapons = FALSE;
+
+/* (the custom cartridge: whether a player's proposed action names the
+object: players_update_after_game sets it, and in the next tick's
+players_update_before_game a player's swap or pickup reads the object) */
+static boolean object_named_by_player_action(
+	long object_index)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = (struct player_datum *)data_iterator_next(&iterator)) != NULL)
+	{
+		if (player->action_object_index == object_index)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+/* (the custom cartridge: a Custom Edition map can fill the N64's object
+memory (HALO_PORT_OBJECT_MEMORY_POOL_SIZE) with its own objects, and a
+player's new biped or its starting weapons then find no room -- no respawn
+while it stays full, or a respawn unarmed. players.c player_spawn and
+players_update_before_game, and handle_custom_starting_equipment below:
+one loose item deleted for room, the first of: one no player can see
+without the netgame equipment's mark (such as one a unit dropped); one no
+player can see with it; any other. Of those, the one with the lowest
+last_owned_time (the value game_engine_update_purge below goes by). Never
+a flag, never an item a unit holds, never one a player's proposed action
+names. Then the object memory compacted, so that the freed block joins the
+free space. FALSE when there is no item to delete. Seen: by the game's
+test (object_visible_to_any_player, as garbage collection has it), or
+drawn in a view in the current frame or the two before it
+(n64_object_recently_seen): a dead player's view follows the body, and the
+items it dropped there, which the game's test leaves out) */
+boolean game_engine_make_room_for_spawn(
+	void)
+{
+	struct object_iterator iterator;
+	long chosen_index = NONE;
+	long chosen_time = 0;
+	short chosen_rank = 3;
+
+	if (!game_engine_running())
+		return FALSE;
+	object_iterator_new(&iterator, _object_mask_item, 0);
+	while (object_iterator_next(&iterator))
+	{
+		struct item_datum *item = item_get(iterator.index);
+		short rank;
+
+		if (TEST_FLAG(item->item.flags, _item_attached_to_unit_bit) || !can_delete_item(iterator.index) ||
+			object_named_by_player_action(iterator.index))
+			continue;
+		if (object_visible_to_any_player(iterator.index) || n64_object_recently_seen(iterator.index))
+			rank = 2;
+		else
+			rank = TEST_FLAG(item->item.flags, _item_part_of_respawn_system_bit) ? 1 : 0;
+		if (rank < chosen_rank || (rank == chosen_rank && item->item.last_owned_time < chosen_time))
+		{
+			chosen_index = iterator.index;
+			chosen_rank = rank;
+			chosen_time = item->item.last_owned_time;
+		}
+	}
+	if (chosen_index == NONE)
+		return FALSE;
+	object_delete_immediately(chosen_index);
+	objects_compact_memory();
+	return TRUE;
+}
+#endif
+
 static void game_engine_update_purge(
 	void)
 {
@@ -7885,6 +7965,11 @@ static void game_engine_update_item_spawn(
 					struct item_datum *item = item_get(object_index);
 
 					object_set_garbage(object_index, FALSE);
+#ifdef HALO_N64_CUSTOM_MAPS
+					/* (the custom cartridge: placed by the map's netgame
+					equipment: game_engine_make_room_for_spawn) */
+					SET_FLAG(item->item.flags, _item_part_of_respawn_system_bit, TRUE);
+#endif
 					if (TEST_FLAG(
 						equipment->flags,
 						_equipment_created_at_rest_bit))
@@ -7935,6 +8020,9 @@ static void handle_custom_starting_equipment(
 		return;
 	}
 
+#ifdef HALO_N64_CUSTOM_MAPS
+	game_engine_spawn_given_starting_weapons = TRUE;
+#endif
 	{
 		boolean first_weapon = TRUE;
 		long remaining_item_collection_count = 5;
@@ -7960,6 +8048,17 @@ static void handle_custom_starting_equipment(
 					definition_index,
 					NONE);
 				weapon_index = object_new(&placement_data);
+#ifdef HALO_N64_CUSTOM_MAPS
+				{
+					/* (the custom cartridge: no room for a starting weapon: room
+					made, one deleted item at a time, game_engine_make_room_for_spawn) */
+					short tries;
+
+					for (tries = 0; weapon_index == NONE && objects_last_new_lacked_room() && tries < 32 &&
+						game_engine_make_room_for_spawn(); tries++)
+						weapon_index = object_new(&placement_data);
+				}
+#endif
 				if (weapon_index != NONE)
 				{
 					struct object_datum *weapon = object_get_and_verify_type(
@@ -8060,7 +8159,12 @@ void game_engine_postspawn_player_update(
 		extern boolean n64_game_pro_weapons(long unit_index);
 
 		if (n64_game_pro_weapons(unit_index))
+#ifdef HALO_N64_CUSTOM_MAPS
+			/* (the custom cartridge: the N64 menu's loadout given) */
+			game_engine_spawn_given_starting_weapons = TRUE;
+#else
 			;
+#endif
 		else
 #endif
 		if (!TEST_FLAG(global_variant.universal_variant.flags, 5))

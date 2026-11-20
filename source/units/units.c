@@ -2486,6 +2486,26 @@ boolean unit_solo_player_integrated_night_vision_is_active(
 	return active;
 }
 
+#ifdef HALO_N64_CUSTOM_MAPS
+/* (the custom cartridge: the unit an initial weapon of which found no room
+during the spawn being made, unit_add_initial_weapons and
+unit_lacks_initial_weapons; players.c players_update_before_game clears it
+before each spawn and after it) */
+static long initial_weapon_failed_unit = NONE;
+
+boolean unit_initial_weapon_failed(
+	long unit_index)
+{
+	return unit_index != NONE && initial_weapon_failed_unit == unit_index;
+}
+
+void unit_initial_weapon_failure_clear(
+	void)
+{
+	initial_weapon_failed_unit = NONE;
+}
+#endif
+
 // HCEX_Release.pdb and the September 2001 map both name this private
 // helper unit_add_initial_weapons (file-static; no cachebeta public).
 static void unit_add_initial_weapons(
@@ -2520,6 +2540,10 @@ static void unit_add_initial_weapons(
 				initial_weapon->weapon.index,
 				unit_index);
 			weapon_index = object_new(&placement_data);
+#ifdef HALO_N64_CUSTOM_MAPS
+			if (weapon_index == NONE && objects_last_new_lacked_room())
+				initial_weapon_failed_unit = unit_index;
+#endif
 
 			if (weapon_index!=NONE)
 			{
@@ -2537,6 +2561,71 @@ static void unit_add_initial_weapons(
 
 	return;
 }
+
+#ifdef HALO_N64_CUSTOM_MAPS
+/* (the custom cartridge: players.c players_update_before_game, a spawned
+player's unit with its initial weapons as its loadout, an object_new() of
+which failed for want of room (unit_initial_weapon_failed): with make FALSE,
+whether it lacks one of its initial weapons, by the definition the game's
+weapon remap gives it (game_engine_remap_weapon; one remapped to NONE is not
+lacking); with make TRUE, each one it lacks made as unit_add_initial_weapons
+makes it, with its check for a weapon of that definition already held, and
+whether an object_new() failed for want of room: the caller deletes one
+eligible item, if any, and retries, 32 deletions in all) */
+boolean unit_lacks_initial_weapons(
+	long unit_index,
+	boolean make)
+{
+	struct unit_definition *unit_definition = unit_definition_get(unit_get(unit_index)->definition_index);
+	short initial_weapon_index;
+	boolean lacking = FALSE;
+
+	for (initial_weapon_index = 0;
+		initial_weapon_index < unit_definition->unit.initial_weapons.count;
+		initial_weapon_index++)
+	{
+		struct unit_initial_weapon *initial_weapon = TAG_BLOCK_GET_ELEMENT(
+			&unit_definition->unit.initial_weapons,
+			initial_weapon_index,
+			struct unit_initial_weapon);
+		long definition_index = initial_weapon->weapon.index;
+
+		if (definition_index != NONE && game_engine_running())
+			definition_index = game_engine_remap_weapon(definition_index);
+		if (definition_index != NONE && !unit_has_weapon_definition_index(unit_index, definition_index))
+		{
+			if (make)
+			{
+				struct object_placement_data placement_data;
+				long weapon_index;
+
+				object_placement_data_new(&placement_data, initial_weapon->weapon.index, unit_index);
+				weapon_index = object_new(&placement_data);
+				if (weapon_index == NONE)
+				{
+					if (objects_last_new_lacked_room())
+					{
+						lacking = TRUE;
+						initial_weapon_failed_unit = unit_index;
+					}
+				}
+				else if ((game_engine_running() &&
+					unit_has_weapon_definition_index(unit_index, weapon_get(weapon_index)->definition_index)) ||
+					!unit_add_weapon_to_inventory(unit_index, weapon_index, FALSE))
+				{
+					object_delete_immediately(weapon_index);
+				}
+			}
+			else
+			{
+				lacking = TRUE;
+			}
+		}
+	}
+
+	return lacking;
+}
+#endif
 
 boolean unit_new(
 	long unit_index)

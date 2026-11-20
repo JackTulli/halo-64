@@ -196,6 +196,12 @@ void item_in_unit_inventory(
 
 		item->object.owner_player_index = unit->unit.player_index;
 		object_set_garbage(item_index, FALSE);
+#ifdef HALO_N64_CUSTOM_MAPS
+		/* (the custom cartridge: once a unit holds it, an item the map's
+		netgame equipment placed counts as dropped when it falls again:
+		game_engine.c, game_engine_make_room_for_spawn) */
+		item->item.flags &= ~FLAG(_item_part_of_respawn_system_bit);
+#endif
 		item->item.flags &=
 			~(FLAG(_item_on_structure_bit) | FLAG(_item_does_not_accelerate_bit));
 		item->object.location.leaf_index = NONE;

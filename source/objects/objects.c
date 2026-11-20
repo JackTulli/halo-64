@@ -383,6 +383,32 @@ void object_set_object_index_for_name_index(
 	return;
 }
 
+#ifdef HALO_N64_CUSTOM_MAPS
+/* (the custom cartridge: whether the last object_new to return failed for
+want of room: no object slot or no memory in object_header_new, or no memory
+in object_header_block_allocate -- not for a NONE definition or a type's own
+creation; each call keeps its own reason and records it as it returns, so an
+object made inside it, such as a unit's initial weapon, does not leave its
+own; players.c, game_engine.c and units.c make room only then) */
+static boolean object_new_lacked_room = FALSE;
+
+boolean objects_last_new_lacked_room(
+	void)
+{
+	return object_new_lacked_room;
+}
+
+/* (the custom cartridge: game_engine.c game_engine_make_room_for_spawn: the
+object memory compacted at once, as garbage collection does in
+objects_garbage_collection, so that its free space is one block after the
+last object) */
+void objects_compact_memory(
+	void)
+{
+	memory_pool_compact(object_memory_pool);
+}
+#endif
+
 void objects_fix_for_deleted_object(
 	long deleted_object_index)
 {
@@ -3438,6 +3464,9 @@ long object_new(
 {
 	long object_index = NONE;
 	long definition_index = data->definition_index;
+#ifdef HALO_N64_CUSTOM_MAPS
+	boolean lacked_room = FALSE;
+#endif
 
 	match_assert_valid_real_point3d("c:\\halo\\SOURCE\\objects\\objects.c", 618, &data->position)
 	match_assert_valid_real_vector3d_axes2("c:\\halo\\SOURCE\\objects\\objects.c", 619, &data->forward, &data->up);
@@ -3464,6 +3493,10 @@ long object_new(
 			type_definition->game_datum_size);
 #else
 		object_index = object_header_new(object_header_data, NONE, type_definition->game_datum_size);
+#endif
+#ifdef HALO_N64_CUSTOM_MAPS
+		if (object_index == NONE)
+			lacked_room = TRUE;
 #endif
 
 		if (object_index!=NONE)
@@ -3564,11 +3597,17 @@ long object_new(
 				)
 				{
 					success = FALSE;
+#ifdef HALO_N64_CUSTOM_MAPS
+					lacked_room = TRUE;
+#endif
 				}
 			}
 			else	
 			{
 				success = FALSE;
+#ifdef HALO_N64_CUSTOM_MAPS
+				lacked_room = TRUE;
+#endif
 			}
 
 			// Get the object, we do this so we can verify that we're able to retrieve it in the future
@@ -3651,6 +3690,9 @@ long object_new(
 		console_printf(FALSE, "%s", string);
 		error(_error_log, "%s", string);
 	}
+#ifdef HALO_N64_CUSTOM_MAPS
+	object_new_lacked_room = object_index == NONE && lacked_room;
+#endif
 	
 	return object_index;
 }
