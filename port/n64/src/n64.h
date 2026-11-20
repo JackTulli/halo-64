@@ -352,6 +352,15 @@ struct n64_object
 #define N64_TIER_DECORATION 4
 
 void n64_render_initialize(void);
+/* ZOOM SHADE AUTO's measure (n64_render.c): the CPU counter's ticks
+(TICKS_PER_SECOND) the RDP took to darken a 320x240 picture with the
+blender at the start, the longest of a few tries; 1 if BLEND is too slow
+(from the RDP's clock over the latest second of frames before the first
+game); 1 once the choice is made. n64_render_blend_choose makes it (once:
+the first game's start) and returns n64_render_blend_slow */
+extern unsigned long n64_render_blend_ticks;
+extern int n64_render_blend_slow, n64_render_blend_chosen;
+int n64_render_blend_choose(void);
 /* loads rom:/levels/<map>.lvl and its textures (with low, the lighter
 <map>-low.lvl where there is one); FALSE if there is none */
 /* the game's local players (before its level loads: the model cache's tiers) */
@@ -453,6 +462,18 @@ int n64_render_screen_height(void);
 /* ---------- sound (n64_sound.c): the main menu's music, the game's
 sounds (port/n64/game/n64_sound_game.c) */
 
+/* SOUND QUALITY (Settings): the rate the sound is mixed at, set once, at
+start-up, before the sound is made (n64_main.c), from the settings record
+(n64_menu_sound_crunchy): CLEAN 22,050 Hz, the samples' own; CRUNCHY
+11,025 Hz, a rougher sound with half the samples mixed; AUTO CRUNCHY where
+the last session's speed measure (ZOOM SHADE AUTO's, kept in the record)
+found the system at about the N64's speed, else CLEAN. A change applies at
+the next start. n64_sound_set_crunchy: before n64_sound_initialize;
+n64_sound_crunchy: whether 11,025 Hz is in force */
+enum { N64_SOUND_QUALITY_AUTO, N64_SOUND_QUALITY_CLEAN, N64_SOUND_QUALITY_CRUNCHY };
+void n64_sound_set_crunchy(int crunchy);
+int n64_sound_crunchy(void);
+int n64_menu_sound_crunchy(void);
 void n64_sound_initialize(void);
 void n64_sound_reserve(void);
 /* the mixer fed (every frame's end, and between ticks and views) and the
@@ -826,10 +847,22 @@ pixel art from tables, the game's HUD code handing over its values
 (port/n64/game/n64_hud64_game.c). 0 ORIGINAL (the game's own HUD), 1 64 */
 void n64_hud_set_style(int style);
 int n64_hud_style(void);
+/* ZOOM SHADE (Settings; HUD STYLE 64's zoomed views: what is outside the
+scope): the setting's values, as the settings keep them. AUTO: BLEND where
+the RDP runs fast, else the slow choice (n64_hud64_stub.c), from the measure
+made once, as the first game starts, from the latest second of frames
+(n64_render.c). DITHER: an ordered stipple, written without reading the
+picture; BLEND: darkened by the blender, which reads every pixel */
+enum { N64_ZOOM_SHADE_AUTO, N64_ZOOM_SHADE_DITHER, N64_ZOOM_SHADE_BLEND };
+void n64_hud_set_zoom_shade(int shade);
+/* the look drawn: DITHER or BLEND (AUTO's choice made); AUTO's choice */
+int n64_hud_zoom_shade(void);
+int n64_hud_zoom_shade_auto(void);
 #define N64_HUD64_MESSAGES 4
 enum { N64_HUD64_ROUNDS, N64_HUD64_BATTERY, N64_HUD64_NO_AMMO };
-/* (the reticle and the motion tracker are Halo's own with either style:
-the player keeps the aim and the tracker they know) */
+/* (the motion tracker is Halo's own with either style: the player keeps
+the tracker they know. The reticles are the style's own art, drawn as Halo
+hands its items over: n64_hud64.c) */
 struct n64_hud64_state
 {
 	unsigned char show_ammo, show_grenades, show_shield, show_sensor, show_score;
@@ -929,6 +962,14 @@ struct n64_hud64_unit_state
 };
 /* (n64_hud.c: its kept render state dropped, after HUD STYLE 64 drew) */
 void n64_hud_state_lost(void);
+/* (HUD STYLE 64's module, n64_hud64.c) its reticles: a view's begun, a
+bitmap tag's kind by its name, an item the style draws at some frame, a
+crosshair item drawn from the style's art (1) or not (0), a scope's mask */
+void n64_hud64_reticle_view(void);
+int n64_hud64_reticle_bitmap(const char *name);
+int n64_hud64_reticle_taken(int bitmap, int sequence, int ox, int oy);
+int n64_hud64_reticle(int bitmap, int sequence, int frame, int ox, int oy, float gx, float gy, int split, int red);
+void n64_hud64_scope(int bitmap, int split);
 /* the textures given back (n64_hud_release); their bytes in memory */
 void n64_hud64_release(void);
 unsigned long n64_hud64_resident_bytes(void);

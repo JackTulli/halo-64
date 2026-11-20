@@ -19,6 +19,7 @@ loaded. Without it each does nothing, and the game draws its own HUD.
 #include "math/real_math.h"
 
 #include "objects/objects.h"
+#include "tag_files/tag_files.h"
 #include "tag_files/tag_groups.h"
 
 #include "../src/n64.h"
@@ -28,9 +29,8 @@ loaded. Without it each does nothing, and the game draws its own HUD.
 #include <stdio.h>
 #include <stdlib.h>
 
-/* the module's file: its code, tables and state (54,032 bytes while it is
-loaded on the PC Expansion cartridge, 54,000 on the Multiplayer cartridge;
-n64_module.c finds it room) */
+/* the module's file: its code, tables and state (60,176 bytes while it is
+loaded, 60,144 on the Multiplayer cartridge; n64_module.c finds it room) */
 #define HUD64_MODULE "rom:/hud64.dso"
 
 /* The heap the style leaves free once its module and textures are in (the
@@ -56,6 +56,10 @@ int n64_hud64_active = 0;
 with no clear place for the 64 style's; set by the module's prepare, read by
 hud_unit.c before it cuts the label out of Halo's tracker) */
 int n64_hud64_label_halo = 0;
+/* (the view's sniper window drawn by the style, whose side frames stand
+for the weapon HUD's angle ticks; set by the module's scope, read by
+hud_weapon.c, which then leaves the ticks out) */
+int n64_hud64_scope_frames = 0;
 
 static int hud_style;
 /* the module's memory, its entry points; a load tried in this map */
@@ -88,6 +92,37 @@ int n64_hud_style(
 	return flag >= 0 ? flag : hud_style;
 }
 
+/* ZOOM SHADE AUTO's choice where the RDP blends slowly: one place, so that
+another look can take it */
+#define ZOOM_SHADE_SLOW N64_ZOOM_SHADE_DITHER
+
+static int zoom_shade = N64_ZOOM_SHADE_AUTO;
+
+/* (Settings: ZOOM SHADE, n64_menu.c; applied as a game starts) */
+void n64_hud_set_zoom_shade(
+	int shade)
+{
+	zoom_shade = shade >= N64_ZOOM_SHADE_AUTO && shade <= N64_ZOOM_SHADE_BLEND ? shade : N64_ZOOM_SHADE_AUTO;
+	return;
+}
+
+/* AUTO's look: BLEND or the slow choice, by the measure of the latest
+second of frames before the first game (the menu shows it once made), made
+now if not yet */
+int n64_hud_zoom_shade_auto(
+	void)
+{
+	return n64_render_blend_choose() ? ZOOM_SHADE_SLOW : N64_ZOOM_SHADE_BLEND;
+}
+
+/* (the module's, at each zoomed view) the setting, AUTO made its look: the
+same all game */
+int n64_hud_zoom_shade(
+	void)
+{
+	return zoom_shade != N64_ZOOM_SHADE_AUTO ? zoom_shade : n64_hud_zoom_shade_auto();
+}
+
 /* ---------- the game's functions the module calls (n64_hud64_imports.h) */
 
 void *n64_hud64_import_object(long object_index, unsigned long valid_type_flags)
@@ -98,6 +133,11 @@ void *n64_hud64_import_object(long object_index, unsigned long valid_type_flags)
 void *n64_hud64_import_tag(long group_tag, long tag_index)
 {
 	return tag_get(group_tag, tag_index);
+}
+
+char *n64_hud64_import_tag_name(long tag_index)
+{
+	return tag_get_name(tag_index);
 }
 
 /* ---------- the module */
@@ -116,14 +156,14 @@ does not fit in the block, and with HUD RESOLUTION HIGH DETAIL the outline
 sheets and cells of the 640-wide faces (n64_hud64.c build_outlines: 5,449
 bytes at 1-2 players, 4,776 at 3-4). While the block is lent there is no
 critical-sprite arena (n64_hud.c), so on the PC maps the critical sprites
-Halo still draws under the style (the motion sensor, the crosshair, the
-damage arrows, a zoomed weapon's parts) load on the heap, with n64_hud.c's
-own reserve (HUD_HEAP_RESERVE, 32 KB) -- on PC Infinity at 1 player about
-10 KB (81 KB free before them, 71 after) -- and the block's return gives
-them back for the arena. The module's margin check, after its first
-frame, counts all of these. HUD64_SLOTS_KEPT slots stay for any meter Halo
-still draws (a meter past them evicts the oldest). Without the block, or
-if the module does not fit, it takes the heap as before */
+Halo still draws under the style (the motion sensor, a crosshair the style
+has no art for, the damage arrows, a zoomed weapon's parts) load on the
+heap, with n64_hud.c's own reserve (HUD_HEAP_RESERVE, 32 KB) -- on PC
+Infinity at 1 player about 10 KB (81 KB free before them, 71 after) -- and
+the block's return gives them back for the arena. The module's margin check,
+after its first frame, counts all of these. HUD64_SLOTS_KEPT slots stay for
+any meter Halo still draws (a meter past them evicts the oldest). Without
+the block, or if the module does not fit, it takes the heap as before */
 #define HUD64_SLOTS_KEPT 2
 static uint8_t *arena_start, *arena_next, *arena_end;
 
@@ -370,4 +410,32 @@ int n64_hud64_game_collect_button(
 	int kind)
 {
 	return entry ? entry->game_collect_button(kind) : FALSE;
+}
+
+int n64_hud64_game_crosshair(
+	long bitmap_tag,
+	short sequence,
+	short frame,
+	point2d const *offset,
+	point2d const *placed,
+	real scale,
+	int red)
+{
+	return entry ? entry->game_crosshair(bitmap_tag, sequence, frame, offset, placed, scale, red) : FALSE;
+}
+
+void n64_hud64_game_scope(
+	long mask_tag)
+{
+	if (entry)
+		entry->game_scope(mask_tag);
+	return;
+}
+
+int n64_hud64_game_crosshair_taken(
+	long bitmap_tag,
+	short sequence,
+	point2d const *offset)
+{
+	return entry ? entry->game_crosshair_taken(bitmap_tag, sequence, offset) : FALSE;
 }

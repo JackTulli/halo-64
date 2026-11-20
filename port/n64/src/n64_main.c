@@ -980,6 +980,8 @@ int main(void)
 	music, after the menu's 640x480 buffers, they were left in the middle of
 	the memory the first map's image wanted in one piece (Sidewinder's,
 	Blood Gulch's) */
+	/* (SOUND QUALITY's rate from the settings record, read now) */
+	n64_sound_set_crunchy(n64_menu_sound_crunchy());
 	n64_sound_initialize();
 	n64_sound_reserve();
 	/* newlib's float printing and parsing (dtoa) keeps its big numbers on
