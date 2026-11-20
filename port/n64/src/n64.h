@@ -462,6 +462,18 @@ int n64_render_screen_height(void);
 /* ---------- sound (n64_sound.c): the main menu's music, the game's
 sounds (port/n64/game/n64_sound_game.c) */
 
+/* SOUND QUALITY (Settings): the rate the sound is mixed at, set once, at
+start-up, before the sound is made (n64_main.c), from the settings record
+(n64_menu_sound_crunchy): CLEAN 22,050 Hz, the samples' own; CRUNCHY
+11,025 Hz, a rougher sound with half the samples mixed; AUTO CRUNCHY where
+the last session's speed measure (ZOOM SHADE AUTO's, kept in the record)
+found the system at about the N64's speed, else CLEAN. A change applies at
+the next start. n64_sound_set_crunchy: before n64_sound_initialize;
+n64_sound_crunchy: whether 11,025 Hz is in force */
+enum { N64_SOUND_QUALITY_AUTO, N64_SOUND_QUALITY_CLEAN, N64_SOUND_QUALITY_CRUNCHY };
+void n64_sound_set_crunchy(int crunchy);
+int n64_sound_crunchy(void);
+int n64_menu_sound_crunchy(void);
 void n64_sound_initialize(void);
 void n64_sound_reserve(void);
 /* the mixer fed (every frame's end, and between ticks and views) and the

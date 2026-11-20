@@ -223,6 +223,9 @@ static struct
 	/* pixels, HUD_INSET_STEP at a time up to HUD_INSET_MAXIMUM */
 	int hud_inset;
 	int fps_counter;
+	/* SOUND QUALITY: N64_SOUND_QUALITY_*; and the last speed measure's
+	answer, kept for AUTO's choice at the next start: SOUND_MEASURE_* */
+	int sound_quality, sound_measure;
 	/* TERRAIN DETAIL (n64_render_set_terrain_detail): full, high, medium,
 	low */
 	int terrain_detail;
@@ -971,7 +974,10 @@ enum { TITLE_MULTIPLAYER, TITLE_FIREFIGHT, TITLE_CONTROLS, TITLE_SETTINGS, TITLE
 static const char *const difficulties[4] = {"EASY", "NORMAL", "HEROIC", "LEGENDARY"};
 enum { SETTING_CHUNKY, SETTING_HUD, SETTING_HUD_STYLE, SETTING_ZOOM_SHADE, SETTING_FIELD_OF_VIEW, SETTING_WIDESCREEN,
 	SETTING_ANIMATIONS, SETTING_PARTICLES, SETTING_PROJECTILES, SETTING_DECALS, SETTING_VIEW_MODEL, SETTING_TERRAIN,
-	SETTING_STANDINS, SETTING_ANTIALIAS, SETTING_DEDITHER, SETTING_HUD_INSET, SETTING_COUNTER, SETTING_BACK, SETTING_COUNT };
+	SETTING_STANDINS, SETTING_ANTIALIAS, SETTING_DEDITHER, SETTING_HUD_INSET, SETTING_COUNTER,
+	SETTING_SOUND_QUALITY, SETTING_BACK, SETTING_COUNT };
+/* (the speed measure's answer kept in the record: none yet, fast, slow) */
+enum { SOUND_MEASURE_NONE, SOUND_MEASURE_FAST, SOUND_MEASURE_SLOW };
 
 /* the Settings rows shown: HUD RESOLUTION is not on the campaign cartridge
 (its level leaves no room for a 640x240 HUD after the menu: the row would do
@@ -1061,7 +1067,7 @@ static unsigned char saved_checksum(const unsigned char *bytes)
 	return (unsigned char)(sum ^ (sum >> 8) ^ (sum >> 16));
 }
 
-static void settings_pack(unsigned char *bytes)
+static __attribute__((cold)) void settings_pack(unsigned char *bytes)
 {
 	memset(bytes, 0, SAVED_BYTES);
 	memcpy(bytes, "H64S", 4);
@@ -1096,6 +1102,11 @@ static void settings_pack(unsigned char *bytes)
 	before there was one, so theirs are on) */
 	for (int p = 0; p < 4; p++)
 		bytes[13] |= (unsigned char)((n64_controls[p].no_rumble != 0) << p);
+	/* (SOUND QUALITY in bits 4 and 5 of the same byte, N64_SOUND_QUALITY_*,
+	and the speed measure's answer in bits 6 and 7, SOUND_MEASURE_*: 0, AUTO
+	and none, in the records kept before them; the player's choice kept as
+	made, AUTO's never) */
+	bytes[13] |= (unsigned char)((menu.sound_quality & 3) << 4 | (menu.sound_measure & 3) << 6);
 	/* (two bits a controller, its SECOND PAD: 0 automatic, else the other
 	port as the port's number xor it -- 1 to 3; 0 in the records kept before
 	there was one) */
@@ -1117,7 +1128,7 @@ static void settings_pack(unsigned char *bytes)
 }
 
 /* the record's settings taken, each checked (out of range: its default) */
-static int settings_unpack(const unsigned char *bytes)
+static __attribute__((cold)) int settings_unpack(const unsigned char *bytes)
 {
 	if (memcmp(bytes, "H64S", 4) || bytes[4] != SAVED_VERSION || bytes[SAVED_BYTES - 1] != saved_checksum(bytes))
 		return 0;
@@ -1144,6 +1155,9 @@ static int settings_unpack(const unsigned char *bytes)
 	menu.field_of_view = bytes[40] >= FOV_MINIMUM && bytes[40] <= FOV_MAXIMUM && !(bytes[40] % FOV_STEP) ?
 		bytes[40] : FOV_DEFAULT;
 	menu.projectiles = bytes[41] < 2 ? bytes[41] + 1 : bytes[41] == 2 ? 0 : bytes[41] == 3 ? 3 : 1;
+	/* (3, which neither offers: AUTO, no measure) */
+	menu.sound_quality = ((bytes[13] >> 4) & 3) % 3;
+	menu.sound_measure = (bytes[13] >> 6) % 3;
 	/* (the menu's display made next takes it too) */
 	n64_render_set_dedither(menu.dedither);
 	for (int p = 0; p < 4; p++)
@@ -1168,7 +1182,7 @@ static int settings_unpack(const unsigned char *bytes)
 	return 1;
 }
 
-static void settings_load(void)
+static __attribute__((cold)) void settings_load(void)
 {
 	if (saved_read)
 		return;
@@ -1181,11 +1195,23 @@ static void settings_load(void)
 		debugf("n64: no EEPROM, the settings are not kept\n");
 		return;
 	}
-	eeprom_read_bytes(saved, 0, SAVED_BYTES);
+	/* (read at start-up, before the sound is made: block by block straight
+	from the EEPROM, so that libdragon's EEPROM cache is still made where
+	n64_main.c makes it, after the sound. The same command, port and data
+	bytes as libdragon's eeprom_read_block_hw: 0x04, the EEPROM's read block
+	command (libdragon's constant is in an internal header), 8 data bytes
+	back. libdragon marks joybus_exec_cmd experimental: re-check this on a
+	libdragon update) */
+	for (int block = 0; block < SAVED_BYTES / EEPROM_BLOCK_SIZE; block++)
+	{
+		const uint8_t read_block[2] = {0x04, (uint8_t)block};
+
+		joybus_exec_cmd(4, sizeof(read_block), EEPROM_BLOCK_SIZE, read_block, saved + block * EEPROM_BLOCK_SIZE);
+	}
 	debugf("n64: settings %s\n", settings_unpack(saved) ? "read" : "not kept yet (defaults)");
 }
 
-static void settings_save(void)
+static __attribute__((cold)) void settings_save(void)
 {
 	unsigned char now[SAVED_BYTES];
 
@@ -1196,6 +1222,21 @@ static void settings_save(void)
 		return;
 	eeprom_write_bytes(now, 0, SAVED_BYTES);
 	memcpy(saved, now, SAVED_BYTES);
+}
+
+/* SOUND QUALITY's rate at start-up (n64_main.c, before the sound is made):
+the record read now, not as the menu first runs; 11,025 Hz for CRUNCHY,
+and for AUTO where the last session's measure found the system slow */
+static int sound_crunchy(int quality)
+{
+	return quality == N64_SOUND_QUALITY_CRUNCHY ||
+		(quality == N64_SOUND_QUALITY_AUTO && menu.sound_measure == SOUND_MEASURE_SLOW);
+}
+
+__attribute__((cold)) int n64_menu_sound_crunchy(void)
+{
+	settings_load();
+	return sound_crunchy(menu.sound_quality);
 }
 
 void n64_controls_save(void)
@@ -2062,6 +2103,7 @@ static void draw_settings(int item)
 		[SETTING_DEDITHER] = {"THE N64'S FILTER THAT SMOOTHS THE DITHER", "OUT OF THE PICTURE'S COLOURS"},
 		[SETTING_HUD_INSET] = {"MOVES THE HUD IN FROM THE SCREEN'S EDGES, FOR", "TELEVISIONS THAT CUT THEM OFF"},
 		[SETTING_COUNTER] = {"FRAMES A SECOND AND TIMINGS AT THE TOP", ""},
+		[SETTING_SOUND_QUALITY] = {"CRUNCHY MIXES AT 11 KHZ: A ROUGHER SOUND; AUTO:", "11 KHZ AT THE N64'S DRAWING SPEED, ELSE 22 KHZ"},
 		[SETTING_BACK] = {"BACK TO THE TITLE", ""},
 	};
 	/* (in a framed list, eight rows at a time, 30 apart, scrolled to keep the
@@ -2171,6 +2213,16 @@ static void draw_settings(int item)
 			label = "FPS COUNTER";
 			snprintf(value, sizeof(value), "%s", menu.fps_counter ? "ON" : "OFF");
 			break;
+		case SETTING_SOUND_QUALITY:
+		{
+			/* (AUTO with the rate in force, which start-up set; the rate
+			in the help: with it, AUTO's chosen value is wider than the row) */
+			static const char *const values[4] = {"AUTO (CLEAN)", "CLEAN (22 KHZ)", "CRUNCHY (11 KHZ)", "AUTO (CRUNCHY)"};
+
+			label = "SOUND QUALITY";
+			snprintf(value, sizeof(value), "%s", values[menu.sound_quality ? menu.sound_quality : n64_sound_crunchy() * 3]);
+			break;
+		}
 		default:
 			list_item((X0 + X1) / 2, y, 180, item == s, "BACK");
 			continue;
@@ -2202,6 +2254,13 @@ static void draw_settings(int item)
 				menu.chunky == 2 ? 320 / 2 : menu.chunky == 1 ? 320 * 4 / 5 : 320);
 			lines[0] = "HIGH DETAIL: A SHARPER HUD AT 640X240; THE 3D";
 			lines[1] = stays;
+		}
+		/* (SOUND QUALITY's, where the choice asks for another rate than the
+		one in force: start-up sets it) */
+		else if (item == SETTING_SOUND_QUALITY && sound_crunchy(menu.sound_quality) != n64_sound_crunchy())
+		{
+			lines[0] = "THE RATE IS SET AT START-UP: THIS CHOICE APPLIES";
+			lines[1] = "AFTER RESET OR POWER-ON";
 		}
 		for (int line = 0; line < 2; line++)
 		{
@@ -2993,6 +3052,14 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					menu.hud_inset = (menu.hud_inset + HUD_INSET_STEP) % (HUD_INSET_MAXIMUM + HUD_INSET_STEP);
 				if (setting == SETTING_COUNTER && (pad->left || pad->right || pad->pressed.a))
 					menu.fps_counter = !menu.fps_counter;
+				/* (AUTO, CLEAN, CRUNCHY; saved at once, as the restart note
+				says a RESET applies it: libdragon writes the record's blocks
+				in the background) */
+				if (setting == SETTING_SOUND_QUALITY && (pad->left || pad->right || pad->pressed.a))
+				{
+					menu.sound_quality = (menu.sound_quality + (pad->left ? 2 : 1)) % 3;
+					settings_save();
+				}
 				if (setting == SETTING_FIELD_OF_VIEW && pad->left)
 					menu.field_of_view = menu.field_of_view <= FOV_MINIMUM ? FOV_MAXIMUM : menu.field_of_view - FOV_STEP;
 				else if (setting == SETTING_FIELD_OF_VIEW && (pad->right || pad->pressed.a))
@@ -3224,6 +3291,9 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 			n64_render_blend_choose();
 			n64_half_animation_rate = menu.half_animation;
 			n64_field_of_view = menu.field_of_view;
+			/* (the measure's answer, just made, kept for SOUND QUALITY AUTO's
+			rate at the next start: written with the settings if it changed) */
+			menu.sound_measure = n64_render_blend_slow ? SOUND_MEASURE_SLOW : SOUND_MEASURE_FAST;
 			settings_save();
 			n64_render_set_anamorphic(menu.widescreen);
 			/* everyone starts standing */

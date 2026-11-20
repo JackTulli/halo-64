@@ -1,7 +1,8 @@
 /*
 N64_SOUND.C
 
-Sound on the N64: libdragon's audio and mixer at 22 kHz.
+Sound on the N64: libdragon's audio and mixer at 22 kHz (11 kHz with
+Settings: SOUND QUALITY CRUNCHY, set at start-up).
 
 The main menu's music (Halo's title1 looping sound, tools/n64/music.py):
 its start ("in", the monks) once, then one of its three loop versions after
@@ -32,6 +33,8 @@ plays silence.
 #include "n64.h"
 
 #define SOUND_RATE 22050
+/* SOUND QUALITY CRUNCHY's (n64_sound_set_crunchy) */
+#define CRUNCHY_RATE 11025
 /* the music: a stereo pair */
 #define MUSIC_CHANNEL 0
 #define LOOP_VERSIONS 3
@@ -48,6 +51,8 @@ wav64_t *wav64_loadfd(int fd, const char *debug_file_name, wav64_loadparms_t *pa
 static struct
 {
 	int ready;
+	/* SOUND QUALITY: mixed at CRUNCHY_RATE (set before the sound is made) */
+	int crunchy;
 	/* the music: playing at all, past its start, the track streaming */
 	int music_on;
 	int looping;
@@ -80,16 +85,33 @@ feeding the mixer, starting voices (counter ticks) */
 	unsigned long long level_sum, level_samples;
 } sound;
 
+void n64_sound_set_crunchy(int crunchy)
+{
+	sound.crunchy = crunchy;
+}
+
+int n64_sound_crunchy(void)
+{
+	return sound.crunchy;
+}
+
 void n64_sound_initialize(void)
 {
 	if (sound.ready)
 		return;
 	/* (the latency covers the longest gap between feeds: a slow 4-player
 	frame is fed between its ticks and views) */
-	audio_init(SOUND_RATE, AUDIO_INIT_LATENCY_MS(150));
+	audio_init(sound.crunchy ? CRUNCHY_RATE : SOUND_RATE, AUDIO_INIT_LATENCY_MS(150));
 	mixer_init(FIRST_VOICE + VOICE_COUNT);
 	for (int i = 0; i < VOICE_COUNT; i++)
 		mixer_ch_set_limits(FIRST_VOICE + i, 16, SOUND_RATE * MAXIMUM_PITCH, 0);
+	/* (at CRUNCHY_RATE the mixer steps through each 22,050 Hz sample at its
+	rate x pitch over the output's: the same pitch and length. A voice's
+	limit is its highest rate as ever; the music's pair, whose limit is the
+	output's rate if not set, gets its tracks' own) */
+	if (sound.crunchy)
+		for (int i = 0; i < FIRST_VOICE; i++)
+			mixer_ch_set_limits(MUSIC_CHANNEL + i, 16, SOUND_RATE, 0);
 	sound.random = TICKS_READ();
 	sound.bank = -1;
 	sound.ready = 1;
