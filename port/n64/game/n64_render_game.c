@@ -348,18 +348,18 @@ static unsigned char camouflage_opacity(float camouflage)
 	return (unsigned char)((1.f - 0.92f * camouflage) * 255.f + 0.5f);
 }
 
-static unsigned char object_camouflage_opacity(struct object_datum *object)
+static struct unit_datum *object_tint_unit(struct object_datum *object)
 {
-	/* A held weapon inherits the nearest unit, including a seated unit whose
-	ultimate parent is a vehicle. The vehicle itself stays opaque. */
+	/* A rider keeps its own armour colour and camouflage. A held weapon
+	inherits both from the rider, even when the vehicle is its root. */
 	for (int depth = 0; object && depth < 16; depth++)
 	{
 		if (TEST_FLAG(_object_mask_unit, object->object.type))
-			return camouflage_opacity(((struct unit_datum *)object)->unit.active_camouflage);
+			return (struct unit_datum *)object;
 		if (object->object.parent_object_index == NONE) break;
 		object = object_try_and_get(object->object.parent_object_index);
 	}
-	return 255;
+	return NULL;
 }
 
 /* (a model tag added to the list once, if there is room) */
@@ -445,7 +445,7 @@ static void gather_frame_objects(
 		struct frame_object *entry = &frame_objects[frame_object_count];
 		struct object_definition *definition;
 		struct n64_object *n64 = &entry->n64;
-		struct object_datum *owner;
+		struct unit_datum *tint_unit;
 
 		if (TEST_FLAG(object->object.flags, _object_invisible_bit))
 			continue;
@@ -525,14 +525,14 @@ static void gather_frame_objects(
 		n64->center[2] = object->object.bounding_sphere_center.z;
 		n64->radius = object->object.bounding_sphere_radius + (n64->head_node >= 0 ? 0.35f : 0.f);
 		n64->tint[0] = n64->tint[1] = n64->tint[2] = n64->tint[3] = 0xFF;
-		n64->tint[3] = object_camouflage_opacity(object);
-		owner = entry->ultimate_parent == iterator.index ? object : object_get(entry->ultimate_parent);
-		if (TEST_FLAG(_object_mask_unit, object->object.type) || TEST_FLAG(_object_mask_unit, owner->object.type))
+		tint_unit = object_tint_unit(object);
+		if (tint_unit)
 		{
 			/* a player (or what a player holds): the armour colour, where the
 			model's textures take it */
-			real_rgb_color const *color = &owner->object.base_change_colors[_object_change_color_a];
+			real_rgb_color const *color = &tint_unit->object.base_change_colors[_object_change_color_a];
 
+			n64->tint[3] = camouflage_opacity(tint_unit->unit.active_camouflage);
 			n64->tint[0] = (unsigned char)PIN(color->red * 255.f, 0.f, 255.f);
 			n64->tint[1] = (unsigned char)PIN(color->green * 255.f, 0.f, 255.f);
 			n64->tint[2] = (unsigned char)PIN(color->blue * 255.f, 0.f, 255.f);
@@ -786,7 +786,8 @@ void n64_first_person_model_draw(
 	if (player_index != NONE)
 	{
 		long unit_index = player_get(player_index)->unit_index;
-		if (unit_index != NONE) n64.tint[3] = object_camouflage_opacity(object_try_and_get(unit_index));
+		struct unit_datum *unit = unit_index != NONE ? object_tint_unit(object_try_and_get(unit_index)) : NULL;
+		if (unit) n64.tint[3] = camouflage_opacity(unit->unit.active_camouflage);
 	}
 	n64_render_object_remapped(&n64, node_remap);
 }
