@@ -243,6 +243,9 @@ static struct
 	/* by cluster, the box its batches' own boxes make together (N64 units,
 	frustum_planes_inside) */
 	int16_t (*cluster_boxes)[6];
+	/* the box all its batches' boxes make (N64 units), its centre and half
+	extents: where any of its vertices can be (fit_projection) */
+	float box_centre[3], box_half[3];
 	/* a streamed level (version 5): the file, its chunks, each chunk's data
 	in memory (NULL: not read) and the frame it was last drawn in, each
 	batch's chunk, the bytes in memory and read */
@@ -3808,6 +3811,19 @@ int n64_render_load_level(const char *map_name, int low)
 	level.clusters = (struct level_cluster *)(level.data + level.header->clusters_offset);
 	level.owners = (uint16_t *)(level.data + level.header->owners_offset);
 	level.batches = (struct level_batch *)(level.data + level.header->batches_offset);
+	/* (its box: fit_projection) */
+	for (int k = 0; k < 3; k++)
+	{
+		int minimum = INT16_MAX, maximum = INT16_MIN;
+
+		for (int b = 0; b < level.header->batch_count; b++)
+		{
+			minimum = level.batches[b].minimum[k] < minimum ? level.batches[b].minimum[k] : minimum;
+			maximum = level.batches[b].maximum[k] > maximum ? level.batches[b].maximum[k] : maximum;
+		}
+		level.box_centre[k] = (float)(minimum + maximum) * 0.5f;
+		level.box_half[k] = (float)(maximum - minimum) * 0.5f;
+	}
 	if (level.stream)
 	{
 		memset(level.batch_chunk, 0xff, level.header->batch_count * sizeof(uint16_t));
@@ -5063,6 +5079,62 @@ static void particle_view(struct n64_particle_view *view, int first_person)
 		(float)chunky_width(rect[2] - rect[0]) / (float)(rect[2] - rect[0]) : 1.f;
 }
 
+/* The projection's range. The RSP multiplies the projection by the camera,
+and each vertex by their product, in tiny3d's 16.16 fixed point, which
+saturates past +-32768. The level's vertices are in the world's place, so
+that product holds the eye's place in the world (N64 units) times the
+projection's scale, 1 / the tangent of half the field of view: across,
+1.43 at Halo's 70 degrees, 3.17 in a 2x zoom, 13.1 in the sniper rifle's
+8x. It saturated wherever the eye was farther from the world's origin
+across the view than 512 units / that scale (161 at 2x: Blood Gulch's far
+end; 39 at 8x: most of that map), or up the view than 512 / its scale up
+the view (a level high above the origin, a steep look in a split screen),
+and the level slid against the objects (each drawn from the eye, in range)
+by what was cut off: its floor gone from under them, its motion the wrong
+way as the view turned. A projection scaled down by a factor scales a
+vertex's x, y, z and w alike, which the RSP's divide by w, its clip tests
+(x and y against w), the depth (z / w) and the fog (tiny3d's, taken from
+this projection: apply_fog) do not see; the w normalisation
+(t3d_viewport_set_w_normalize) is scaled up by the same factor, so the w
+the RSP divides by is the one it was. So where the product's translation,
+or any point of the level's box (its vertices, and the objects in it),
+could reach PROJECTION_RANGE (a margin for the fixed point's rounding),
+the projection is halved until neither can. A view where neither can is
+left as it was; a halving costs the product a bit of its fraction */
+#define PROJECTION_RANGE 32000.f
+
+static void fit_projection(T3DViewport *viewport, const struct n64_view *view)
+{
+	const T3DMat4 *m = &viewport->matCamProj;
+	float reach = 0.f, scale = 1.f;
+
+	if (!level.data || !level.header->batch_count)
+		return;
+	for (int k = 0; k < 4; k++)
+	{
+		/* (column k's largest over the box: at its centre, and each
+		axis's half extent at its coefficient) */
+		float centre = m->m[3][k], spread = 0.f;
+
+		for (int i = 0; i < 3; i++)
+		{
+			centre += m->m[i][k] * level.box_centre[i];
+			spread += fabsf(m->m[i][k]) * level.box_half[i];
+		}
+		reach = fmaxf(reach, fmaxf(fabsf(m->m[3][k]), fabsf(centre) + spread));
+	}
+	while (reach * scale >= PROJECTION_RANGE && scale > 1.f / 256.f)
+		scale *= 0.5f;
+	if (scale == 1.f)
+		return;
+	for (int i = 0; i < 4; i++)
+	{
+		for (int k = 0; k < 4; k++)
+			viewport->matProj.m[i][k] *= scale;
+	}
+	t3d_viewport_set_w_normalize(viewport, view->z_near * WORLD_SCALE * scale, view->z_far * WORLD_SCALE * scale);
+}
+
 void n64_render_view(const struct n64_view *view)
 {
 	T3DViewport *viewport;
@@ -5144,6 +5216,9 @@ void n64_render_view(const struct n64_view *view)
 			viewport->viewFrustum.planes[5] = (T3DVec4){{-fx, -fy, -fz, fx * eye.v[0] + fy * eye.v[1] + fz * eye.v[2] + far}};
 		}
 	}
+	/* (after the frustum: it and matCamProj keep the unscaled projection,
+	for the CPU's culling; matProj and the w normalisation carry the RSP's) */
+	fit_projection(viewport, view);
 	t3d_viewport_attach(viewport);
 	/* the vertex colours are the lighting: no lights, a white ambient --
 	set with tiny3d's other settings for the view, before the RDP's (the
