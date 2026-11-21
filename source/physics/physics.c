@@ -2172,21 +2172,30 @@ real n64_vehicle_physics_step(
 	return n64_physics_step;
 }
 
+/* A vehicle and its riders sample the same ticks, including at rest.
+Querying the schedule does not advance the physics step. */
+long n64_vehicle_sample_ticks(long object_index, long time)
+{
+	extern int n64_half_animation_rate;
+	long interval = n64_half_animation_rate ? 4 : 2;
+
+	return ((time + DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)) & (interval - 1)) ? 0 : interval;
+}
+
 /* (asked once a tick by vehicle_update, which leaves out the whole physics
 block -- the forces, the movement and what reads the mass points the step
 fills -- on the vehicle's other ticks) */
 boolean n64_vehicle_physics_turn(
 	long object_index)
 {
-	extern int n64_half_animation_rate;
 	static struct { long object_index; long time; } last[64];
 	long index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
-	long interval = n64_half_animation_rate ? 4 : 2;
 	long now = game_time_get();
+	long interval = n64_vehicle_sample_ticks(object_index, now);
 	short slot = (short)(index & 63);
 	long ticks;
 
-	if ((now + index) % interval)
+	if (!interval)
 		return FALSE;
 	ticks = last[slot].object_index == object_index ? now - last[slot].time : 1;
 	n64_physics_step = (real)(ticks < 1 ? 1 : ticks > interval ? interval : ticks);
