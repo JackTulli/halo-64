@@ -38,6 +38,10 @@ struct physics_test_vector_result
 
 /* ---------- prototypes/PHYSICS.C */
 
+#ifdef HALO_N64
+long n64_vehicle_sample_ticks(long object_index, long time);
+#endif
+
 boolean physics_instance_new(struct physics_instance *instance, long object_index);
 real pin_fraction(real value, real begin, real end);
 boolean physics_get_features_in_sphere(

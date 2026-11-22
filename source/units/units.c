@@ -681,6 +681,9 @@ symbols in this file:
 #include "physics/collision_usage.h"
 #include "physics/collisions.h"
 #include "physics/physics_definitions.h"
+#ifdef HALO_N64
+#include "physics/physics.h"
+#endif
 #include "render/render.h"
 #include "render/render_debug.h"
 #include "scenario/scenario.h"
@@ -3139,6 +3142,14 @@ boolean unit_enter_seat(
 				"");
 
 			unit->unit.parent_seat_index = seat_index;
+#ifdef HALO_N64
+			if (target_unit->object.type == _object_type_vehicle && target_unit->object.parent_object_index == NONE &&
+				target_unit_definition->object.physics.index != NONE)
+			{
+				unit->unit.seat_last_position = target_unit->object.position;
+				unit->unit.seat_last_velocity = target_unit->object.translational_velocity;
+			}
+#endif
 			unit->object.parent_object_index = target_unit_index;
 			unit_update_driver_and_gunner(target_unit_index);
 
@@ -11210,12 +11221,31 @@ static void unit_seat_update(
 
 	struct unit_datum *unit = unit_get(object_index);
 	boolean found = FALSE;
+#ifdef HALO_N64
+	real inverse_ticks = 1.f;
+#endif
 
 	if (unit->object.parent_object_index!=NONE && unit->unit.parent_seat_index!=NONE)
 	{
-		struct unit_definition *parent_unit_definition = unit_definition_get(unit_get(unit->object.parent_object_index)->definition_index);
+		struct unit_datum *parent = unit_get(unit->object.parent_object_index);
+		struct unit_definition *parent_unit_definition = unit_definition_get(parent->definition_index);
 		struct unit_seat *seat = TAG_BLOCK_GET_ELEMENT(&parent_unit_definition->unit.seats, unit->unit.parent_seat_index, struct unit_seat);
 
+#ifdef HALO_N64
+		/* Vehicle physics advances by two or four ticks at once. A position
+		sample between steps would turn steady travel into alternating
+		acceleration and braking. Keep the target lean until the next step.
+		The rider still blends toward that target every tick. */
+		if (parent->object.type == _object_type_vehicle && parent->object.parent_object_index == NONE &&
+			parent_unit_definition->object.physics.index != NONE)
+		{
+			long ticks = n64_vehicle_sample_ticks(unit->object.parent_object_index, game_time_get());
+
+			if (!ticks)
+				return;
+			inverse_ticks = ticks == 2 ? 0.5f : 0.25f;
+		}
+#endif
 		if (object_get_marker_by_name(unit->object.parent_object_index, seat->marker_name, &seat_marker, 1))
 		{
 			object_get_origin(unit->object.parent_object_index, &seat_marker.matrix.position);
@@ -11241,10 +11271,16 @@ static void unit_seat_update(
 		last_velocity.i = seat_marker.matrix.position.x-unit->unit.seat_last_position.x;
 		last_velocity.j = seat_marker.matrix.position.y-unit->unit.seat_last_position.y;
 		last_velocity.k = seat_marker.matrix.position.z-unit->unit.seat_last_position.z;
-
+#ifdef HALO_N64
+		/* Velocity is distance per tick. Acceleration is its change per tick. */
+		scale_vector3d(&last_velocity, inverse_ticks, &last_velocity);
+#endif
 		new_velocity.i = last_velocity.i - unit->unit.seat_last_velocity.i;
 		new_velocity.j = last_velocity.j - unit->unit.seat_last_velocity.j;
 		new_velocity.k = last_velocity.k - unit->unit.seat_last_velocity.k;
+#ifdef HALO_N64
+		scale_vector3d(&new_velocity, inverse_ticks, &new_velocity);
+#endif
 		
 		cross_product3d(&seat_marker.matrix.up, &seat_marker.matrix.forward, &vp);
 		
