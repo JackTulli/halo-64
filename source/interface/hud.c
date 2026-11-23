@@ -369,7 +369,7 @@ static boolean n64_hud_weapon_action_response(struct player_datum *player)
 	char name[48];
 	const char *fallback;
 	wchar_t const *localized = NULL;
-	long strings;
+	long strings, hud_interface;
 	short i = 0;
 	if (player->unit_index == NONE || player->action_object_index == NONE ||
 		(player->action_result != _player_action_result_swap_for_weapon &&
@@ -378,6 +378,16 @@ static boolean n64_hud_weapon_action_response(struct player_datum *player)
 	if (!weapon || weapon->object.parent_object_index != NONE) return FALSE;
 	definition = object_definition_get(weapon->definition_index);
 	strings = hud_globals->messaging.alternate_icon_text.index;
+	/* (Halo names the weapon in this prompt by its HUD interface's messaging
+	icon, and by the icon text below only for a weapon without that icon, as
+	hud_show_action_response does. A weapon with the icon is named by its tag:
+	the Xbox flamethrower's icon text index, 12, selects "right thumbstick".
+	The reference is checked first -- loaded, in range, a weapon HUD
+	interface -- and anything else keeps the text lookup) */
+	hud_interface = weapon_definition_get(weapon->definition_index)->weapon.interface_definition.hud_interface.index;
+	if (tag_index_is_group(hud_interface, 'wphi') &&
+		weapon_hud_interface_definition_get(hud_interface)->messaging_icon.sequence_index != NONE)
+		strings = NONE;
 	if (strings != NONE && definition->object.icon_text_index >= 0)
 	{
 		struct string_list *list = unicode_string_list_definition_get(strings);
