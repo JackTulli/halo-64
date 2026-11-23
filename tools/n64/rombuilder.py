@@ -75,6 +75,9 @@ CUSTOM_MAP_LIMIT = 24
 CE_MAP_BYTES = 1 << 30
 # a converter's memory at most (three at a time took ~2.4 GB)
 CONVERSION_BYTES = 900 << 20
+# a Custom Edition map's preparation with the campaign maps staged (its
+# largest process took 1,713 MiB; 781 MiB without them)
+PREPARATION_BYTES = 1800 << 20
 MAX_ROM_BYTES = 64 << 20
 
 
@@ -404,6 +407,9 @@ class RomBuilder:
         self.ce_tools = Path(ce_tools) if ce_tools else ce_tools_folder()
         self.custom = []
         self.custom_folder = None
+        # (the campaign maps provide_maps() staged for ce_prepare.py beyond
+        # the required ones)
+        self.optional_maps = []
         self.pc_source = Path(pc_source) if pc_source is not None else None
         self.pc_tools = Path(pc_tools) if pc_tools is not None else None
         self.pc_maps = None
@@ -412,6 +418,7 @@ class RomBuilder:
         self.cartridges = list(cartridges)
         self.work = Path(work) if work else default_work_folder()
         self.jobs = default_jobs() if jobs is None else jobs
+        self.jobs_chosen = jobs is not None
         self.font = font or halo_font()
         self.log = log
         self.report = progress or (lambda fraction, step: None)
@@ -584,6 +591,30 @@ class RomBuilder:
             self.check_cancel()
             self.report(min(1.0, self.done / self.total), f"Copying {name}.map")
         self.source.provide(names, maps, progress)
+        if "custom" in self.cartridges:
+            # (and the campaign maps the source has: ce_prepare.py looks in
+            # them after the maps above for Custom Edition's shared tags
+            # (XBOX_ORDER); without them the bitmaps only they have --
+            # Hyrule Field's dense leafy trees, b30's -- were white stand-ins.
+            # Each is optional: copied to a folder of its own, it joins the
+            # others only once it passes the Xbox map check and its tag names
+            # read; else it is left out, as if absent, and the log says why.
+            # A cancel still stops)
+            from .ce_prepare import XBOX_ORDER, xbox_tag_names
+            optional = self.input_stage / "xbox-optional"
+            for name in XBOX_ORDER:
+                if name in names or self.source.missing([name]):
+                    continue
+                self.check_cancel()
+                try:
+                    self.source.validate([name])
+                    self.source.provide([name], optional, progress)
+                    xbox_tag_names(optional / f"{name}.map")
+                    (optional / f"{name}.map").replace(maps / f"{name}.map")
+                    self.optional_maps.append(name)
+                except (BuildError, OSError, ValueError, KeyError, IndexError, struct.error) as error:
+                    self.log(f"{name}.map not used for Custom Edition's shared tags: {error}")
+                shutil.rmtree(optional, ignore_errors=True)
         if self.source.disc:
             self.step(10, "Maps copied from the disc")
         return maps
@@ -641,7 +672,24 @@ class RomBuilder:
             tasks.append((f"Making {path.name} an Xbox map", "ce_prepare",
                           [str(path), "--xbox-maps", str(maps), "--tools", str(self.ce_tools), "--work", str(work),
                            "--name", name], WEIGHTS["ce map"]))
-        failed = self.run_parallel(tasks, keep_going=True)
+        jobs = self.jobs
+        memory = free_memory() if self.optional_maps and not self.jobs_chosen else None
+        if memory:
+            # (the default count, sized for conversions, lowered to what
+            # the preparations with the campaign maps take)
+            jobs = max(1, min(jobs, int((memory - (1 << 30)) // PREPARATION_BYTES)))
+            self.log(f"Custom Edition preparations: {jobs} at a time (with the campaign maps staged, about "
+                     f"{PREPARATION_BYTES >> 20} MiB each)")
+        failed = self.run_parallel(tasks, keep_going=True, jobs=jobs)
+        if failed and self.optional_maps:
+            first = {task[2][task[2].index("--name") + 1]: Path(task[2][0]).name for task, _ in failed}
+            failed = self.prepare_custom_again(failed, maps)
+            again = {task[2][task[2].index("--name") + 1] for task, _ in failed}
+            for name, source in sorted(first.items()):
+                if name not in again:
+                    self.notes.append(f"{source} ({name}): made from the required Xbox maps alone, after a first "
+                                      "preparation with the campaign maps failed (the log has the reason): the "
+                                      "textures and sounds only the campaign maps have are white or silent on it")
         for (text, _, arguments, _), error in failed:
             names.remove(arguments[arguments.index("--name") + 1])
             reason = str(error).splitlines()
@@ -664,6 +712,41 @@ class RomBuilder:
             self.custom.append({"name": name, "display": result["display"], "source": result["source"]})
             self.log(f"{result['source']}: on the cartridge as {result['display']} ({name})")
         shutil.copyfile(maps / "a30.map", self.custom_folder / "a30.map")
+
+    def prepare_custom_again(self, failed, maps):
+        """the Custom Edition maps whose preparation failed with the campaign
+        maps staged, prepared again from the required maps alone (as before
+        those were staged), each in a fresh work folder: the failures left.
+        If those maps cannot be staged for it, nothing is retried"""
+        self.check_cancel()
+        required = self.input_stage / "xbox-required"
+        try:
+            required.mkdir(parents=True, exist_ok=True)
+            for name in self.needed_maps():
+                self.check_cancel()
+                target = required / f"{name}.map"
+                if not target.exists():
+                    try:
+                        os.link(maps / f"{name}.map", target)
+                    except OSError:
+                        shutil.copyfile(maps / f"{name}.map", target)
+        except OSError as error:
+            self.log(f"the failed Custom Edition maps are not prepared again from the required maps alone: {error}")
+            shutil.rmtree(required, ignore_errors=True)
+            return failed
+        tasks = []
+        for (text, module, arguments, weight), error in failed:
+            arguments = list(arguments)
+            arguments[arguments.index("--xbox-maps") + 1] = str(required)
+            shutil.rmtree(arguments[arguments.index("--work") + 1], ignore_errors=True)
+            reason = (str(error).splitlines() or [""])[-1]
+            self.log(f"{Path(arguments[0]).name}: its preparation failed ({reason}); prepared again from the required "
+                     "maps alone")
+            tasks.append((text, module, arguments, weight))
+        try:
+            return self.run_parallel(tasks, keep_going=True)
+        finally:
+            shutil.rmtree(required, ignore_errors=True)
 
     def build_online(self, maps):
         """Halo 64 Online's cartridge: the multiplayer cartridge's files (made
@@ -923,10 +1006,10 @@ class RomBuilder:
             tail = "\n".join(text_out.splitlines()[-12:])
             raise BuildError(f"{text} failed (code {code}):\n{tail}")
 
-    def run_parallel(self, tasks, keep_going=False):
-        """the tasks, a few at a time; the first error stops them and is
-        raised, or (keep_going) each task's error is kept and the rest go on:
-        [(task, error)] returned"""
+    def run_parallel(self, tasks, keep_going=False, jobs=None):
+        """the tasks, a few at a time (jobs, else self.jobs); the first error
+        stops them and is raised, or (keep_going) each task's error is kept
+        and the rest go on: [(task, error)] returned"""
         errors = []
         queue = list(tasks)
         lock = threading.Lock()
@@ -952,7 +1035,7 @@ class RomBuilder:
                     with lock:
                         errors.append((task, error))
 
-        threads = [threading.Thread(target=runner, daemon=True) for _ in range(min(self.jobs, len(tasks)))]
+        threads = [threading.Thread(target=runner, daemon=True) for _ in range(min(jobs or self.jobs, len(tasks)))]
         for t in threads:
             t.start()
         for t in threads:
