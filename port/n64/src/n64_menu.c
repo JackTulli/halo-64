@@ -2363,7 +2363,7 @@ static void draw_player_cards(const struct n64_menu_choice *c, int teams, int ch
 		}
 		snprintf(value, sizeof(value), "PLAYER %d", p + 1);
 		text_centered(menu.large, center, y + 26, TEXT_BRIGHT, value);
-		/* (the colour the player plays in) */
+		/* (the setup's shade: the team's colour, else card_colour's) */
 		panel(x + 12, y + 36, x + w - 12, y + 62, 0xFF000000 | (teams ? team_rgb[c->teams[slot]] :
 			card_colour(c, slot)));
 		if (teams)

@@ -2548,8 +2548,17 @@ name measured), squeezed with the anamorphic picture as the HUD is */
 #define PAUSE_TEXT 0xFF8CC0FFu
 #define PAUSE_BRIGHT 0xFFFFFFFFu
 #define PAUSE_DIM 0xC05880B0u
+#define PAUSE_TAB 0xFF00081Cu
 /* (the pause screens run only while a game is paused: compiled for size) */
 #define PAUSE_CODE __attribute__((cold))
+/* (more rows than fit with START TO RESUME's tab in 240 lines: only an
+online game's, up to 16 players; a local game has at most 12 rows, 4 players
+and 8 bots (n64_game.c starts at most 8), which fit) */
+#ifdef HALO_N64_ONLINE
+#define PAUSE_MANY_ROWS 1
+#else
+#define PAUSE_MANY_ROWS 0
+#endif
 
 static const unsigned long pause_team_colors[2] = { 0xFFD03838u, 0xFF3C6CE0u };
 
@@ -2618,6 +2627,37 @@ static PAUSE_CODE const char *pause_colour_name(const struct n64_score_row *row)
 	return row->team >= 0 ? (row->team ? "BLUE" : "RED") : row->colour ? n64_colour_names[row->colour - 1] : NULL;
 }
 
+/* the Start button: a red capsule that extends two lines above and two below
+the capitals, with START on it in white; its ends half circles (wide: the screen's
+pixels across for one down, so that they are round on the screen; each row a
+whole number of pixels either side, so that the capsule is symmetric) */
+#define PAUSE_START_HEIGHT(cap) ((cap) + 4)
+
+static PAUSE_CODE int pause_start_width(int cap, float wide)
+{
+	/* (START, and each end's radius across, rounded once to whole pixels) */
+	return n64_text_width(hud_font, "START") + 2 * (int)(PAUSE_START_HEIGHT(cap) * 0.5f * wide + 0.5f);
+}
+
+/* START TO RESUME, its left at x and its baseline at y: the Start button,
+then TO RESUME */
+static PAUSE_CODE void pause_resume(float x, int y, int cap, float wide)
+{
+	int h = PAUSE_START_HEIGHT(cap), top = y - cap - (h - cap) / 2, w = pause_start_width(cap, wide), j;
+	float r = h * 0.5f;
+	int across = (int)(r * wide + 0.5f);
+
+	for (j = 0; j < h; j++)
+	{
+		float dy = j + 0.5f - r;
+		int half = (int)(sqrtf(r * r - dy * dy) * across / r + 0.5f);
+
+		pause_box(x + across - half, top + j, x + w - across + half, top + j + 1, pause_team_colors[0]);
+	}
+	pause_text(x + w * 0.5f, y, PAUSE_CENTRE, PAUSE_BRIGHT, "START");
+	pause_text(x + w, y, PAUSE_LEFT, PAUSE_DIM, " TO RESUME");
+}
+
 PAUSE_CODE void n64_hud_pause(const struct n64_pause_screen *screen)
 {
 	int width = n64_render_screen_width(), height = n64_render_screen_height();
@@ -2626,8 +2666,8 @@ PAUSE_CODE void n64_hud_pause(const struct n64_pause_screen *screen)
 	int pad = 6 * unit, gap = 8 * unit;
 	int rows = screen->row_count, cap, pitch, total;
 	int name_width, score_width, kills_width, deaths_width, marker, button_width, inner;
-	int box_height, top, y, i;
-	float x0, x1, name_x, score_x, kills_x, deaths_x;
+	int box_height, footer, hang, top, y, i;
+	float x0, x1, name_x, score_x, kills_x, deaths_x, wide = width * 0.75f / height;
 	char number[12];
 
 	if (!hud_font_loaded)
@@ -2676,18 +2716,32 @@ PAUSE_CODE void n64_hud_pause(const struct n64_pause_screen *screen)
 
 	/* from the top: the title (and its note), the columns' headings over a
 	rule, a row each (every row's text in capitals: rows a cap height and a
-	little apart), the button; closer rows if they don't fit */
+	little apart), the buttons (with Color the bar under them), and under
+	them, apart from the options, START TO RESUME on a tab over the bottom
+	frame line (footer: the room for its upper half; hang: its lower half,
+	below the card); closer rows if they don't fit, and if they still don't
+	(an online game's many rows), v0.7.0's row: START RESUME at its right */
+	footer = 6 * unit + PAUSE_START_HEIGHT(cap) / 2;
+	hang = (PAUSE_START_HEIGHT(cap) + 1) / 2 + 3 * unit;
 	pitch = cap + 2 * unit;
 	for (;;)
 	{
 		box_height = pitch + 4 * unit;
 		total = pad + pitch * (screen->note ? 2 : 1) + 2 * unit + pitch + unit + 3 * unit + rows * pitch +
-			4 * unit + box_height + pad;
-		if (total <= height - 4 * unit || pitch <= cap + 1)
+			4 * unit + box_height + footer + pad;
+		if (total + hang <= height - 4 * unit)
 			break;
-		pitch--;
+		if (pitch > cap + 1)
+			pitch--;
+		else if (PAUSE_MANY_ROWS && footer)
+			footer = hang = 0, pitch = cap + 2 * unit;
+		else
+			break;
 	}
-	top = (height - total) / 2;
+	/* (centred, but the title below the optional FPS counter's first line,
+	which ends at line 12 (n64_render.c), where the tab still fits above the
+	picture's last 2 lines) */
+	top = MAX((height - total - hang) / 2, MIN(13 - pad, height - 2 * unit - total - hang));
 	pause_box(x0, top, x1, top + total, PAUSE_PANEL);
 	pause_frame(x0, top, x1, top + total, unit, PAUSE_FRAME);
 	y = top + pad;
@@ -2740,17 +2794,19 @@ PAUSE_CODE void n64_hud_pause(const struct n64_pause_screen *screen)
 
 	/* The native blue buttons now expose Controls without leaving the match. */
 	{
-		/* (with Color, three options in the two places: they move by one
-		as the selection passes either place; a bar under them shows which.
-		shown: the first option in the places) */
+		/* (two places, centred, or at the left as in v0.7.0 where START
+		RESUME stays in their row; with Color three options in them: they move
+		by one as the selection passes either place; a bar under them shows
+		which. shown: the first option in the places) */
 		static int shown;
 		int options = N64_PLAYER_COLOURS && screen->options > 2 ? 3 : 2;
+		float left = PAUSE_MANY_ROWS && !footer ? x0 + pad : pause_middle - button_width - gap * 0.5f;
 
 		shown = options > 2 ? MAX(MIN(shown, screen->selected), screen->selected - 1) : 0;
 		for (i = 0; i < 2; i++)
 		{
 			int option = shown + i;
-			float bx = x0 + pad + i * (button_width + gap);
+			float bx = left + i * (button_width + gap);
 			if (screen->selected == option)
 			{
 				pause_box(bx, y, bx + button_width, y + box_height, PAUSE_CHOSEN);
@@ -2764,14 +2820,30 @@ PAUSE_CODE void n64_hud_pause(const struct n64_pause_screen *screen)
 		{
 			/* the bar: a dim track under the two places, 2 units high, its
 			bright thumb two thirds of it, under the options shown */
-			float bx = x0 + pad, length = 2 * button_width + gap;
+			float bx = left, length = 2 * button_width + gap;
 			int by = y + box_height + 2 * unit;
 
 			pause_box(bx, by, bx + length, by + 2 * unit, PAUSE_DIM);
 			pause_box(bx + length * shown / 3, by, bx + length * (shown + 2) / 3, by + 2 * unit, PAUSE_FRAME);
 		}
 	}
-	pause_text(x1 - pad, y + (box_height + cap) / 2, PAUSE_RIGHT, PAUSE_DIM, "START RESUME");
+	{
+		/* START TO RESUME on its tab: centred, its text on the frame line's
+		middle, opaque over the line (or v0.7.0's START RESUME at the row's
+		right) */
+		int h = PAUSE_START_HEIGHT(cap), ty = y + box_height + 8 * unit;
+		float w = pause_start_width(cap, wide) + n64_text_width(hud_font, " TO RESUME");
+
+		if (PAUSE_MANY_ROWS && !footer)
+			pause_text(x1 - pad, y + (box_height + cap) / 2, PAUSE_RIGHT, PAUSE_DIM, "START RESUME");
+		else
+		{
+			pause_box(pause_middle - w * 0.5f - pad, ty, pause_middle + w * 0.5f + pad, ty + h + 7 * unit, PAUSE_TAB);
+			pause_frame(pause_middle - w * 0.5f - pad, ty, pause_middle + w * 0.5f + pad, ty + h + 7 * unit, unit,
+				PAUSE_FRAME);
+			pause_resume(pause_middle - w * 0.5f, ty + (7 * unit + 1) / 2 + (h - cap) / 2 + cap, cap, wide);
+		}
+	}
 	hud.tmem_pixels = NULL;
 }
 
@@ -2788,8 +2860,8 @@ static void pause_text_fit(float x, int y, int align, unsigned long color, const
 
 /* the CONTROLS page, or with colours the COLOR page: the same panels and
 headings, and in place of the controls' rows the player's colour, a framed
-swatch (BLACK shows) four letters high and square on the screen, and its
-name */
+swatch (BLACK shows) four letters high and square on the screen at 320 or
+640 wide, and its name */
 static PAUSE_CODE void pause_page(const int *ports, int count, const int *selected_rows, const signed char *colours)
 {
 	static const char *const names[CONTROL_COUNT] = {"SCHEME", "CROUCH", "LOOK", "FIRE", "STICK", "C LOOK", "RUMBLE"};
@@ -2873,7 +2945,7 @@ static PAUSE_CODE void pause_page(const int *ports, int count, const int *select
 	pause_text_fit(pause_middle, height - 15 * unit, PAUSE_CENTRE, PAUSE_TEXT,
 		colours ? "OWN PAD: LEFT/RIGHT COLOR" : "OWN PAD: UP/DOWN ROW  LEFT/RIGHT CHANGE", width - 12 * unit);
 	pause_text_fit(pause_middle, height - 5 * unit, PAUSE_CENTRE, PAUSE_DIM,
-		colours ? "A NEXT   B BACK   START RESUME" : "A CYCLE   B BACK   START RESUME", width - 12 * unit);
+		colours ? "A NEXT   B BACK   START TO RESUME" : "A CYCLE   B BACK   START TO RESUME", width - 12 * unit);
 	hud.tmem_pixels = NULL;
 }
 
