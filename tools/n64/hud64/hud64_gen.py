@@ -85,10 +85,12 @@ RAMP_MIN_W = 4          # (a foot row's right-edge shade shows from this lit wid
 
 # the vitals' health pips: a framed gauge of upright cells parted by 1-pixel notches,
 # Halo's count (8 cells at 1-2 players, 10 at 3-4), in the shield panel's own coordinates (its origin, set pixels):
-# (first cell's left column, cells, cell width, rows). WIDESCREEN 3-4 players reaches 6 columns left of the panel's
-# origin (Halo's 10 cells need the room there): its textures start there (offset -6).
+# (first cell's left column, cells, cell width, rows). WIDESCREEN 3-4 players: Halo's 10 cells need 31 columns,
+# more than the squeezed bar's body; that panel is SPLIT_WS_WIDEN columns wider on the left (shield_split), its
+# gauge's frame in its first column and the bar's body lengthened over the whole gauge.
 GAUGE = {("s240", 0): (12, 8, 3, (10, 11, 12, 13, 14)), ("s240ws", 0): (10, 8, 2, (10, 11, 12, 13, 14)),
-         ("s240", 1): (6, 10, 2, (6, 7, 8)), ("s240ws", 1): (-5, 10, 2, (6, 7, 8))}
+         ("s240", 1): (6, 10, 2, (6, 7, 8)), ("s240ws", 1): (1, 10, 2, (6, 7, 8))}
+SPLIT_WS_WIDEN = 6
 PIP_EMPTY = (0x00, 0x14, 0x30)          # (the empty slots' dark blue, drawn at half alpha under the cells)
 
 
@@ -308,6 +310,27 @@ def text_and_grid_overrides(m):
             order[ys.min():ys.max() + 1, x] = (i + 1) / 10
         self.order["health_s"] = order
         self.frame("health_s_frame", hm, np.zeros_like(hm), "healths_frame", 0.18)
+        # (the bar over the whole gauge: the 0.75 squeeze leaves the bar's body shorter than Halo's 10 cells, whose
+        # frame reached 6 columns left of the panel's origin, 9 left of the bar's body. The panel SPLIT_WS_WIDEN
+        # columns wider on the left, the gauge (GAUGE) and the bar's right end where they were on the screen; the
+        # body's rows -- those that start at the bar's leftmost body column or one column right of it -- each
+        # lengthened left by the same count (the design's 1-pixel step between them kept), so that the bar's outline
+        # is in the gauge's left frame column, its body over the first cell. The panel's leftmost ink stays where it
+        # was)
+        P = SPLIT_WS_WIDEN
+        bar = np.pad(self.order["shield_s"] > 0, ((0, 0), (P, 0)))
+        rows = [r for r in range(bar.shape[0]) if bar[r].any()]
+        first = {r: int(np.nonzero(bar[r])[0][0]) for r in rows}
+        left = min(first.values())
+        reach = left - GAUGE[("s240ws", 1)][0]         # (the body from the first cell's column)
+        for r in rows:
+            if first[r] <= left + 1:
+                bar[r, first[r] - reach:first[r]] = True
+        xx = np.mgrid[0:bar.shape[0], 0:bar.shape[1]][1] / bar.shape[1]
+        self.order["shield_s"] = np.where(bar, np.clip(xx, 1 / 255, 1), 0).astype(np.float32)
+        self.frame("shield_s_frame", bar, m.dilate(bar, self.s) & ~bar, "shields_frame", 0.13)
+        self.order["health_s"] = np.pad(self.order["health_s"], ((0, 0), (P, 0)))
+        self.shield_s_size = (bar.shape[1], bar.shape[0])
 
     m.Set.plate, m.Set.ticks, m.Set.ticks4, m.Set.shield_split = plate, ticks, ticks4, shield_split
 
