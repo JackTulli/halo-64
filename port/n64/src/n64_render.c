@@ -243,9 +243,6 @@ static struct
 	/* by cluster, the box its batches' own boxes make together (N64 units,
 	frustum_planes_inside) */
 	int16_t (*cluster_boxes)[6];
-	/* the box all its batches' boxes make (N64 units), its centre and half
-	extents: where any of its vertices can be (fit_projection) */
-	float box_centre[3], box_half[3];
 	/* a streamed level (version 5): the file, its chunks, each chunk's data
 	in memory (NULL: not read) and the frame it was last drawn in, each
 	batch's chunk, the bytes in memory and read */
@@ -3811,19 +3808,6 @@ int n64_render_load_level(const char *map_name, int low)
 	level.clusters = (struct level_cluster *)(level.data + level.header->clusters_offset);
 	level.owners = (uint16_t *)(level.data + level.header->owners_offset);
 	level.batches = (struct level_batch *)(level.data + level.header->batches_offset);
-	/* (its box: fit_projection) */
-	for (int k = 0; k < 3; k++)
-	{
-		int minimum = INT16_MAX, maximum = INT16_MIN;
-
-		for (int b = 0; b < level.header->batch_count; b++)
-		{
-			minimum = level.batches[b].minimum[k] < minimum ? level.batches[b].minimum[k] : minimum;
-			maximum = level.batches[b].maximum[k] > maximum ? level.batches[b].maximum[k] : maximum;
-		}
-		level.box_centre[k] = (float)(minimum + maximum) * 0.5f;
-		level.box_half[k] = (float)(maximum - minimum) * 0.5f;
-	}
 	if (level.stream)
 	{
 		memset(level.batch_chunk, 0xff, level.header->batch_count * sizeof(uint16_t));
@@ -5082,47 +5066,42 @@ static void particle_view(struct n64_particle_view *view, int first_person)
 /* The projection's range. The RSP multiplies the projection by the camera,
 and each vertex by their product, in tiny3d's 16.16 fixed point, which
 saturates past +-32768. The level's vertices are in the world's place, so
-that product holds the eye's place in the world (N64 units) times the
-projection's scale, 1 / the tangent of half the field of view: across,
-1.43 at Halo's 70 degrees, 3.17 in a 2x zoom, 13.1 in the sniper rifle's
-8x. It saturated wherever the eye was farther from the world's origin
-across the view than 512 units / that scale (161 at 2x: Blood Gulch's far
-end; 39 at 8x: most of that map), or up the view than 512 / its scale up
-the view (a level high above the origin, a steep look in a split screen),
-and the level slid against the objects (each drawn from the eye, in range)
-by what was cut off: its floor gone from under them, its motion the wrong
-way as the view turned. A projection scaled down by a factor scales a
-vertex's x, y, z and w alike, which the RSP's divide by w, its clip tests
-(x and y against w), the depth (z / w) and the fog (tiny3d's, taken from
-this projection: apply_fog) do not see; the w normalisation
-(t3d_viewport_set_w_normalize) is scaled up by the same factor, so the w
-the RSP divides by is the one it was. So where the product's translation,
-or any point of the level's box (its vertices, and the objects in it),
-could reach PROJECTION_RANGE (a margin for the fixed point's rounding),
-the projection is halved until neither can. A view where neither can is
-left as it was; a halving costs the product a bit of its fraction */
-#define PROJECTION_RANGE 32000.f
+that product's translation holds the eye's place in the world (N64 units)
+times the projection's scale, 1 / the tangent of half the field of view:
+across, 1.43 at Halo's 70 degrees, 3.17 in a 2x zoom, 13.1 in the sniper
+rifle's 8x. It saturated wherever the eye was farther from the world's
+origin across the view than 512 units / that scale (161 at 2x: Blood
+Gulch's far end; 39 at 8x: most of that map), or up the view than 512 /
+its scale up the view (a level high above the origin, a steep look in a
+split screen), and the level slid against the objects (each drawn from the
+eye, in range) by what was cut off: its floor gone from under them, its
+motion the wrong way as the view turned; past the room left, no level at
+all. Only such a view is changed: its projection is halved until the
+translation fits (PROJECTION_RANGE: the float product and the RSP's fixed
+one differ by less than a unit), and every other view reaches the RSP as
+before. A scaled projection scales a vertex's x, y, z and w alike: the
+RSP's clip tests (x and y against w), its divide by w and the depth (z / w)
+are the same in exact arithmetic, and the w normalisation
+(t3d_viewport_set_w_normalize) is scaled up by the same factor, so the w the
+RSP inverts is the one it was, up to the rounding of tiny3d's 16-bit gain.
+The fog, taken from this projection (apply_fog), keeps its band, but the
+RSP reads it from the integer part of clip z, so its steps grow by the
+factor. And each halving costs the product a bit of its fraction: the
+level's depth moves against the objects and against what is drawn with the
+CPU's depth (decals, particles), by several depth steps at the second zoom
+in a view the level was missing from before */
+#define PROJECTION_RANGE 32766.f
 
 static void fit_projection(T3DViewport *viewport, const struct n64_view *view)
 {
 	const T3DMat4 *m = &viewport->matCamProj;
 	float reach = 0.f, scale = 1.f;
 
-	if (!level.data || !level.header->batch_count)
+	if (!level.data)
 		return;
+	/* (the translation's four components) */
 	for (int k = 0; k < 4; k++)
-	{
-		/* (column k's largest over the box: at its centre, and each
-		axis's half extent at its coefficient) */
-		float centre = m->m[3][k], spread = 0.f;
-
-		for (int i = 0; i < 3; i++)
-		{
-			centre += m->m[i][k] * level.box_centre[i];
-			spread += fabsf(m->m[i][k]) * level.box_half[i];
-		}
-		reach = fmaxf(reach, fmaxf(fabsf(m->m[3][k]), fabsf(centre) + spread));
-	}
+		reach = fmaxf(reach, fabsf(m->m[3][k]));
 	while (reach * scale >= PROJECTION_RANGE && scale > 1.f / 256.f)
 		scale *= 0.5f;
 	if (scale == 1.f)
