@@ -481,7 +481,8 @@ def convert(path, output, filesystem=None, campaign=False, pc_expansion=False, p
         from .hud import HudExporter
         # (the Custom Edition cartridge's meter images packed too: hud.py
         # PACKED_METER_TEXELS)
-        repacker.policy.hud = HudExporter(xmap, repacker.defs, xmap.name, filesystem, pack_meters=custom)
+        repacker.policy.hud = HudExporter(xmap, repacker.defs, xmap.name, filesystem, pack_meters=custom,
+                                          custom=custom)
         print(f"{xmap.name} hud: {repacker.policy.hud.collect()} images")
         if savings:
             repacker.policy.stub_bitmaps = bitmap_stubs(xmap, repacker.defs, repacker.policy.hud.reached)

@@ -41,7 +41,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from . import toolpaths
 from .bitmaps import bitmap_images, decode
@@ -110,6 +110,35 @@ def meter_channels(img, source_format):
     return Image.merge("RGBA", (order, order, order, shape))
 
 
+# the Xbox HUD's own formats (the shape in alpha or in the one channel): an
+# image in any other (the Custom Edition's DXT and A8R8G8B8 crosshairs) is
+# one additive_alpha may change
+XBOX_HUD_FORMATS = ("a8", "y8", "ay8", "a8y8")
+# the crosshair types that are reticles (aim, zoom overlay); the others are
+# warnings and indicators (no ammo, reload, ...), left as they are
+RETICLE_CROSSHAIR_TYPES = (0, 1)
+
+
+def additive_alpha(img):
+    """a sprite's image (halved, its RGBA channels averaged each on its own:
+    HudExporter.prepare) of an image whose recorded HUD references are all
+    crosshairs that Halo only adds to the screen (additive_crosshairs):
+    each texel's alpha its brightest channel, its colour as it is. Halo
+    adds the overlay's colour times the texels' colour, whatever their
+    alpha, and keeps the whole screen behind; the N64 blends a glow by
+    alpha (n64_hud.c over_color: colour times texels times alpha, plus the
+    screen times one less the alpha), so each sprite texel, drawn as it
+    is, adds the colour Halo adds (unpremultiply; before the sprite's
+    4-bit truncation) and covers the screen behind by that colour's
+    brightest channel. The Custom Edition's crosshairs made opaque black
+    around the shape were black squares, and their lines, stored bright
+    with little alpha, faint"""
+    rgba = img.convert("RGBA")
+    r, g, b, _ = rgba.split()
+    alpha = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    return Image.merge("RGBA", (r, g, b, alpha))
+
+
 def sprite_bytes(path):
     """the memory a sprite loads into, as the game counts it
     (n64_hud.c sprite_bytes): a compressed asset's original size and
@@ -174,13 +203,18 @@ def bleed(img, passes=2):
 
 
 class HudExporter:
-    def __init__(self, xmap, defs, map_name, out_dir, pack_meters=False):
+    def __init__(self, xmap, defs, map_name, out_dir, pack_meters=False, custom=False):
         self.map = xmap
         self.defs = defs
         self.map_name = map_name
         self.out_dir = Path(out_dir)
         # the meter images of PACKED_METER_TEXELS packed too (pack)
         self.pack_meters = pack_meters
+        # the Custom Edition cartridge: additive crosshairs' alpha their
+        # brightest colour channel (additive_crosshairs, additive_alpha)
+        self.custom = custom
+        # the sprite numbers of those images
+        self.additive = set()
         # the Xbox address of an image's bitmap data -> sprite number
         self.sprite_of = {}
         self.count = 0
@@ -198,15 +232,22 @@ class HudExporter:
     def collect(self):
         bitmaps = []
         walker = Walker(self.map, self.defs)
+        # (with custom: a bitmap tag's index -> each HUD field that names it,
+        # its path and address)
+        uses = {}
 
         def on_dependency(tag, address, f, path, group, datum):
             t = self.map.tag(datum)
-            if t is not None and t.group_name == "bitm" and t not in bitmaps:
-                bitmaps.append(t)
+            if t is not None and t.group_name == "bitm":
+                if t not in bitmaps:
+                    bitmaps.append(t)
+                if self.custom:
+                    uses.setdefault(t.index, []).append((path, address))
 
         for tag in self.map.tags:
             if tag.group_name in HUD_GROUPS:
                 walker.walk(tag, on_dependency=on_dependency)
+        additive = self.additive_crosshairs(uses) if self.custom else set()
         # (every bitmap a HUD tag reaches, its images converted or not: convert.py's bitmap_stubs keeps them)
         self.reached = {t.index for t in bitmaps}
         out = self.out_dir / "hud" / f".{self.map_name}"
@@ -236,6 +277,14 @@ class HudExporter:
                 if "meter" in tag.name:
                     img = meter_channels(img, image.format)
                 number = self.count
+                # (not where the sprite, half-size or full-width, is RGBA16
+                # as before or would be after: its 1-bit alpha would drop
+                # every texel whose brightest channel is under half, and a
+                # change to IA8 would drop the hues)
+                if "meter" not in tag.name and tag.index in additive and image.format not in XBOX_HUD_FORMATS and \
+                        all(self.format(self.prepare(img, False, wide, additive=flag), False) != "RGBA16"
+                            for wide in (False, True) for flag in (False, True)):
+                    self.additive.add(number)
                 if img.width * img.height > PACKED_TEXELS:
                     self.large.append((number, img, "meter" in tag.name, self.rectangles(tag, i, img)))
                 elif self.pack_meters and "meter" in tag.name and img.width * img.height >= PACKED_METER_TEXELS:
@@ -243,9 +292,10 @@ class HudExporter:
                 elif "damage_arrows" in tag.name:
                     arrows.append((number, img, False, self.rectangles(tag, i, img)))
                 self.numbers_of.setdefault(tag.index, {})[i] = (number, img, "meter" in tag.name, tag)
-                self.write(img, out / f"{number}.png", "meter" in tag.name)
+                self.write(img, out / f"{number}.png", "meter" in tag.name, additive=number in self.additive)
                 self.names.append(share_file(out / f"{number}.sprite", self.out_dir / "hud", ".sprite"))
-                self.write(img, out / f"{number}w.png", "meter" in tag.name, full_width=True)
+                self.write(img, out / f"{number}w.png", "meter" in tag.name, full_width=True,
+                           additive=number in self.additive)
                 self.wide_names.append(share_file(out / f"{number}w.sprite", self.out_dir / "hud", ".sprite"))
                 self.sprite_of[pointer + i * size] = number
                 self.count += 1
@@ -267,6 +317,39 @@ class HudExporter:
         # set is chosen as before)
         (hud_dir / f"{self.map_name}-wide.list").write_text(
             f"#{self.wide_bytes}\n" + "".join(f"{n}\n" for n in self.wide_names), newline="\n")
+
+    def additive_crosshairs(self, uses):
+        """the bitmaps (tag indices) the HUD tags name only as the bitmaps of
+        reticles (crosshairs of the types RETICLE_CROSSHAIR_TYPES), each
+        overlay of each of those crosshairs with a default and a flashing
+        colour of alpha 0: Halo adds such an overlay to the screen (colour *
+        texels + screen * (1 - alpha * texel alpha), hud_draw.c's
+        alpha-multiply-add; the crosshair's colour is its default, its
+        flashing or one between, hud_weapon.c), and the texels' alpha does not
+        show. The warnings' bitmaps are left as they are: their symbols read
+        better as they were"""
+        cf = {fl.name: o for o, fl in self.defs.fields("WeaponHUDInterfaceCrosshair")}
+        of = {fl.name: o for o, fl in self.defs.fields("WeaponHUDInterfaceCrosshairOverlay")}
+        size = self.defs.size("WeaponHUDInterfaceCrosshairOverlay")
+        found = set()
+        for index, fields in uses.items():
+            if not all(path.endswith(".crosshairs[].crosshair bitmap") for path, _ in fields):
+                continue
+            colors = []
+            for _, address in fields:
+                crosshair = address - cf["crosshair bitmap"]
+                if struct.unpack("<h", self.map.read(crosshair + cf["crosshair type"], 2))[0] \
+                        not in RETICLE_CROSSHAIR_TYPES:
+                    colors = []
+                    break
+                count, pointer = struct.unpack("<iI", self.map.read(crosshair + cf["crosshair overlays"], 8))
+                for k in range(max(count, 0)):
+                    overlay = pointer + k * size
+                    colors += [struct.unpack("<I", self.map.read(overlay + of[name], 4))[0]
+                               for name in ("default color", "flashing color")]
+            if colors and not any(color >> 24 for color in colors):
+                found.add(index)
+        return found
 
     def find_whole(self):
         """the digits' images (the HUD numbers' digits bitmap: the box of its
@@ -361,8 +444,8 @@ class HudExporter:
         # game draws those from the whole image)
         unpacked = {}
         for number, img, meter, boxes in self.large:
-            half = self.prepare(img, meter)
-            wide = self.prepare(img, meter, full_width=True)
+            half = self.prepare(img, meter, additive=number in self.additive)
+            wide = self.prepare(img, meter, full_width=True, additive=number in self.additive)
             fmt = self.format(half, meter)
             for k, box in enumerate(boxes):
                 if self.count >= 256 or len(lines) >= PACKED_SPRITES:  # n64_hud.c MAXIMUM_SPRITES
@@ -402,13 +485,15 @@ class HudExporter:
         (self.out_dir / "hud" / f"{self.map_name}.subs").write_text("".join(lines), newline="\n")
         return len(lines)
 
-    def write(self, img, png, meter, full_width=False):
-        img = self.prepare(img, meter, full_width)
+    def write(self, img, png, meter, full_width=False, additive=False):
+        img = self.prepare(img, meter, full_width, additive)
         self.save(img, png, self.format(img, meter))
 
     @staticmethod
-    def prepare(img, meter, full_width=False):
+    def prepare(img, meter, full_width=False, additive=False):
         img = halve(img.convert("RGBA"), not meter, full_width)
+        if additive:
+            img = additive_alpha(img)
         if not meter:
             img = bleed(unpremultiply(img))
         return img
