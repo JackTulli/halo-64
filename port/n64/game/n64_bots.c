@@ -1744,7 +1744,8 @@ static boolean bot_go_to_vehicle(
 		if (bot->action_timer > 0)
 			bot->action_timer -= step;
 		else if (player->action_result == _player_action_result_enter_vehicle &&
-			player->action_object_index == vehicle_index && player->action_seat_index == bot->goal_seat)
+			player->action_object_index == vehicle_index && player->action_seat_index == bot->goal_seat &&
+			(bot->goal_role == _bot_seat_driver || bot_vehicle_still(vehicle_index)))
 		{
 			*flags |= FLAG(_unit_control_action_bit);
 			bot->action_timer = 20;
