@@ -383,7 +383,23 @@ static unsigned long tile_bytes(unsigned code)
 /* ---------- the models file (tools/n64/models.py) */
 
 #define MODEL_SCALE 1024.0f
+/* The frame matrices: each object's node matrices for the RSP, made once a
+frame (an object seen in several views shares them), three frames' worth
+as the RSP may still read the two before. A frame holds MATRICES_PER_FRAME,
+with a margin over the most measured (PROJECTILES FULL, weapons firing:
+557 with 4 players and 489 with 2, Hang 'Em High with 7 bots; with 1
+player 400, Hang 'Em High with 8 bots, and 387 in Firefight). A game on a
+short heap -- less than SHORT_HEAP free before its level loads, counted as
+with 640 a frame: the PC Expansion's starved maps, where the most measured
+was 195 -- asks for MATRICES_SHORT_HEAP, whatever its players
+(n64_render_set_players). The line is lower than the lighter level's 1 MB
+(n64_render_game.c) by more than the room's 24 KB, so the smaller room
+cannot move a level across it. Past the room a frame has, an object is
+left out of that view (render_object, standin_queue, checked right before
+the matrices are taken): nothing is written past it. */
 #define MATRICES_PER_FRAME 640
+#define MATRICES_SHORT_HEAP 512
+#define SHORT_HEAP (768 * 1024)
 #define FRAMES_IN_FLIGHT 3
 
 struct models_header
@@ -601,7 +617,9 @@ static struct
 	float eye[3], pixels_per_unit;
 	color_t clear_color;
 	T3DMat4FP *matrices[FRAMES_IN_FLIGHT];
-	int matrix_count;
+	int matrix_count, matrix_room;
+	/* between n64_render_frame_begin and n64_render_frame_end */
+	int frame_open;
 	/* the game's local players (n64_render_set_players) */
 	int players;
 	T3DViewport *viewport;
@@ -1861,6 +1879,7 @@ void n64_render_initialize(void)
 		renderer.matrices[i] = malloc_uncached(sizeof(T3DMat4FP) * MATRICES_PER_FRAME);
 		if (!renderer.matrices[i]) n64_fatal("no memory for renderer frame matrices");
 	}
+	renderer.matrix_room = MATRICES_PER_FRAME;
 	rdpq_text_register_font(FONT_BUILTIN_DEBUG_MONO, rdpq_font_load_builtin(FONT_BUILTIN_DEBUG_MONO));
 	/* the models' render modes, recorded now (the debug flags read): made
 	with the first model a game loaded they stayed for good wherever the
@@ -3689,10 +3708,55 @@ static void build_level_groups(void)
 	debugf("n64: level batches in %d groups\n", group_count);
 }
 
+static void forget_converted_matrices(void);
+static void forget_queued_draws(void);
+
 /* the game's local players, before its level loads (load_model's tiers) */
 void n64_render_set_players(int count)
 {
+	/* (the free heap counted as with 640 a frame, whatever room the frames
+	have now: so the matrices' own size cannot change the request; other
+	changes in the free heap still can) */
+	long free_heap = (long)n64_heap_free() -
+		(long)(MATRICES_PER_FRAME - renderer.matrix_room) * (long)sizeof(T3DMat4FP) * FRAMES_IN_FLIGHT;
+	int room = free_heap < SHORT_HEAP ? MATRICES_SHORT_HEAP : MATRICES_PER_FRAME;
+
 	renderer.players = count;
+	/* (the matrices are only resized between frames: the map setup's
+	callers, game_initialize_for_new_map, run there) */
+	assertf(!renderer.frame_open, "n64_render_set_players inside a frame");
+	if (room == renderer.matrix_room)
+		return;
+	/* The frame matrices resized for this game's room before its level
+	loads, each where it is: made again elsewhere, a block could lie in the
+	maps' home's tail, which a later map's image grows back into, and stop
+	that ("no memory to resize map arena: 3072 -> 4471 KB" in ares: PC
+	Expansion, 2 players, Death Island, then Gephyrophobia, Ice Fields and
+	Infinity). Smaller always; larger only where the heap right after each
+	block is free, else the room stays as it is (objects past it left out,
+	as above) */
+	/* (the CPU's draw queues hold matrix pointers: empty between frames,
+	where the map setup calls this, and emptied here all the same; the RSP
+	waited for, which may still read the frames before -- in the bytes a
+	smaller room gives back -- and whose deferred frees then run, before the
+	heap after the blocks is checked) */
+	forget_queued_draws();
+	rspq_wait();
+	for (int i = 0; room > renderer.matrix_room && i < FRAMES_IN_FLIGHT; i++)
+		if (!n64_uncached_block_grows(renderer.matrices[i], sizeof(T3DMat4FP) * room))
+		{
+			debugf("n64: frame matrices: room for %d a frame, not %d (the heap after them in use)\n",
+				renderer.matrix_room, room);
+			return;
+		}
+	debugf("n64: frame matrices: room for %d a frame (was %d), %ld KB free counted as with 640\n", room,
+		renderer.matrix_room, free_heap / 1024);
+	for (int i = 0; i < FRAMES_IN_FLIGHT; i++)
+		n64_uncached_block_resize(renderer.matrices[i], sizeof(T3DMat4FP) * renderer.matrix_room,
+			sizeof(T3DMat4FP) * room);
+	renderer.matrix_room = room;
+	renderer.matrix_count = 0;
+	forget_converted_matrices();
 }
 
 int n64_render_load_level(const char *map_name, int low)
@@ -3966,6 +4030,7 @@ void n64_render_frame_begin(void)
 {
 	unsigned long before_display = TICKS_READ();
 
+	renderer.frame_open = 1;
 	renderer.chunky = renderer.want_chunky;
 	renderer.unstretched = 0;
 	/* the uncached blocks' reserve, if a block took it: room made for it
@@ -5328,6 +5393,13 @@ static struct converted_matrices
 	T3DMat4FP *matrices;
 } converted[CONVERTED_SLOTS];
 
+/* the frame matrices resized (n64_render_set_players): no entry left
+pointing into the room they had */
+static void forget_converted_matrices(void)
+{
+	memset(converted, 0, sizeof(converted));
+}
+
 /* (render_object's culling passed: the object is in the view) */
 static int object_in_view;
 
@@ -5587,6 +5659,16 @@ static struct
 	uint16_t model, generation;
 } standin_pending[STANDIN_QUEUE];
 static int standin_pending_count;
+
+/* the CPU's draw queues emptied without drawing them (n64_render_set_players,
+before the frame matrices they point into are resized) */
+static void forget_queued_draws(void)
+{
+	queued_count = 0;
+	standin_queued_count = 0;
+	standin_pending_count = 0;
+	standin_pending_lost = 0;
+}
 static void standin_flush(void);
 
 static unsigned long display_own_blocks(void)
@@ -5837,7 +5919,7 @@ static int standin_queue(const struct n64_object *object)
 	int nodes = 0;
 	uint32_t chosen = standin_parts(object, type, &nodes);
 
-	if (!chosen || renderer.matrix_count + nodes > MATRICES_PER_FRAME)
+	if (!chosen || renderer.matrix_count + nodes > renderer.matrix_room)
 		return 0;
 	/* (a full queue drawn first, with the models queued before it: in a
 	flush, the models are drawn already) */
@@ -5847,6 +5929,10 @@ static int standin_queue(const struct n64_object *object)
 			standin_flush();
 		else
 			flush_draws();
+		/* (the flush may have queued the pending stand-ins, whose matrices
+		count: the room checked again) */
+		if (renderer.matrix_count + nodes > renderer.matrix_room)
+			return 0;
 	}
 	T3DMat4FP *matrices = renderer.matrices[renderer.frame_index % FRAMES_IN_FLIGHT] + renderer.matrix_count;
 
@@ -6077,7 +6163,7 @@ static void render_object(const struct n64_object *object)
 	object_in_view = 1;
 	node_count = object->node_count < model->node_count ? object->node_count : model->node_count;
 	standin_queueing = NULL;
-	if (node_count <= 0 || renderer.matrix_count + model->node_count > MATRICES_PER_FRAME)
+	if (node_count <= 0 || renderer.matrix_count + model->node_count > renderer.matrix_room)
 		return;
 	/* (the view models kept: the weapon, not the arms, n64_render_game.c;
 	on the PC Expansion cartridge only the arms rank with decoration in a
@@ -6135,6 +6221,11 @@ static void render_object(const struct n64_object *object)
 			standin_queue(object);
 		return;
 	}
+	/* (load_model's push-out may have flushed the queued draws, and the
+	flush queued the pending stand-ins, whose matrices count: the room
+	checked again, as above, before this object's draws are kept pending) */
+	if (renderer.matrix_count + model->node_count > renderer.matrix_room)
+		return;
 #ifdef HALO_N64_PC_EXPANSION
 	/* (an obstacle whose model the tiers' push-out may yet drop in this
 	frame, load_model) */
@@ -6401,6 +6492,7 @@ void n64_profile_poll(void);
 
 void n64_render_frame_end(void)
 {
+	renderer.frame_open = 0;
 	n64_sound_poll();
 	/* (measuring, "debug_fog_test=5": each frame's counts) */
 	if (debug_fog_test == 5)

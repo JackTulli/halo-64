@@ -628,6 +628,32 @@ void *n64_uncached_block(int align, unsigned long size, int reserve)
 	return reserve ? heap_uncached_or_reserve(align, size) : heap_uncached(align, size);
 }
 
+/* whether a heap block of heap_uncached's, at 16 bytes' alignment, can be
+made size bytes where it is (n64_uncached_block_resize): smaller always,
+larger where the chunk after it is free and big enough */
+int n64_uncached_block_grows(void *block, unsigned long size)
+{
+	return n64_heap_grows_in_place(CachedAddr(block), n64_heap_uncached_asked(16, size));
+}
+
+/* such a block, size bytes now, made new_size bytes where it is (realloc
+in place: smaller always; larger only where n64_uncached_block_grows says
+so). The bytes it gains are taken out of the data cache, as heap_uncached's
+are: they can hold the lines of what was there before, which written back
+later would land on what the block's uncached writes put there */
+void n64_uncached_block_resize(void *block, unsigned long size, unsigned long new_size)
+{
+	uint8_t *cached = CachedAddr(block), *resized;
+
+	size = (size + 15) & ~15UL;
+	new_size = (new_size + 15) & ~15UL;
+	resized = (realloc)(cached, n64_heap_uncached_asked(16, new_size));
+	if (resized != cached)
+		n64_fatal("an uncached block moved while resized");
+	if (new_size > size)
+		data_cache_hit_invalidate(resized + size, new_size - size);
+}
+
 /* the reserve taken (again); the number of times it was spent, so far */
 int n64_uncached_reserve_take(void)
 {

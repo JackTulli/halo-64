@@ -56,6 +56,10 @@ unsigned long n64_heap_describe(char *text, unsigned long size);
 int n64_heap_pieces(unsigned long *sizes, int max, unsigned long least);
 unsigned long n64_heap_top(char **start);
 void *n64_uncached_block(int align, unsigned long size, int reserve);
+/* such a block from the heap (malloc_uncached's too) resized where it is:
+whether it can grow to size bytes there, and the resize (n64_main.c) */
+int n64_uncached_block_grows(void *block, unsigned long size);
+void n64_uncached_block_resize(void *block, unsigned long size, unsigned long new_size);
 int n64_heap_has(unsigned long size);
 /* n64_heap_has and n64_heap_free without the bytes the map gave the heap
 (n64_map_given) */
