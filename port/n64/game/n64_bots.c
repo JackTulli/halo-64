@@ -271,12 +271,18 @@ struct bot
 	/* the way its vehicle drove since its last stuck check (its
 	horizontal speed over its thoughts) */
 	real drive_path;
+	/* in a seat: the vehicle's kind and the seat's role, worked out when
+	it sat in that seat of that vehicle (seat_vehicle, seat_index); its
+	gun's way of firing (vehicle_guns), worked out when its gun
+	(seat_weapon) changes */
+	short seat_kind, seat_gun, seat_index;
+	long seat_vehicle, seat_weapon;
 };
 
 /* New LOD fields extend the old prefix; read diagnostic stride from DWARF.
 (The vehicles' fields come after the rest: the stride grows, the old offsets
 stay.) */
-typedef char n64_bot_observer_stride[sizeof(struct bot) == 376 ? 1 : -1];
+typedef char n64_bot_observer_stride[sizeof(struct bot) == 392 ? 1 : -1];
 typedef char n64_bot_observer_ghost_offset[offsetof(struct bot, ghost_profile) == 246 ? 1 : -1];
 
 static struct
@@ -1814,19 +1820,39 @@ static boolean bot_seat_kept(
 	struct unit_datum *unit,
 	long vehicle_index)
 {
-	short role = bot_seat_role(vehicle_index, unit->unit.parent_seat_index);
-	short kind = bot_vehicle_kind(vehicle_index);
+	/* (the vehicle's kind and the seat's role once, as it sits in that seat
+	of that vehicle: neither changes while it sits there) */
+	boolean const same_seat = bot->seat_role != _bot_seat_none && vehicle_index == bot->seat_vehicle &&
+		unit->unit.parent_seat_index == bot->seat_index;
+	short kind = same_seat ? bot->seat_kind : bot_vehicle_kind(vehicle_index);
+	short role = same_seat ? bot->seat_role : kind == _bot_vehicle_none ? _bot_seat_none :
+		bot_seat_role(vehicle_index, unit->unit.parent_seat_index);
+	long gun;
 
 	if (kind == _bot_vehicle_none || role == _bot_seat_none ||
 		(role != _bot_seat_driver && !game_engine_has_teams()))
 	{
 		return FALSE;
 	}
-	if (bot->seat_role != role)
+	/* (its gun's way of firing, again whenever its gun changes: rockets and
+	the Scorpion's cannon pressed, never up close; the Ghost's held, near;
+	a chain gun held) */
+	gun = unit_inventory_get_weapon(vehicle_index, unit_get(vehicle_index)->unit.current_weapon_index);
+	if (!same_seat || gun != bot->seat_weapon)
+	{
+		bot->seat_weapon = gun;
+		bot->seat_gun = (short)(gun == NONE ? NONE : kind == _bot_vehicle_tank ||
+			strstr(tag_get_name(object_get(vehicle_index)->definition_index), "rwarthog") ||
+			strstr(tag_get_name(object_get(gun)->definition_index), "rocket") ? 2 : kind == _bot_vehicle_scout ? 1 : 0);
+	}
+	if (!same_seat)
 	{
 		bot->seat_role = role;
 		bot->sight_timer = 0;
 		bot->action_timer = 0;
+		bot->seat_kind = kind;
+		bot->seat_vehicle = vehicle_index;
+		bot->seat_index = unit->unit.parent_seat_index;
 		bot->goal_vehicle = NONE;
 		bot->goal_weapon = NONE;
 		bot->upset_ticks = bot->reach_ticks = 0;
@@ -2266,9 +2292,10 @@ static void think(
 	if (vehicle_index == NONE)
 	{
 		bot->seat_role = _bot_seat_none;
+		bot->seat_vehicle = NONE;
 	}
 	else
-		kind = bot_vehicle_kind(vehicle_index);
+		kind = bot->seat_kind;
 
 	/* its gun: a gunner's, a Ghost's or a Scorpion's driver's is the
 	vehicle's (units.c gives the vehicle its gunner's aim and trigger); a
@@ -2278,14 +2305,7 @@ static void think(
 		vehicle_gun = bot->seat_role == _bot_seat_gunner || kind != _bot_vehicle_jeep;
 		current_weapon = vehicle_gun ?
 			unit_inventory_get_weapon(vehicle_index, unit_get(vehicle_index)->unit.current_weapon_index) : NONE;
-		weapon = &unarmed;
-		if (current_weapon != NONE)
-		{
-			weapon = &vehicle_guns[kind == _bot_vehicle_tank ||
-				strstr(tag_get_name(object_get(vehicle_index)->definition_index), "rwarthog") ||
-				strstr(tag_get_name(object_get(current_weapon)->definition_index), "rocket") ? 2 :
-				kind == _bot_vehicle_scout ? 1 : 0];
-		}
+		weapon = current_weapon != NONE && bot->seat_gun != NONE ? &vehicle_guns[bot->seat_gun] : &unarmed;
 	}
 	else
 	{
