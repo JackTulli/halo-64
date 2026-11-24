@@ -5847,6 +5847,10 @@ static int standin_queue(const struct n64_object *object)
 			standin_flush();
 		else
 			flush_draws();
+		/* (the flush may have queued the pending stand-ins, whose matrices
+		count: the room checked again) */
+		if (renderer.matrix_count + nodes > MATRICES_PER_FRAME)
+			return 0;
 	}
 	T3DMat4FP *matrices = renderer.matrices[renderer.frame_index % FRAMES_IN_FLIGHT] + renderer.matrix_count;
 
@@ -6135,6 +6139,11 @@ static void render_object(const struct n64_object *object)
 			standin_queue(object);
 		return;
 	}
+	/* (load_model's push-out may have flushed the queued draws, and the
+	flush queued the pending stand-ins, whose matrices count: the room
+	checked again, as above, before this object's draws are kept pending) */
+	if (renderer.matrix_count + model->node_count > MATRICES_PER_FRAME)
+		return;
 #ifdef HALO_N64_PC_EXPANSION
 	/* (an obstacle whose model the tiers' push-out may yet drop in this
 	frame, load_model) */
