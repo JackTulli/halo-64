@@ -412,8 +412,15 @@ class ModelConverter:
             # (a Custom Edition map's: no bump map, nothing to cut -- custom)
             if self.custom and bump == 0xFFFFFFFF:
                 env_flags &= ~1
+            scale = struct.unpack("<f", self.map.read(tag.address + so["bump map scale"], 4))[0] or 1.0
+            # (a Custom Edition map's: a flat base map, the picture in the
+            # primary detail map -- Area 54's masks -- composed as Halo draws
+            # an object's environment shader)
+            if self.custom:
+                texture = self.flat_base_detail_texture(tag, base, bump if env_flags & 1 else None, scale)
+                if texture is not None:
+                    return texture, MATERIAL_ALPHA_TEST if env_flags & 1 else 0, None
             if env_flags & 1:
-                scale = struct.unpack("<f", self.map.read(tag.address + so["bump map scale"], 4))[0] or 1.0
                 texture = self.chosen_texture(base, True, (bump, scale))
                 if texture is not None:
                     return texture, MATERIAL_ALPHA_TEST, None
@@ -493,6 +500,86 @@ class ModelConverter:
         dithered more (level.py write_texture, dither.py)"""
         choice = self.object_choice(base)
         return choice is not None and choice.option == "ci4-64x64" and choice.dither
+
+    def flat_base_detail_texture(self, tag, base, bump, bump_scale):
+        """the texture of an object's environment shader (tag) whose base
+        map is one flat colour and whose picture is in its primary detail
+        map (Area 54's masks: a white base, the face in the detail map and
+        in the bump map's alpha), composed as Halo draws an object's
+        environment shader (rasterizer_xbox_models.c,
+        rasterizer_model_draw_environment_shader: the base map and the
+        primary detail map by the detail function -- double/biased multiply
+        2 x base x detail, clamped; multiply base x detail; double/biased
+        add base + 2 x detail - 1 -- the alpha test on the bump map's
+        alpha), with the base's mean colour, on a square of the detail map's
+        largest side (at least 64). Cut out by the bump map's alpha (bump:
+        environment_alpha) where the shader is alpha tested. None, to draw
+        it as before, unless the base map has no texture picker's choice of
+        another format and is flat (each RGB channel's spread at most 8, as
+        read at 64 texels a side), the primary detail map decodes and lies
+        on the base map's texels (scale 1), and an alpha-tested shader's
+        bump map has an image"""
+        key = ("flat-base-detail", tag.index)
+        if key in self.textures.texture_by_bitmap:
+            return self.textures.texture_by_bitmap[key]
+        self.textures.texture_by_bitmap[key] = None
+        so = self.f("ShaderEnvironment")
+        read = lambda field, fmt: struct.unpack(fmt, self.map.read(tag.address + so[field], struct.calcsize(fmt)))[0]
+
+        def image(datum, size):
+            bitmap = self.map.tag(datum) if datum != 0xFFFFFFFF else None
+            images = bitmap_images(self.map, bitmap, self.defs) if bitmap is not None else []
+            try:
+                return decode(self.map, images[0], size).convert("RGBA") if images else None
+            except (ValueError, OSError):
+                return None
+
+        # (a texture picker's choice of another format for the base keeps
+        # its own path)
+        choice = self.object_choice(base)
+        if choice is not None and choice[0] != "ci4-64x64":
+            return None
+        base_img = image(base, 64)
+        if base_img is None or max(hi - lo for lo, hi in base_img.convert("RGB").getextrema()) > 8:
+            return None
+        if read("primary detail map scale", "<f") != 1.0:
+            return None
+        detail = image(struct.unpack("<I", self.map.read(tag.address + so["primary detail map"] + 12, 4))[0], 256)
+        if detail is None:
+            return None
+        if bump is not None:
+            bump_tag = self.map.tag(bump)
+            if bump_tag is None or not bitmap_images(self.map, bump_tag, self.defs):
+                return None
+        # (on a square of the detail map's largest side, at least the 64
+        # texels a side the base map's cut-out had: write_texture keeps the
+        # aspect, so neither the detail nor the bump map's shape is written
+        # coarser than before)
+        side = max(64, detail.width, detail.height)
+        size = (side, side)
+        primary = detail.convert("RGB").resize(size, Image.BILINEAR)
+        colour = [sum(c.getdata()) / (c.width * c.height) / 255.0 for c in base_img.convert("RGB").split()]
+        function = read("detail map function", "<H")
+        out = []
+        for p in primary.getdata():
+            texel = []
+            for k in range(3):
+                d = p[k] / 255.0
+                v = 2.0 * colour[k] * d if function == 0 else colour[k] * d if function == 1 else \
+                    colour[k] + 2.0 * d - 1.0
+                texel.append(max(0, min(255, round(v * 255))))
+            out.append(tuple(texel) + (255,))
+        img = Image.new("RGBA", size)
+        img.putdata(out)
+        name = self.map.tag(base).name
+        dither = self.colours_dithered(base)
+        if bump is not None:
+            img = self.textures.environment_alpha(img, bump, bump_scale)
+            texture = self.textures.write_texture(img, name, cutout=True, dither=dither)
+        else:
+            texture = self.textures.write_texture(img, name, dither=dither)
+        self.textures.texture_by_bitmap[key] = texture
+        return texture
 
     def chosen_texture(self, base, cutout, alpha_source, player_colour=False):
         """an object texture in the format the texture picker chose for it
