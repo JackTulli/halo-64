@@ -28,6 +28,7 @@ PC with a SummerCart64.
     # a cartridge of Halo: Custom Edition maps (also requires Xbox data):
     python3 -m tools.n64.rombuilder <Xbox maps> -o <folder> --custom-edition
         <CE map or .zip of one>... [--ce-tools <Invader's tools and ogg2wav>]
+        [--pc-source <retail PC ISO or Maps folder>: its shared bitmaps]
 
 The Custom Edition maps are made Xbox maps first (tools/n64/ce_prepare.py,
 with Invader's tools: tools/n64/invader_lite), then converted as the others
@@ -612,11 +613,59 @@ class RomBuilder:
                 raise BuildError("PC preparation returned a path outside its work folder")
         shutil.copy2(self.pc_maps.parent / "manifest.json", self.receipts / "pc-normalization.json")
 
+    def stage_pc_bitmaps(self):
+        """the retail Halo PC maps whose tags hold Custom Edition's shared
+        bitmaps that no Xbox map has (ce_prepare.py's PC_ORDER) and
+        bitmaps.map (their pixels), staged for ce_prepare.py (--pc-maps)
+        when the PC data was given: the folder, else None -- those bitmaps
+        then keep their stand-ins (most white), and the log says why. Each
+        file is checked and copied on its own: one that fails is left out
+        (the log says why), and the others serve. sounds.map is left out
+        (Invader would hold it in memory too)"""
+        if not self.pc_source:
+            self.log("no Halo PC data given: Custom Edition's shared bitmaps that no Xbox map has keep their stand-ins "
+                     "(most white)")
+            return None
+        from .ce_prepare import PC_ORDER
+        from .pc_input import PCMapSource
+        folder = self.input_stage / "pc-bitmaps"
+        staged, left_out = [], []
+        try:
+            source = PCMapSource(self.pc_source)
+            try:
+                available = set(source.names())
+                for name in ("bitmaps", *PC_ORDER):
+                    if name not in available:
+                        left_out.append(f"{name}.map: not there")
+                        continue
+                    try:
+                        source.provide([name], folder, lambda *_: self.check_cancel())
+                        staged.append(name)
+                    except (ValueError, OSError) as error:
+                        left_out.append(f"{name}.map: {error}")
+            finally:
+                source.close()
+            if "bitmaps" not in staged or len(staged) == 1:
+                raise ValueError("no usable bitmaps.map, or none of " + ", ".join(f"{name}.map" for name in PC_ORDER) +
+                                 " (" + "; ".join(left_out) + ")")
+            if left_out:
+                self.log("the Halo PC data's files left out (" + "; ".join(left_out) + "): the Custom Edition maps' "
+                         "shared bitmaps only those have keep their stand-ins (most white)")
+        except (ValueError, OSError) as error:
+            shutil.rmtree(folder, ignore_errors=True)
+            self.log(f"the Halo PC data is not used for the Custom Edition maps ({error})")
+            self.notes.append("The Halo PC data could not be used for the Custom Edition cartridge (the log has the "
+                              "reason): its shared textures that no Xbox map has keep their stand-ins (most are white)")
+            return None
+        return folder
+
     def prepare_custom(self, maps):
         """the Custom Edition maps made Xbox maps (ce_prepare.py, a few at a
         time), in one folder with a30.map beside them (Firefight's Covenant,
         convert.py)"""
         from .ce_prepare import cartridge_name, read_ce_map
+        pc_maps = self.stage_pc_bitmaps()
+        pc_arguments = ["--pc-maps", str(pc_maps)] if pc_maps is not None else []
         inputs = []
         unpacked = self.input_stage / "ce-input"
         for path in self.custom_inputs:
@@ -639,7 +688,8 @@ class RomBuilder:
             names.append(name)
             work = self.input_stage / "ce-preparation" / name
             tasks.append((f"Making {path.name} an Xbox map", "ce_prepare",
-                          [str(path), "--xbox-maps", str(maps), "--tools", str(self.ce_tools), "--work", str(work),
+                          [str(path), "--xbox-maps", str(maps), *pc_arguments, "--tools", str(self.ce_tools),
+                           "--work", str(work),
                            "--name", name], WEIGHTS["ce map"]))
         failed = self.run_parallel(tasks, keep_going=True)
         for (text, _, arguments, _), error in failed:
@@ -1083,7 +1133,8 @@ def main():
     parser.add_argument("--campaign", action="store_true")
     parser.add_argument("--online", action="store_true", help="Halo 64 Online's cartridge (halo-online.z64)")
     parser.add_argument("--pc-expansion", action="store_true", help="separate 19-map PC expansion cartridge")
-    parser.add_argument("--pc-source", type=Path, help="your PC retail ISO or installed maps folder (PC expansion only)")
+    parser.add_argument("--pc-source", type=Path, help="your PC retail ISO or installed maps folder (the PC expansion; "
+                        "the Custom Edition cartridge's shared bitmaps that no Xbox map has)")
     parser.add_argument("--pc-tools", type=Path, help="trusted local Invader and FFmpeg tools (source runs only)")
     parser.add_argument("--custom-edition", type=Path, nargs="+", metavar="MAP",
                         help="a cartridge of these Halo Custom Edition maps (.map, or .zip files of them)")
