@@ -172,7 +172,14 @@ struct path_state
 	short node_count;
 	struct path_node node_list[PATH_NODE_LIST_SIZE];
 	short heap_count;
+#ifdef HALO_N64
+	/* (path_heap_insert adds an entry only at an index below
+	PATH_NODE_LIST_SIZE, and the heap starts at 1: it uses entries 1 to 511,
+	2 KB less than heap[1025]) */
+	struct path_heap_element heap[PATH_NODE_LIST_SIZE];
+#else
 	struct path_heap_element heap[1025];
+#endif
 	short hash_table[PATH_HASH_TABLE_SIZE];
 };
 
