@@ -219,7 +219,8 @@ class App:
         ttk.Label(self.pc_panel, text="Your Halo: Combat Evolved for PC", style="Section.TLabel").grid(
             row=0, column=0, sticky="w")
         ttk.Label(self.pc_panel, text="Choose a PC retail ISO with loose maps, or the installed game's maps folder. "
-                  "Installer-only discs: install your copy first, then choose its maps folder.",
+                  "Installer-only discs: install your copy first, then choose its maps folder. The Custom Edition "
+                  "cartridge, when the PC data is given, takes from it the shared textures no Xbox map has.",
                   style="Small.TLabel", wraplength=630).grid(row=1, column=0, sticky="w", pady=(2, 6))
         pc_buttons = ttk.Frame(self.pc_panel)
         pc_buttons.grid(row=2, column=0, sticky="w")
@@ -341,7 +342,7 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.close)
         if self.settings.get("source") and Path(self.settings["source"]).exists():
             self.set_source(self.settings["source"], quiet=True)
-        if self.settings.get("pc_source") and self.choice["pc_expansion"].get():
+        if self.settings.get("pc_source") and (self.choice["pc_expansion"].get() or self.choice["custom"].get()):
             self.set_pc_source(self.settings["pc_source"], quiet=True)
         self.root.after(100, self.poll)
 
@@ -419,7 +420,9 @@ class App:
             return
         shown = 0
         for key, panel in (("pc_expansion", self.pc_panel), ("custom", self.custom_panel)):
-            if self.choice[key].get():
+            # (the PC data is optional for the Custom Edition cartridge: its
+            # shared textures no Xbox map has)
+            if self.choice[key].get() or (key == "pc_expansion" and self.choice["custom"].get()):
                 panel.grid()
                 shown += 1
             else:
@@ -561,7 +564,12 @@ class App:
             source = PCMapSource(path)
             try:
                 source.validate([*PC_MAPS, "ui"])
-                description = f"{Path(path).name}: {len(source.names())} PC maps"
+                names = source.names()
+                description = f"{Path(path).name}: {len(names)} PC maps"
+                if "bitmaps" not in names:
+                    # (not required for the PC expansion; the Custom Edition
+                    # cartridge takes its shared textures from it)
+                    description += "; no bitmaps.map: the Custom Edition cartridge keeps its stand-in textures"
             finally:
                 source.close()
         except (ValueError, OSError) as error:
@@ -618,7 +626,8 @@ class App:
         self.build_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
         self.started = time.time()
-        self.builder_thread = threading.Thread(target=self.run_build, args=(self.source, output, cartridges, self.pc_source if "pc_expansion" in cartridges else None,
+        pc_source = self.pc_source if {"pc_expansion", "custom"} & set(cartridges) else None
+        self.builder_thread = threading.Thread(target=self.run_build, args=(self.source, output, cartridges, pc_source,
                                                      self.pc_tools.get().strip() or None,
                                                      list(self.custom_maps) if "custom" in cartridges else None,
                                                      self.ce_tools.get().strip() or None),

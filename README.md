@@ -114,6 +114,8 @@ is first made an Xbox map (`tools/n64/ce_prepare.py`, with Invader's tools:
 Xbox disc is still needed. What only Custom Edition has is stood in for:
 the rocket warthog and the PC weapons take the nearest Xbox textures and
 sounds, other missing pictures are white and other missing sounds silent.
+With your Halo PC data (the PC panel, `--pc-source`), the shared pictures
+that no Xbox map has come from it instead.
 Maps their authors protected against being taken apart can't be converted,
 and the builder says so. Big maps fill the cartridge quickly: the builder
 stops if the ROM would pass 64 MB.

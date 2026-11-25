@@ -6,7 +6,7 @@ Run the existing window from the repository root with Python 3.11 or newer:
 python -m tools.n64.rombuilder_main
 ```
 
-The normal Xbox source and Multiplayer/Campaign selections are unchanged. Tick **PC expansion (optional)** to reveal its PC source controls. This creates `halo-pc-expansion.z64` separately from `halo-n64.z64` and `halo-campaign.z64`. Select your installed retail Halo PC `Maps` folder, its parent game folder, or an ISO9660 disc containing loose map files. PC Custom Edition caches and Xbox caches are rejected in the PC field. PC inputs are never read for a vanilla-only build.
+The normal Xbox source and Multiplayer/Campaign selections are unchanged. Tick **PC expansion (optional)** to reveal its PC source controls. This creates `halo-pc-expansion.z64` separately from `halo-n64.z64` and `halo-campaign.z64`. Ticking **Custom Edition maps** shows them too: given the PC data, the Custom Edition cartridge takes from it the shared textures that no Xbox map has (from `bitmaps.map`, `ui.map` and the six expansion maps). Select your installed retail Halo PC `Maps` folder, its parent game folder, or an ISO9660 disc containing loose map files. PC Custom Edition caches and Xbox caches are rejected in the PC field. PC inputs are never read for a vanilla-only build.
 
 A packed CAB/MSI installer disc cannot be used directly: install your own copy with its normal installer separately, then select its installed `Maps` folder. ROM Builder never runs autorun, MSI, setup executables or scripts from selected media. A loose-map ISO is read without mounting it. Only ISO9660 primary names are supported; unsupported layouts give an installed-folder fallback.
 

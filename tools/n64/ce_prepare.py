@@ -9,9 +9,13 @@ its own:
 2. its tags whose data live in Custom Edition's shared resource maps
    (bitmaps.map, sounds.map, loc.map: not needed here) are taken from the
    Xbox maps' tags of the same names (the multiplayer maps first, then the
-   menu's and a30's): Custom Edition's are mostly the Xbox game's own;
+   menu's and a30's): Custom Edition's are mostly the Xbox game's own; the
+   bitmaps among them that no Xbox map has, from the retail Halo PC maps'
+   tags of the same names (--pc-maps, when given: ui.map and the six
+   expansion maps, PC_ORDER, their pixels in the retail bitmaps.map beside
+   them);
 3. invader-extract: the Xbox build's menu tags (bloodgulch.map's), the
-   map's own tags, those of step 2;
+   map's own tags, those of step 2 (the Xbox maps' first);
 4. the PC maps' normalization (pc_prepare.py): models and chicago shaders
    made the Xbox's kinds, bludgeoned indices, HUD scales, Vorbis sounds made
    16-bit PCM (decoded by ogg2wav, tools/n64/invader_lite, or ffmpeg);
@@ -23,6 +27,7 @@ its own:
    build run again.
 
     python3 -m tools.n64.ce_prepare <map> --xbox-maps <folder> --tools <folder> --work <folder> [--name <name>]
+        [--pc-maps <folder>]
 
 writes <work>/<map's workspace>/maps/<name>.map and <work>/result.json (the
 map, its cartridge name, the menu's name for it). Only the explicitly given
@@ -56,6 +61,11 @@ RESOURCE_EXTENSIONS = {"bitm": "bitmap", "snd!": "sound", "ustr": "unicode_strin
 XBOX_ORDER = ("bloodgulch", "beavercreek", "boardingaction", "carousel", "chillout", "damnation", "hangemhigh",
               "longest", "prisoner", "putput", "ratrace", "sidewinder", "wizard", "ui", "a30", "a10", "a50", "b30",
               "b40", "c10", "c20", "c40", "d20", "d40")
+# where the retail Halo PC tags of the shared bitmaps no Xbox map has are
+# looked for, in order (their pixels are in the retail bitmaps.map beside
+# them; every such bitmap of the Custom Edition maps tried is in one of them)
+PC_ORDER = ("ui", "dangercanyon", "deathisland", "gephyrophobia", "icefields", "infinity", "timberland")
+PC_VERSION = 7
 # the Xbox build's menu tags (invader-build -g xbox-ntsc imports them), taken
 # first so that a Custom Edition map's PC menus never replace them
 XBOX_UI = ("ui/shell/multiplayer.ui_widget_collection", "ui/shell/bitmaps/white.bitmap",
@@ -249,8 +259,41 @@ def xbox_tag_names(path):
     return names
 
 
-def resource_sources(tags, xbox_maps, log):
-    """{(group, name): Xbox map} for the map's resource tags"""
+def pc_tag_names(path):
+    """the (group, name) pairs of a retail Halo PC map's tags (cache version
+    7), bounds checked (it is the player's file)"""
+    path = Path(path)
+    if path.is_symlink() or not path.is_file() or not 0x800 < path.stat().st_size <= _MAX_MAP:
+        raise CEPrepareError(f"{path.name} is not a Halo map file")
+    size = path.stat().st_size
+    with path.open("rb") as stream:
+        header = stream.read(0x800)
+        if header[:4] != b"daeh" or header[-4:] != b"toof" or struct.unpack_from("<I", header, 4)[0] != PC_VERSION:
+            raise CEPrepareError(f"{path.name} is not a retail Halo PC map")
+        offset, length = struct.unpack_from("<II", header, 0x10)
+        if offset < 0x800 or length < 40 or offset + length > size:
+            raise CEPrepareError(f"{path.name} has invalid tag data bounds")
+        stream.seek(offset)
+        data = stream.read(length)
+    array, _, _, count = struct.unpack_from("<IIII", data, 0)
+    first = array - CE_TAG_BASE
+    if not 0 < count <= 65535 or first < 0 or first + count * 32 > len(data):
+        raise CEPrepareError(f"{path.name} has an invalid tag table")
+    names = set()
+    for i in range(count):
+        group, _, _, _, name_pointer = struct.unpack_from("<4s4s4sII", data, first + i * 32)
+        start = name_pointer - CE_TAG_BASE
+        end = data.find(b"\0", start) if 0 <= start < len(data) else -1
+        if end < 0 or end - start > 255:
+            raise CEPrepareError(f"{path.name} has an invalid tag name")
+        names.add((group[::-1].decode("latin1"), data[start:end].decode("latin1")))
+    return names
+
+
+def resource_sources(tags, xbox_maps, log, pc_maps=None):
+    """where the map's resource tags come from: {(group, name): Xbox map},
+    and {(group, name): retail PC map} for the bitmaps among them that no
+    Xbox map has (looked for only with pc_maps)"""
     wanted = {(g, n) for g, n, indexed in tags if indexed and g in RESOURCE_EXTENSIONS}
     found = {}
     for name in XBOX_ORDER:
@@ -264,17 +307,36 @@ def resource_sources(tags, xbox_maps, log):
             if tag in names:
                 found[tag] = path
     log(f"{len(found)} of {len(wanted)} shared Custom Edition tags found in the Xbox maps")
-    return found
+    bitmaps = {tag for tag in wanted - found.keys() if tag[0] == "bitm"}
+    from_pc = {}
+    if pc_maps is not None and bitmaps:
+        left = set(bitmaps)
+        for name in PC_ORDER:
+            path = pc_maps / f"{name}.map"
+            if not left:
+                break
+            if not path.is_file():
+                continue
+            try:
+                names = pc_tag_names(path)
+            except (CEPrepareError, OSError, struct.error) as error:
+                log(f"{name}.map of the Halo PC maps not used: {error}")
+                continue
+            for tag in left & names:
+                from_pc[tag] = path
+            left -= names
+        log(f"{len(bitmaps) - len(left)} of the {len(bitmaps)} other shared bitmaps found in the Halo PC maps")
+    return found, from_pc
 
 
 def tag_file(name, group):
     return name.replace("\\", "/") + "." + RESOURCE_EXTENSIONS[group]
 
 
-def extract(space, ce_map, xbox_maps, found):
-    def queries(map_path, names):
+def extract(space, ce_map, xbox_maps, found, from_pc=None, pc_maps=None, log=print):
+    def queries(map_path, names, *more):
         for i in range(0, len(names), 60):
-            args = ["-t", space.tags, "-r"]
+            args = ["-t", space.tags, "-r", *more]
             for query in names[i:i + 60]:
                 args += ["-s", query]
             space.invoke("extract", *args, map_path)
@@ -286,6 +348,17 @@ def extract(space, ce_map, xbox_maps, found):
         by_map.setdefault(path, []).append(tag_file(name, group))
     for path, names in by_map.items():
         queries(path, sorted(names))
+    # (from_pc's, from the retail PC maps, after the Xbox maps', never over
+    # them: their pixels from bitmaps.map, -m. A failure leaves those not
+    # extracted to the stand-ins, as without the PC maps)
+    by_pc = {}
+    for (group, name), path in (from_pc or {}).items():
+        by_pc.setdefault(path, []).append(tag_file(name, group))
+    for path, names in by_pc.items():
+        try:
+            queries(path, sorted(names), "-m", pc_maps)
+        except CEPrepareError as error:
+            log(f"the bitmaps of {path.name} (Halo PC) not extracted: {str(error).splitlines()[0]}")
 
 
 def apply_standins(space):
@@ -759,9 +832,15 @@ def repair(space, flat, log):
     return False
 
 
-def prepare_ce_map(ce_map, xbox_maps, tools, work, name=None, log=print):
-    """one Custom Edition map made an Xbox map: {"map", "name", "display"}"""
+def prepare_ce_map(ce_map, xbox_maps, tools, work, name=None, log=print, pc_maps=None):
+    """one Custom Edition map made an Xbox map: {"map", "name", "display"}
+    (pc_maps: the retail Halo PC maps of PC_ORDER and bitmaps.map, for the
+    shared bitmaps no Xbox map has)"""
     ce_map, xbox_maps, work = (Path(p).expanduser().resolve() for p in (ce_map, xbox_maps, work))
+    if pc_maps is not None:
+        pc_maps = Path(pc_maps).expanduser().resolve()
+        if not (pc_maps / "bitmaps.map").is_file():
+            raise CEPrepareError(f"{pc_maps} has no bitmaps.map (the Halo PC maps' pixels)")
     header_name, scenario, tags = read_ce_map(ce_map)
     tools = find_tools(tools)
     if not (xbox_maps / "bloodgulch.map").is_file():
@@ -771,8 +850,8 @@ def prepare_ce_map(ce_map, xbox_maps, tools, work, name=None, log=print):
     work.mkdir(parents=True, exist_ok=True)
     space = Workspace(Path(tempfile.mkdtemp(prefix=f"ce-{name}-", dir=work)), tools)
     log(f"{ce_map.name}: Custom Edition map \"{header_name}\" ({len(tags)} tags), on the cartridge as {name}")
-    found = resource_sources(tags, xbox_maps, log)
-    extract(space, ce_map, xbox_maps, found)
+    found, from_pc = resource_sources(tags, xbox_maps, log, pc_maps)
+    extract(space, ce_map, xbox_maps, found, from_pc, pc_maps, log)
     for old, new in pc_prepare.RECIPE["conversions"]:
         if any(space.tags.rglob(f"*.{old}")):
             space.invoke("convert", "-O", "-t", space.tags, "-g", old, new, "-b", f"*.{old}")
@@ -801,9 +880,13 @@ def main(argv=None):
     parser.add_argument("--tools", type=Path, required=True, help="Invader's tools and ogg2wav (or ffmpeg)")
     parser.add_argument("--work", type=Path, required=True, help="a folder for the conversion")
     parser.add_argument("--name", help="the map's name on the cartridge (default: its own)")
+    parser.add_argument("--pc-maps", type=Path,
+                        help="retail Halo PC maps (ui.map, the six expansion maps) and bitmaps.map: the shared "
+                        "bitmaps no Xbox map has")
     options = parser.parse_args(argv)
     try:
-        result = prepare_ce_map(options.map, options.xbox_maps, options.tools, options.work, options.name)
+        result = prepare_ce_map(options.map, options.xbox_maps, options.tools, options.work, options.name,
+                                pc_maps=options.pc_maps)
     except CEPrepareError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
