@@ -981,6 +981,10 @@ void render_frame(
 		own unit) */
 		n64_online_draw_objects();
 #endif
+		/* the geometry the game engine builds each frame (King of the
+		Hill's band, game_engine_king.c; n64_dynamic.c), after the view's
+		objects and before its particles, as render.c draws it */
+		game_engine_post_rasterize_objects();
 		if (!(window_index == 0 && n64_debug_flag("debug_chase")) && !n64_debug_flag("debug_no_first_person") &&
 			!online_view)
 		{

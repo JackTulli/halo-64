@@ -1360,6 +1360,9 @@ void n64_game_free_map(
 	/* (HUD STYLE 64's module with it, when loaded) */
 	n64_hud64_module_end();
 	n64_particles_release();
+	/* (the looks of King of the Hill's band and the flags' cloth, when a
+	game read them: n64_dynamic.c) */
+	n64_dynamic_release();
 #ifdef HALO_N64_CAMPAIGN
 	n64_campaign_stop();
 #endif

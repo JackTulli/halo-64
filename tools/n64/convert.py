@@ -712,6 +712,11 @@ def main():
         from .effects import EffectParticles
         stats = EffectParticles(xmap, repacker.defs).write(args.filesystem / "fx" / f"{xmap.name}.fx")
         print(f"{xmap.name} particles: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+        # the looks of the geometry Halo builds each frame: King of the
+        # Hill's band (port/n64/src/n64_dynamic.c)
+        from . import dynamic
+        stats = dynamic.write(xmap, repacker.defs, args.filesystem / "fx" / f"{xmap.name}.dyn")
+        print(f"{xmap.name} dynamic geometry: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         # the shared files the map uses (tools/n64/prune.py removes the rest)
         from .level import write_list
         # (the lighter level's own textures too: without them prune.py
