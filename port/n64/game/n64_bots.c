@@ -321,12 +321,15 @@ struct bot
 	short approach_state;
 	real_point3d approach;
 	long approach_surface;
+	/* a driver: whether it drives to a point (its facing steers), and how
+	long more it waits for a teammate's carrier to board */
+	short drive_point, ferry_ticks;
 };
 
 /* New LOD fields extend the old prefix; read diagnostic stride from DWARF.
 (The vehicles' fields come after the rest: the stride grows, the old offsets
 stay.) */
-typedef char n64_bot_observer_stride[sizeof(struct bot) == 500 ? 1 : -1];
+typedef char n64_bot_observer_stride[sizeof(struct bot) == 504 ? 1 : -1];
 typedef char n64_bot_observer_ghost_offset[offsetof(struct bot, ghost_profile) == 246 ? 1 : -1];
 
 static struct
@@ -3485,6 +3488,11 @@ static boolean bot_seat_kept(
 		bot->circle = (short)(bot_random() & 1 ? 1 : -1);
 		bot->wait_ticks = (short)(role == _bot_seat_driver && kind != _bot_vehicle_scout && game_engine_has_teams() ?
 			4 * TICKS_PER_SECOND : 0);
+		bot->ferry_ticks = 0;
+		/* (a driver's progress to a point counted from its seat, not from its
+		walk to the vehicle) */
+		bot->role_best = 1e9f;
+		bot->role_still = 0;
 	}
 	return TRUE;
 }
@@ -3545,8 +3553,189 @@ enum
 	_bot_drive_flipped,
 	_bot_drive_stuck,
 	_bot_drive_out_of_reach,
+	_bot_drive_arrived
 };
 
+/* a driver's objective (the vehicle step) */
+enum
+{
+	_bot_drive_goal_none = 0, /* its target, as in Slayer */
+	_bot_drive_goal_point, /* a point, steered to */
+	_bot_drive_goal_wait, /* held still */
+	_bot_drive_goal_arrived /* there: out, to walk */
+};
+
+#if BOT_OBJECTIVES
+/* a driver to a point: straight there, and round what blocks the way (a
+ray 8 units ahead at its seat's height; blocked, 1.5 s toward the free way
+nearest the point's: round a base, a rock). FALSE when it got no nearer the
+point (1 unit) in 3 s of driving: out, to walk */
+static boolean bot_drive_waypoint(
+	struct bot *bot,
+	real_point3d const *position,
+	real_point3d *goal,
+	short step)
+{
+	real d;
+
+	/* (a new point: its progress counted afresh) */
+	bot_goal_ground(bot, goal);
+	d = horizontal_distance(position, goal);
+	if (d < bot->role_best - 1.f)
+	{
+		bot->role_best = d;
+		bot->role_still = 0;
+	}
+	else if ((bot->role_still += step) >= OBJECTIVE_PROGRESS_TICKS)
+	{
+		bot->role_still = 0;
+		bot->role_best = d;
+		return FALSE;
+	}
+	if (bot->side_timer > 0)
+		bot->side_timer -= step;
+	else if (d > 0.01f && !bot_way_free(bot, position, 0.f, (goal->x - position->x) / d, (goal->y - position->y) / d,
+		MIN(d, 8.f)))
+	{
+		bot->side_turn = bot_free_way(bot, position, (goal->x - position->x) / d, (goal->y - position->y) / d, 0.f, 8.f);
+		bot->side_timer = bot->side_turn ? (short)(3 * TICKS_PER_SECOND / 2) : 0;
+	}
+	if (bot->side_timer > 0 && bot->side_turn > 0)
+	{
+		goal->x = position->x + 10.f * bot_ways[bot->side_turn - 1][0];
+		goal->y = position->y + 10.f * bot_ways[bot->side_turn - 1][1];
+	}
+	return TRUE;
+}
+
+/* a driver to a point (bot_drive_waypoint); no nearer in 3 s: out, and
+that vehicle left a while, as #72 leaves a stuck one */
+static short bot_drive_to(
+	struct bot *bot,
+	long vehicle_index,
+	real_point3d const *position,
+	real_point3d *goal,
+	short step)
+{
+	if (bot_drive_waypoint(bot, position, goal, step))
+		return _bot_drive_goal_point;
+	bot->given_up_vehicle = vehicle_index;
+	bot->given_up_vehicle_timer = VEHICLE_GIVE_UP_TICKS;
+	return _bot_drive_goal_arrived;
+}
+
+/* what a driver drives to in a game with objectives: CTF, a teammate
+carrying the enemy flag aboard: to its base, held still there for it to
+get out; a teammate carrying it on foot within its ride range (10 units)
+with a passenger's seat free: held still up to 5 s for it to board; else,
+no target in sight within 18 units: its role's point -- there (within 5
+units) out to walk to it, but a racer drives on to its next checkpoint
+unless it stands over 1 unit higher within 20 units. An escort drives to
+the carrier, waits for it to board (after #72's wait, 5 s in that seat),
+then gets out; carriers, defenders and returners leave a driver's seat
+(the caller); a hunter, a target in sight within 18 units, or no point:
+as in Slayer */
+static short bot_drive_objective(
+	struct bot *bot,
+	long vehicle_index,
+	real_point3d const *position,
+	real distance,
+	real_point3d *goal,
+	short step)
+{
+	short team;
+
+	if (objectives.engine == game_engine_none || bot->role == _bot_role_none)
+		return _bot_drive_goal_none;
+	team = bot_team(bot);
+	if (objectives.engine == game_engine_ctf)
+	{
+		long child = object_get(vehicle_index)->object.first_child_object_index;
+		long carrier = objectives.carrier[1 - team];
+		boolean near = FALSE;
+		real_point3d at;
+
+		for (; child != NONE; child = object_get(child)->object.next_object_index)
+		{
+			if (child != bot->unit_index && TEST_FLAG(_object_mask_unit, object_get(child)->object.type) &&
+				child == carrier && bot_teammate(bot, child))
+			{
+				*goal = objectives.base[team];
+				return horizontal_distance(position, goal) < 4.f ? _bot_drive_goal_wait :
+					bot_drive_to(bot, vehicle_index, position, goal, step);
+			}
+		}
+		if (bot->role != _bot_role_escort && carrier != NONE && bot_teammate(bot, carrier) &&
+			object_get(carrier)->object.parent_object_index == NONE &&
+			horizontal_distance(position, object_get_origin(carrier, &at)) < VEHICLE_RIDE_RANGE)
+		{
+			struct bot_riders riders;
+
+			bot_vehicle_riders(bot, vehicle_index, &riders);
+			near = bot_rider_seat_free(carrier, vehicle_index, riders.seats | bot_unlike_seats(vehicle_index));
+		}
+		/* (an escort keeps its own count, below) */
+		if (bot->role != _bot_role_escort)
+		{
+			if (!near)
+				bot->ferry_ticks = 0;
+			else
+			{
+				if (bot->ferry_ticks == 0)
+					bot->ferry_ticks = 5 * TICKS_PER_SECOND;
+				else if (bot->ferry_ticks > 0 && (bot->ferry_ticks -= step) <= 0)
+					bot->ferry_ticks = -1;
+				if (bot->ferry_ticks > 0)
+					return _bot_drive_goal_wait;
+			}
+		}
+	}
+	/* (an escort: to the one it goes with; within 8 units, held still for it
+	to board, 5 s in this seat after #72's wait, then out, to go with it on
+	foot) */
+	if (bot->role == _bot_role_escort && unit_alive(bot->role_unit) && !(bot->target_visible && distance < 18.f))
+	{
+		object_get_origin(bot->role_unit, goal);
+		/* (5 s of waiting in all, in this seat: then out, near or not) */
+		if (bot->ferry_ticks < 0)
+			return _bot_drive_goal_arrived;
+		if (horizontal_distance(position, goal) >= 8.f)
+			return bot_drive_to(bot, vehicle_index, position, goal, step);
+		/* (Oddball: the ball's holder takes no ride, so no wait for it) */
+		if (objectives.engine == game_engine_oddball)
+			return _bot_drive_goal_arrived;
+		if (bot->ferry_ticks == 0)
+			bot->ferry_ticks = 5 * TICKS_PER_SECOND;
+		else if ((bot->ferry_ticks -= step) <= 0)
+			bot->ferry_ticks = -1;
+		return bot->ferry_ticks > 0 ? _bot_drive_goal_wait : _bot_drive_goal_arrived;
+	}
+	if ((bot->target_visible && distance < 18.f && bot->role != _bot_role_race) || !bot_role_point(bot, position, goal))
+		return _bot_drive_goal_none;
+	switch (bot->role)
+	{
+	case _bot_role_race:
+		/* (a checkpoint up on something, within 20 units: out, to climb to
+		it on foot) */
+		if (horizontal_distance(position, goal) < 20.f && goal->z - position->z > 1.f)
+			return _bot_drive_goal_arrived;
+		break;
+	case _bot_role_attack:
+	case _bot_role_return:
+	case _bot_role_chase:
+	case _bot_role_ball:
+	case _bot_role_hill:
+		if (horizontal_distance(position, goal) < 5.f)
+			return _bot_drive_goal_arrived;
+		break;
+	default:
+		return _bot_drive_goal_none;
+	}
+	return bot_drive_to(bot, vehicle_index, position, goal, step);
+}
+#else
+#define bot_drive_objective(bot, vehicle_index, position, distance, goal, step) _bot_drive_goal_none
+#endif
 
 /* a driver's stick and facing (the vehicle turns to its driver's facing:
 units.c, vehicles.c). Its goal is its target: a Warthog with no gunner
@@ -3582,6 +3771,14 @@ static short bot_drive(
 
 	*forward = *strafe = 0.f;
 	*detoured = FALSE;
+	/* (a drive to a point after a thought that drove to none -- a fight, a
+	wait: its progress counted afresh) */
+	if (!bot->drive_point)
+	{
+		bot->role_best = 1e9f;
+		bot->role_still = 0;
+	}
+	bot->drive_point = FALSE;
 	/* (the stuck spells' window runs on, driving or not) */
 	if (bot->stuck_window > 0 && (bot->stuck_window -= step) <= 0)
 		bot->stuck_events = 0;
@@ -3622,26 +3819,42 @@ static short bot_drive(
 		}
 		bot->wait_ticks = 0;
 	}
-	if (!target)
+	/* an objective of its role to drive to (bot_drive_objective): the
+	Warthog's steering, whatever the vehicle, and no reach test */
+	switch (bot_drive_objective(bot, vehicle_index, position, distance, &goal, step))
+	{
+	case _bot_drive_goal_arrived:
+		return _bot_drive_arrived;
+	case _bot_drive_goal_wait:
+		bot->reach_ticks = bot->drive_stuck = 0;
+		*facing = vehicle->object.forward;
+		return _bot_drive_on;
+	case _bot_drive_goal_point:
+		bot->drive_point = TRUE;
+		break;
+	}
+	if (!target && !bot->drive_point)
 	{
 		bot->reach_ticks = bot->drive_stuck = 0;
 		if (kind == _bot_vehicle_jeep)
 			*facing = vehicle->object.forward;
 		return _bot_drive_on;
 	}
-	object_get_origin(bot->target_unit, &goal);
+	if (!bot->drive_point)
+		object_get_origin(bot->target_unit, &goal);
 	/* its target out of the vehicle's reach a second: beside it with the
 	vehicle stopped (a Warthog that cannot run it over), or above it on a
 	ledge (on a base, up a cliff) */
-	if ((kind == _bot_vehicle_jeep && !gunner && distance < 4.f && speed_squared < 1.f / (30.f * 30.f)) ||
-		(distance < 8.f && goal.z - position->z > 2.5f))
+	if (!bot->drive_point &&
+		((kind == _bot_vehicle_jeep && !gunner && distance < 4.f && speed_squared < 1.f / (30.f * 30.f)) ||
+		(distance < 8.f && goal.z - position->z > 2.5f)))
 	{
 		if ((bot->reach_ticks += step) >= TICKS_PER_SECOND)
 			return _bot_drive_out_of_reach;
 	}
 	else
 		bot->reach_ticks = 0;
-	if (kind == _bot_vehicle_jeep)
+	if (kind == _bot_vehicle_jeep || bot->drive_point)
 	{
 		real gi = goal.x - position->x, gj = goal.y - position->y;
 		real ni = vehicle->object.forward.i, nj = vehicle->object.forward.j;
@@ -3650,7 +3863,7 @@ static short bot_drive(
 
 		/* (with a gunner, a point some 10 units to the target's side: it
 		goes round it) */
-		if (gunner && goal_length > 0.01f && goal_length < 18.f)
+		if (gunner && !bot->drive_point && goal_length > 0.01f && goal_length < 18.f)
 		{
 			goal.x -= gj / goal_length * 10.f * bot->circle;
 			goal.y += gi / goal_length * 10.f * bot->circle;
@@ -3677,6 +3890,9 @@ static short bot_drive(
 		facing->j = ni * sinf(steer) + nj * cosf(steer);
 		facing->k = 0.f;
 		*forward = throttle;
+		/* (near its point and turning hard: slower, so as not to circle it) */
+		if (bot->drive_point && goal_length < 8.f && fabsf(angle) > 1.f)
+			*forward = 0.5f * throttle;
 	}
 	else
 	{
@@ -4242,7 +4458,7 @@ static void think(
 		steering = bot->aim;
 		why = bot_drive(bot, vehicle_index, kind, &position, distance, weapon, &forward, &strafe, &steering,
 			&detoured, step);
-		if (kind == _bot_vehicle_jeep || detoured)
+		if (kind == _bot_vehicle_jeep || detoured || bot->drive_point)
 			bot->aim = steering;
 		if (why != _bot_drive_on)
 			bot_leave_vehicle(bot, vehicle_index, why == _bot_drive_flipped, &flags);
@@ -4393,8 +4609,11 @@ static void think(
 	explosive one never up close; the plasma pistol pressed at its pace each
 	tick, bot_trigger_tick) */
 	bot->shot_ticks = 0;
+	/* (a driver steering to its role's point: its gun points that way, not
+	at the target -- no fire) */
 	if (bot->target_visible && distance < weapon->far_range + 6.f && current_weapon != NONE &&
-		!(weapon->style == _style_explosive && distance < 4.f) && bot->swap_timer <= 0)
+		!(weapon->style == _style_explosive && distance < 4.f) && bot->swap_timer <= 0 &&
+		!(bot->drive_point && bot->seat_role == _bot_seat_driver))
 	{
 		struct bot_pistol const *pistol = &pistol_fire[combat_skill];
 
