@@ -78,6 +78,12 @@ A cloaked enemy it sees only within 2 units, or for 1 s after it fires.
 /* ---------- constants */
 
 #define MAXIMUM_BOTS 15
+#define MAXIMUM_BOT_GATES 4
+/* the most pathfinding surfaces one gate takes out (more: no gate, all
+given back); the search owner while the look tests one
+(bots_find_gates) */
+#define MAXIMUM_BOT_GATE_SURFACES 32
+#define BOT_GATE_SEARCH (MAXIMUM_BOTS + 1)
 /* a path is found again after this long, or when its target has moved */
 #define PATH_LIFETIME (5 * TICKS_PER_SECOND)
 /* a straight walk to the target is tested before a search, at most this
@@ -352,9 +358,46 @@ static struct
 	/* (whether the search is to a point, and whether it goes backward:
 	from a point above its bot to the bot) */
 	boolean search_point, search_backward;
+	/* (and where it began: a way that crosses a gate is no way) */
+	real_point3d search_start;
 	long weapon_definitions[NUMBER_OF_BOT_WEAPONS];
 	struct bot bots[MAXIMUM_BOTS];
+	/* the look for gates (bots_find_gates): the iterator over the scenery;
+	whether the look has begun and whether it is over; the candidate it tests
+	(NONE: none), the way through it (0-3), its stage (0: the ways, 1: its width
+	checked, 2: its surfaces taken out), the offset across its width next, and
+	whether its gate line has its first end */
+	struct object_iterator gate_iterator;
+	boolean gates_begun, gates_found;
+	long gate_object;
+	short gate_way, gate_stage, gate_offset;
+	boolean gate_line;
+	/* (the surfaces the candidate took out and their bytes, how many (over
+	the most: more), and whether its search for a way round goes on) */
+	long gate_surfaces[MAXIMUM_BOT_GATE_SURFACES];
+	byte gate_values[MAXIMUM_BOT_GATE_SURFACES];
+	short gate_surface_count;
+	boolean gate_searching;
 } bots;
+
+/* the gates found (bots_find_gates), kept from game to game with the map's
+image (n64_map_load loads a map again only for another): the level they are
+in and the scenario's name, whether the look was over, a pathfinding surface
+they took out (NONE: none), how many, and each one's line across the
+passage (its near face) and its foot's height */
+static struct
+{
+	struct structure_bsp const *structure;
+	char scenario[64];
+	boolean complete;
+	long probe;
+	short count;
+	struct
+	{
+		real_point2d a, b;
+		real z;
+	} gates[MAXIMUM_BOT_GATES];
+} bot_gates;
 
 /* the pathfinder's working state (32,908 bytes, only while there are bots) */
 static struct path_state *bots_path_state;
@@ -878,6 +921,51 @@ boolean n64_bots_examine_turn(
 	return game_time_get() + 1 >= bots.bots[number].next_think;
 }
 
+/* the look for gates (the gates section), all of it as a bot game starts,
+before its first tick: no frame pays for it. It stops after GATE_LOOK_STEPS
+calls (the most a map took: 487, Custom Edition's Mystic; 357 on the
+Multiplayer and PC maps, Infinity): a map gives the same gates on every
+machine. GATE_LOOK_MICROSECONDS is a safety net far above every map's time
+(777 ms at most in ares); only if it stops a look can the gates depend on
+the machine. At a stop the gates found, each proven, are kept (the one under
+test given back); a line gives the gates, steps, time and stopping limit */
+#define GATE_LOOK_STEPS 768
+#define GATE_LOOK_MICROSECONDS 2000000
+static void bots_find_gates(void);
+static void bot_gate_drop(byte *pathfinding);
+static void bots_look_for_gates(
+	void)
+{
+	unsigned long long start = n64_microseconds();
+	unsigned long elapsed = 0, steps = 0;
+	char const *limit = NULL;
+	char line[128];
+
+	while (!bots.gates_found)
+	{
+		bots_find_gates();
+		steps++;
+		elapsed = (unsigned long)(n64_microseconds() - start);
+		if (!bots.gates_found && (steps >= GATE_LOOK_STEPS || elapsed > GATE_LOOK_MICROSECONDS))
+		{
+			struct structure_bsp *structure = global_structure_bsp_get();
+
+			limit = steps >= GATE_LOOK_STEPS ? "steps" : "time";
+			if (structure && bots.gate_object != NONE)
+				bot_gate_drop((byte *)structure->pathfinding_surfaces.address);
+			bots.gates_found = TRUE;
+			bot_gates.complete = TRUE;
+		}
+	}
+	if (limit)
+		snprintf(line, sizeof(line), "n64: the bots' look for gates stopped at its %s limit: %d gates kept, %lu steps, %lu ms",
+			limit, (int)bot_gates.count, steps, elapsed / 1000);
+	else
+		snprintf(line, sizeof(line), "n64: the bots' gates: %d, looked for in %lu steps, %lu ms", (int)bot_gates.count,
+			steps, elapsed / 1000);
+	n64_log(line);
+}
+
 /* main.c's create_local_players, after the players on the controllers:
 the bots, on the team with fewer players in a team game */
 void n64_bots_create_players(
@@ -897,6 +985,7 @@ void n64_bots_create_players(
 		bots_path_state = (struct path_state *)malloc(sizeof(struct path_state));
 	if (!bots.active)
 		return;
+	bots_look_for_gates();
 	data_iterator_new(&iterator, player_data);
 	while ((player = data_iterator_next(&iterator)) != NULL && human_count < 4)
 		human_teams[human_count++] = player->network_player_data.team_index & 1;
@@ -966,6 +1055,461 @@ static void resolve_weapons(
 		bots.weapon_definitions[i] = tag_loaded('weap', bot_weapons[i].name);
 }
 
+/* ---------- gates
+
+A scenery object can close a passage that the level's path data leaves
+open: Sidewinder's grate (door_blast_collision) in the tunnel between the
+two bases. The path data holds the level only (Halo leaves objects to its
+AI's obstacle avoidance, which the bots go without: n64_bots_begin), so the
+straight-walk test and the search lead through such an object, and a bot
+walks into it for good, its target or its objective on the other side. At
+a game's start, before its first tick, the bots look for each one
+(bots_look_for_gates, at most 768 steps): on a way through its middle a body ray meets it at 0.5 and at 1.4
+above the ground and the path data allows the straight walk; the straight
+walks beside it, just past its bounding sphere, are not allowed; and every
+walk allowed across its width meets it. They take the pathfinding surfaces
+under it out of the path data, so that ways lead round it (for as long as
+the map's image stays: the next game on the same map keeps them), and no
+straight walk crosses it; and an enemy behind one (the straight line to it
+crosses one) is no target to go for, unless it is the one it fights and sees */
+
+/* the ground under a point (a ray down 3 units from 0.5 above it) and its
+surface, or NONE */
+static long bot_ground(
+	real_point3d const *point,
+	real_point3d *ground)
+{
+	struct collision_result collision;
+	real_point3d from = *point;
+	real_vector3d down = { 0.f, 0.f, -3.f };
+
+	from.z += 0.5f;
+	*ground = *point;
+	if (collision_test_vector(FLAG(_collision_test_front_facing_surfaces_bit) | FLAG(_collision_test_structure_bit),
+		&from, &down, NONE, &collision) && collision.type == _collision_result_structure)
+	{
+		*ground = collision.point;
+		return collision.surface_index;
+	}
+	return NONE;
+}
+
+/* whether the path data allows a straight walk between the ground under two
+points (at nearly one height) */
+static boolean bot_walk_allowed(
+	real_point3d const *from,
+	real_point3d const *to)
+{
+	struct path_result path;
+	real_point3d a, b;
+	long sa = bot_ground(from, &a), sb = bot_ground(to, &b);
+
+	return sa != NONE && sb != NONE && fabsf(a.z - b.z) < 1.f && n64_ai_direct_path(&a, sa, &b, sb, &path);
+}
+
+/* where a body ray (0.5 above the ground) between two points first meets
+a scenery object, if that is the one asked for */
+static boolean bot_meets_object(
+	real_point3d const *from,
+	real_point3d const *to,
+	long object_index,
+	real_point3d *hit)
+{
+	struct collision_result collision;
+	real_point3d a = *from, b = *to;
+	real_vector3d ray;
+
+	a.z += 0.5f;
+	b.z += 0.5f;
+	vector_from_points3d(&a, &b, &ray);
+	if (!collision_test_vector(FLAG(_collision_test_objects_bit) | FLAG(_collision_test_objects_scenery_bit),
+		&a, &ray, NONE, &collision) || collision.type != _collision_result_object || collision.object_index != object_index)
+	{
+		return FALSE;
+	}
+	*hit = collision.point;
+	return TRUE;
+}
+
+/* a candidate's geometry for a way through it: across it (u) and along it
+(p), the points before and behind it on that way, and its offsets across
+its width (both ends and the middle included) */
+#define GATE_STEP 0.25f
+#define GATE_OFFSETS_PER_TICK 4
+
+static void bot_gate_geometry(
+	struct object_datum const *object,
+	short way,
+	real_vector2d *u,
+	real_vector2d *p,
+	real_point3d *a,
+	real_point3d *b,
+	short *offsets)
+{
+	static real const ways[4][2] = { { 1.f, 0.f }, { 0.7071f, 0.7071f }, { 0.f, 1.f }, { -0.7071f, 0.7071f } };
+	real r = object->object.bounding_sphere_radius, reach = r + 0.6f;
+
+	u->i = ways[way][0];
+	u->j = ways[way][1];
+	p->i = -u->j;
+	p->j = u->i;
+	*a = *b = object->object.bounding_sphere_center;
+	a->x -= u->i * reach; a->y -= u->j * reach;
+	b->x += u->i * reach; b->y += u->j * reach;
+	*offsets = (short)(2 * (short)ceilf(r / GATE_STEP) + 1);
+}
+
+/* the points before and behind a candidate at one of its offsets */
+static void bot_gate_offset(
+	struct object_datum const *object,
+	real_vector2d const *p,
+	real_point3d const *a,
+	real_point3d const *b,
+	short offsets,
+	short n,
+	real_point3d *ta,
+	real_point3d *tb)
+{
+	real r = object->object.bounding_sphere_radius;
+	real t = offsets > 1 ? -r + 2.f * r * n / (offsets - 1) : 0.f;
+
+	*ta = *a;
+	*tb = *b;
+	ta->x += p->i * t; ta->y += p->j * t;
+	tb->x += p->i * t; tb->y += p->j * t;
+}
+
+/* whether the straight line between two points crosses gate i's line
+(bot_gates; the candidate's while the look tests it), at a height where
+the gate stands (its foot to 2.5 above); half-open: a point on a line
+counts as on its positive side, so a way that bends on the gate's line
+crosses it once */
+static boolean bot_crosses_gate(
+	real_point3d const *from,
+	real_point3d const *to,
+	short i)
+{
+	real_point2d const *a = &bot_gates.gates[i].a, *b = &bot_gates.gates[i].b;
+	real ex = b->x - a->x, ey = b->y - a->y, fx = to->x - from->x, fy = to->y - from->y;
+	real d1 = ex * (from->y - a->y) - ey * (from->x - a->x), d2 = ex * (to->y - a->y) - ey * (to->x - a->x);
+	real d3 = fx * (a->y - from->y) - fy * (a->x - from->x), d4 = fx * (b->y - from->y) - fy * (b->x - from->x);
+
+	if ((d1 < 0.f) != (d2 < 0.f) && (d3 < 0.f) != (d4 < 0.f))
+	{
+		/* (the height of the line where it crosses; d1 and d2 differ here) */
+		real z = from->z + (to->z - from->z) * d1 / (d1 - d2);
+
+		return z > bot_gates.gates[i].z - 1.f && z < bot_gates.gates[i].z + 2.5f;
+	}
+	return FALSE;
+}
+
+/* a candidate given up: the surfaces it took out back, its search for a
+way round ended */
+static void bot_gate_drop(
+	byte *pathfinding)
+{
+	short i;
+
+	for (i = 0; i < bots.gate_surface_count && i < MAXIMUM_BOT_GATE_SURFACES; i++)
+		pathfinding[bots.gate_surfaces[i]] = bots.gate_values[i];
+	bots.gate_surface_count = 0;
+	if (bots.gate_searching)
+	{
+		bots.gate_searching = FALSE;
+		if (bots.search_owner == BOT_GATE_SEARCH)
+			bots.search_owner = 0;
+	}
+	bots.gate_object = NONE;
+}
+
+/* the look, a step a call (bots_look_for_gates calls it until it is over):
+the scenery's candidates one by one -- a collision model, a bounding sphere
+0.75 to 4 units in radius -- each way through one a call, then its width and
+its surfaces a few offsets a call */
+static void bots_find_gates(
+	void)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+	byte *pathfinding = structure ? (byte *)structure->pathfinding_surfaces.address : NULL;
+	char const *scenario = global_scenario_index != NONE ? tag_get_name(global_scenario_index) : NULL;
+	struct object_datum *object;
+	real_vector2d u, p;
+	real_point3d a, b;
+	short offsets, n;
+
+	if (!bots.gates_begun)
+	{
+		bots.gates_begun = TRUE;
+		bots.gate_object = NONE;
+		/* (the same map's image as the last game's, its look over and its
+		gates still out of its path data: they stand) */
+		if (pathfinding && scenario && bot_gates.complete && bot_gates.structure == structure &&
+			!strcmp(bot_gates.scenario, scenario) && (bot_gates.probe == NONE ||
+			(bot_gates.probe < structure->pathfinding_surfaces.count && !pathfinding[bot_gates.probe])))
+		{
+			bots.gates_found = TRUE;
+			return;
+		}
+		csmemset(&bot_gates, 0, sizeof(bot_gates));
+		bot_gates.structure = structure;
+		bot_gates.probe = NONE;
+		if (scenario)
+			snprintf(bot_gates.scenario, sizeof(bot_gates.scenario), "%s", scenario);
+		object_iterator_new(&bots.gate_iterator, _object_mask_scenery, 0);
+	}
+	if (!pathfinding || !bots_path_state)
+	{
+		bots.gates_found = TRUE;
+		return;
+	}
+	if (bots.gate_object == NONE || !(object = object_try_and_get(bots.gate_object)))
+	{
+		/* (one that is gone: nothing of it kept) */
+		if (bots.gate_object != NONE)
+			bot_gate_drop(pathfinding);
+		/* (the next candidate; none: the look is over) */
+		do
+		{
+			object = bot_gates.count < MAXIMUM_BOT_GATES ? object_iterator_next(&bots.gate_iterator) : NULL;
+			if (!object)
+			{
+				bots.gates_found = TRUE;
+				bot_gates.complete = TRUE;
+				return;
+			}
+		} while (object->object.bounding_sphere_radius < 0.75f || object->object.bounding_sphere_radius > 4.f ||
+			object_definition_get(object->definition_index)->object.collision_model.index == NONE);
+		bots.gate_object = bots.gate_iterator.index;
+		bots.gate_way = 0;
+		bots.gate_stage = 0;
+		bots.gate_offset = 0;
+		bots.gate_line = FALSE;
+		bots.gate_surface_count = 0;
+	}
+	bot_gate_geometry(object, bots.gate_way, &u, &p, &a, &b, &offsets);
+	switch (bots.gate_stage)
+	{
+	case 0:
+	{
+		/* (a way: the ground on both sides, a body ray meets it there, at
+		0.5 and at 1.4 above the ground -- no low thing to jump over -- and the
+		path data allows the straight walk through it) */
+		real_point3d sa, sb, ha, hb, hit;
+		real side;
+
+		if (bot_ground(&a, &sa) == NONE || bot_ground(&b, &sb) == NONE ||
+			!bot_meets_object(&sa, &sb, bots.gate_object, &hit))
+		{
+			break;
+		}
+		ha = sa; hb = sb;
+		ha.z += 0.9f; hb.z += 0.9f;
+		if (!bot_meets_object(&ha, &hb, bots.gate_object, &hit) || !bot_walk_allowed(&a, &b))
+			break;
+		/* (no way round it beside it, just past its bounding sphere: one
+		walk allowed there, and it is no gate whatever the way) */
+		for (side = -1.f; side <= 1.f; side += 2.f)
+		{
+			real reach = side * (object->object.bounding_sphere_radius + 0.6f);
+			real_point3d sa2 = a, sb2 = b;
+
+			sa2.x += p.i * reach; sa2.y += p.j * reach;
+			sb2.x += p.i * reach; sb2.y += p.j * reach;
+			if (bot_walk_allowed(&sa2, &sb2))
+			{
+				bots.gate_object = NONE;
+				return;
+			}
+		}
+		bots.gate_stage = 1;
+		bots.gate_offset = 0;
+		return;
+	}
+	case 1:
+		/* (across its width every walk the path data allows meets it: no
+		way past it there either) */
+		for (n = bots.gate_offset; n < offsets && n < bots.gate_offset + GATE_OFFSETS_PER_TICK; n++)
+		{
+			real_point3d ta, tb, ga, gb, face;
+
+			bot_gate_offset(object, &p, &a, &b, offsets, n, &ta, &tb);
+			if (bot_ground(&ta, &ga) != NONE && bot_ground(&tb, &gb) != NONE &&
+				!bot_meets_object(&ga, &gb, bots.gate_object, &face) && bot_walk_allowed(&ta, &tb))
+			{
+				bots.gate_object = NONE;
+				return;
+			}
+		}
+		bots.gate_offset = n;
+		if (n >= offsets)
+		{
+			bots.gate_stage = 2;
+			bots.gate_offset = 0;
+		}
+		return;
+	case 2:
+		/* a gate: across its width, the surfaces under it (0.1 before and
+		behind each face) out of the path data, and its line kept */
+		for (n = bots.gate_offset; n < offsets && n < bots.gate_offset + GATE_OFFSETS_PER_TICK; n++)
+		{
+			real_point3d ta, tb, ga, gb;
+			short d;
+
+			bot_gate_offset(object, &p, &a, &b, offsets, n, &ta, &tb);
+			if (bot_ground(&ta, &ga) == NONE || bot_ground(&tb, &gb) == NONE)
+				continue;
+			for (d = 0; d < 2; d++)
+			{
+				real_point3d face, under, ground;
+				short e;
+
+				if (!bot_meets_object(d ? &gb : &ga, d ? &ga : &gb, bots.gate_object, &face))
+					continue;
+				if (!d)
+				{
+					if (!bots.gate_line)
+					{
+						bot_gates.gates[bot_gates.count].a.x = face.x;
+						bot_gates.gates[bot_gates.count].a.y = face.y;
+						bot_gates.gates[bot_gates.count].z = ga.z;
+						bots.gate_line = TRUE;
+					}
+					bot_gates.gates[bot_gates.count].b.x = face.x;
+					bot_gates.gates[bot_gates.count].b.y = face.y;
+				}
+				for (e = -1; e <= 1; e += 2)
+				{
+					long surface;
+
+					under = face;
+					under.x += 0.1f * u.i * e; under.y += 0.1f * u.j * e;
+					under.z -= 0.5f;
+					surface = bot_ground(&under, &ground);
+					if (surface >= 0 && surface < structure->pathfinding_surfaces.count && pathfinding[surface])
+					{
+						/* (more than it can give back: no gate) */
+						if (bots.gate_surface_count >= MAXIMUM_BOT_GATE_SURFACES)
+						{
+							bot_gate_drop(pathfinding);
+							return;
+						}
+						bots.gate_surfaces[bots.gate_surface_count] = surface;
+						bots.gate_values[bots.gate_surface_count] = pathfinding[surface];
+						bots.gate_surface_count++;
+						pathfinding[surface] = 0;
+					}
+				}
+			}
+		}
+		bots.gate_offset = n;
+		if (n >= offsets)
+			bots.gate_stage = 3;
+		return;
+	case 3:
+	{
+		/* (a gate only when proven: a search from one side to the other, in
+		the path data with its surfaces out, no longer than 2.5 times the way
+		through plus 6 units, in parts, when no bot's search goes on, that
+		finds no way round it -- a passage that bends round it, wide enough;
+		a way found counts unless a leg Halo builds of it (at most four)
+		crosses its line. Its surfaces back, no gate, when the search finds
+		one or cannot run: an end with no path data under it, or on a surface
+		it took out (Halo's search takes its start as it is: from there it
+		could pass through, and the surface reaches past the object)) */
+		boolean found = FALSE;
+		real_point3d sa, sb;
+
+		if (!bots.gate_searching && bots.gate_line)
+		{
+			struct path_input input;
+			long fa, fb;
+			short i;
+
+			if (bots.search_owner)
+				return;
+			fa = bot_ground(&a, &sa);
+			fb = bot_ground(&b, &sb);
+			for (i = 0; i < bots.gate_surface_count; i++)
+			{
+				if (bots.gate_surfaces[i] == fa || bots.gate_surfaces[i] == fb)
+					fa = NONE;
+			}
+			if (fa != NONE && fb != NONE)
+			{
+				path_input_new(&input, 0.3f, FALSE, NONE);
+				path_input_set_start(&input, &sa, fa);
+				path_input_set_search_bounds(&input, 2.5f * distance3d(&sa, &sb) + 6.f);
+				path_state_new(&input, bots_path_state, NULL);
+				path_state_destination(bots_path_state, &sb, fb, 0.5f);
+				if (path_state_find_begin(bots_path_state))
+				{
+					bots.search_owner = BOT_GATE_SEARCH;
+					bots.gate_searching = TRUE;
+				}
+			}
+			if (!bots.gate_searching)
+			{
+				bot_gate_drop(pathfinding);
+				return;
+			}
+		}
+		if (bots.gate_searching)
+		{
+			struct path_result way;
+
+			if (!path_state_find_continue(bots_path_state, SEARCH_SURFACES_PER_TICK, &found))
+				return;
+			bots.gate_searching = FALSE;
+			bots.search_owner = 0;
+			if (found && path_state_build_path(bots_path_state, &way))
+			{
+				real_point3d const *at;
+				short k;
+
+				bot_ground(&a, &sa);
+				at = &sa;
+				for (k = 0; found && k < way.step_count; k++)
+				{
+					if (bot_crosses_gate(at, &way.steps[k].point, bot_gates.count))
+						found = FALSE;
+					at = &way.steps[k].point;
+				}
+			}
+		}
+		if (found || !bots.gate_line)
+		{
+			bot_gate_drop(pathfinding);
+			return;
+		}
+		if (bot_gates.probe == NONE && bots.gate_surface_count > 0)
+			bot_gates.probe = bots.gate_surfaces[0];
+		bot_gates.count++;
+		bots.gate_object = NONE;
+		return;
+	}
+	}
+	/* (that way failed: the next, or the next candidate) */
+	if (++bots.gate_way >= 4)
+		bots.gate_object = NONE;
+}
+
+/* whether the straight line between two points crosses a gate's line, at a
+height where the gate stands (its foot to 2.5 above) */
+static boolean bot_behind_gate(
+	real_point3d const *from,
+	real_point3d const *to)
+{
+	short i;
+
+	for (i = 0; i < bot_gates.count; i++)
+	{
+		if (bot_crosses_gate(from, to, i))
+			return TRUE;
+	}
+	return FALSE;
+}
+
 /* ---------- thinking */
 
 /* whether a unit is hidden by its active camouflage from a bot so far
@@ -1027,6 +1571,13 @@ static long nearest_enemy(
 		d = horizontal_distance(from, object_get_origin(player->unit_index, &position));
 		if (bot_camouflaged(player->unit_index, d))
 			continue;
+		/* (none behind a gate -- the way to it goes round, far -- but the one it
+		fights while it sees it) */
+		if (bot_gates.count && !(player->unit_index == bot->target_unit && bot->target_visible) &&
+			bot_behind_gate(from, &position))
+		{
+			continue;
+		}
 		/* (the one it is fighting stays a little nearer than it is) */
 		if (player->unit_index == bot->target_unit)
 			d -= 3.f;
@@ -1077,7 +1628,7 @@ static void bots_search_step(
 	boolean found, complete, built;
 	unsigned long profile_start;
 
-	if (!bots.search_owner || !bots_path_state)
+	if (!bots.search_owner || bots.search_owner > MAXIMUM_BOTS || !bots_path_state)
 		return;
 	bot = &bots.bots[bots.search_owner - 1];
 	if (bot->unit_index != bots.search_unit || !unit_alive(bot->unit_index))
@@ -1095,6 +1646,21 @@ static void bots_search_step(
 	profile_start = bot_profile_start();
 	built = path_state_build_path(bots_path_state, &bot->path);
 	bot_profile_end(3, profile_start);
+	/* (a way across a gate's line is no way: a search that starts on a
+	surface taken out under one -- the search takes its start as it is --
+	could find one) */
+	if (built && bot_gates.count)
+	{
+		real_point3d const *at = &bots.search_start;
+		short k;
+
+		for (k = 0; built && k < bot->path.step_count; k++)
+		{
+			if (bot_behind_gate(at, &bot->path.steps[k].point))
+				built = FALSE;
+			at = &bot->path.steps[k].point;
+		}
+	}
 	if (built && bot->path.step_count > 0)
 	{
 		bot->path_valid = TRUE;
@@ -1198,6 +1764,10 @@ static void plan_path(
 		if (dx * dx + dy * dy > (real)bot_direct_limit * bot_direct_limit)
 			direct = FALSE;
 	}
+	/* (none across a gate: a bot on a surface taken out under one -- the
+	search's start is not tested -- would find one) */
+	if (direct && bot_gates.count && bot_behind_gate(&start, &goal))
+		direct = FALSE;
 	/* a straight walk there first: one test and no search where it's clear
 	(most of the open maps; the search's smoothing would make the same one
 	step of it), not counted against the searches */
@@ -1235,6 +1805,7 @@ static void plan_path(
 		return;
 	bots.search_owner = (short)(bot - bots.bots) + 1;
 	bots.search_unit = bot->unit_index;
+	bots.search_start = start;
 	bots.search_goal = goal;
 	bots.search_point = target_unit == NONE;
 	bots.search_backward = backward;
