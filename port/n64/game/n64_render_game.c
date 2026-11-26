@@ -791,6 +791,65 @@ void n64_first_person_model_draw(
 	n64_render_object_remapped(&n64, node_remap);
 }
 
+/* ---------- the view's frustum */
+
+/* The view's frustum (render.frustum), as render.c builds it for each
+window: the HUD's projections onto the screen read it -- the objectives' nav
+points (hud_nav_points.c); without it every point fell on the eye and no nav
+point was drawn. Built the first time a view's HUD reads it (a nav point's
+draw), not for every view: a game with no nav point builds none. Over the
+whole view (no frustum bounds), as n64_render_view draws the 3D: the vertical
+field of view spans the view's height, not the window bounds' */
+static struct render_camera frustum_camera;
+static unsigned long frustum_view, frustum_built_view = (unsigned long)-1;
+
+/* the part of render_camera_build_frustum (render_cameras.c) that the nav
+points read -- world_to_view and render_camera_view_to_screen's four
+projection terms -- worked out as it works them out with no frustum bounds
+(half extents 1, centre 0): the same values, bit for bit. Its planes, corners,
+bounds and their checks, which nothing on the N64 reads, stay as v0.7.0 has
+them (zero): they were most of the build's time (0.6 ms a frame on Infinity
+with four players, where the HUD is drawn every frame) */
+static void build_nav_frustum(
+	const struct render_camera *camera,
+	struct render_frustum *frustum)
+{
+	real viewport_width = (real)(camera->viewport_bounds.x1 - camera->viewport_bounds.x0);
+	real viewport_height = (real)(camera->viewport_bounds.y1 - camera->viewport_bounds.y0);
+	real field_of_view_tangent = tangent(camera->vertical_field_of_view * 0.5f);
+	real_vector3d view_left;
+	real_vector3d view_up;
+	real_vector3d view_backward;
+
+	cross_product3d(&camera->forward, &camera->up, &view_left);
+	cross_product3d(&view_left, &camera->forward, &view_up);
+	negate_vector3d(&camera->forward, &view_backward);
+	normalize3d(&view_left);
+	normalize3d(&view_up);
+	normalize3d(&view_backward);
+	frustum->view_to_world.forward = view_left;
+	frustum->view_to_world.left = view_up;
+	frustum->view_to_world.up = view_backward;
+	frustum->view_to_world.position = camera->position;
+	frustum->view_to_world.scale = 1.0f;
+	matrix4x3_inverse(&frustum->view_to_world, &frustum->world_to_view);
+	frustum->projection_matrix[0][0] = 1.0f /
+		(1.0f / viewport_height * viewport_width * halo_pixel_aspect() * field_of_view_tangent);
+	frustum->projection_matrix[1][1] = 1.0f / (field_of_view_tangent * 1.0f);
+	frustum->projection_matrix[2][0] = 0.0f;
+	frustum->projection_matrix[2][1] = 0.0f;
+	frustum->projection_valid = TRUE;
+}
+
+void n64_render_frustum_needed(
+	void)
+{
+	if (frustum_built_view == frustum_view)
+		return;
+	frustum_built_view = frustum_view;
+	build_nav_frustum(&frustum_camera, &render.frustum);
+}
+
 /* ---------- frames */
 
 static boolean frame_begun;
@@ -974,6 +1033,21 @@ void render_frame(
 		render.local_player_index = window->local_player_index;
 		render.window_index = window_index;
 		render.camera = *camera;
+		/* the view as it is drawn, for its frustum (n64_render_frustum_needed:
+		its eye, directions and field of view -- a test's chase or spin view,
+		an online game's view in a vehicle replace the camera's) */
+		frustum_camera = *camera;
+		frustum_camera.position.x = view.position[0];
+		frustum_camera.position.y = view.position[1];
+		frustum_camera.position.z = view.position[2];
+		frustum_camera.forward.i = view.forward[0];
+		frustum_camera.forward.j = view.forward[1];
+		frustum_camera.forward.k = view.forward[2];
+		frustum_camera.up.i = view.up[0];
+		frustum_camera.up.j = view.up[1];
+		frustum_camera.up.k = view.up[2];
+		frustum_camera.vertical_field_of_view = view.vertical_field_of_view;
+		frustum_view++;
 		n64_render_view(&view);
 		render_objects_for_view(window->local_player_index, window_index == 0 && n64_debug_flag("debug_chase"));
 #ifdef HALO_N64_ONLINE

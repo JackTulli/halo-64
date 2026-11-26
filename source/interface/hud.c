@@ -1216,12 +1216,17 @@ void temporary_hud_draw(
 /* (N64) The HUD's critical sprites asked for before the rest of the view's
 HUD, before its recording begins, each where and when the game draws it:
 the shield and health meters and the motion sensor
-(hud_unit_n64_load_meters_first), the digits of the ammo and grenade counts
-(hud_draw_n64_load_digits_first), and the weapon's meters, the panels
-behind its count and the grenades' and its crosshair
-(hud_weapon_n64_load_critical_first). The HUD's sprites load in the order
-they are first asked for; where the heap has room for only some, these
-have it, and keep a smaller reserve than the rest (n64_hud.c) */
+(hud_unit_n64_load_meters_first), the digits of the ammo and grenade
+counts (hud_draw_n64_load_digits_first), the nav points that show the
+player the game's objectives (game_engine_n64_load_nav_points_first: one
+small sprite, asked for before all of the weapon's -- its meters and
+crosshair as well as its count's panels and type icons -- so that a tight
+heap leaves out a count's panel or a type icon before the way to the
+objective), and
+the weapon's meters, the panels behind its count and the grenades' and its
+crosshair (hud_weapon_n64_load_critical_first). The HUD's sprites load in
+the order they are first asked for; where the heap has room for only some,
+these have it, and keep a smaller reserve than the rest (n64_hud.c) */
 extern void n64_hud_critical_pass(int on);
 
 void hud_n64_load_critical_first(
@@ -1237,6 +1242,7 @@ void hud_n64_load_critical_first(
 		n64_hud_critical_pass(TRUE);
 		hud_unit_n64_load_meters_first(player_get(player_index));
 		hud_draw_n64_load_digits_first();
+		game_engine_n64_load_nav_points_first(local_player_index);
 		hud_weapon_n64_load_critical_first(player_get(player_index));
 		n64_hud_critical_pass(FALSE);
 	}
@@ -1254,11 +1260,19 @@ void hud_draw_screen(
 	{
 		struct player_datum *player = player_get(player_index);
 
+#ifdef HALO_N64
+		/* (N64) not the teammates' markers: they read the view's frustum
+		too, which the N64 did not build until the objectives' nav points
+		needed it, so no team game has drawn them; they stay as they were
+		(their own change, which would also ask for the frustum first:
+		n64_render_frustum_needed, n64_render_game.c) */
+#else
 		if ((!game_engine_running() || game_engine_display_team_indicators()) &&
 			!cinematic_in_progress())
 		{
 			hud_draw_players();
 		}
+#endif
 
 		if (!game_time_get_paused() &&
 			render.local_player_index == local_player_get_next(NONE))

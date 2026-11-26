@@ -805,6 +805,12 @@ float n64_hud_text_width(const char *text);
 int n64_hud_text_height(void);
 int n64_hud_ensure_sprite(int number);
 int n64_hud_ensure_sprite_at(int number, float s, float t);
+/* (the PC maps' cartridges) the sprite those would load, found once a map
+(n64_hud_map_generation), and such sprites asked for (a refused one asked
+for again later than other critical sprites) */
+int n64_hud_sprite_at(int number, int at, float s, float t);
+void n64_hud_ensure_sprites_patient(const short *sprites, int count);
+unsigned n64_hud_map_generation(void);
 void n64_hud_mark_decoration_at(int number, float s, float t);
 void n64_hud_mark_carried_at(int number, float s, float t);
 void n64_hud_critical_pass(int on);

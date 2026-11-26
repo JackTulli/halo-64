@@ -173,6 +173,9 @@ void hud_draw_n64_load_digits_first(
 void hud_draw_n64_load_sequence_first(
 	long bitmap_group_index,
 	short sequence_index);
+short hud_draw_n64_sequence_sprite(
+	long bitmap_group_index,
+	short sequence_index);
 void hud_draw_n64_mark_sequence_decoration(
 	long bitmap_group_index,
 	short sequence_index);

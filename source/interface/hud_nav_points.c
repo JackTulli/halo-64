@@ -123,6 +123,7 @@ symbols in this file:
 #include "units/units.h"
 #ifdef HALO_N64
 #include "game/game.h"
+#include "n64_debug_flags.h"
 #endif
 
 /* ---------- constants */
@@ -254,6 +255,24 @@ void unit_get_head_position(
 /* ---------- globals */
 
 static struct hud_nav_point_player_datum *nav_point_data;
+
+#ifdef HALO_N64
+/* (N64) the view's frustum, built the first time a view reads it
+(n64_render_game.c) */
+extern void n64_render_frustum_needed(void);
+/* (N64) set while a nav point's quad is drawn (n64_hud.c) */
+extern int n64_hud_dense;
+
+/* (N64) the nav points drawn larger and denser than Halo draws them, to be
+read on the N64's picture: no smaller than N64_NAV_POINT_SCALE_FLOOR of their
+bitmap (Halo halves them beyond 15 units: at 320x240 a far glyph was some 8
+pixels across), and their texels' alpha a as 1 - (1 - a)^2 (n64_hud.c,
+_mode_dense: the texels are about half transparent, and the N64's HUD lays a
+glow over the scene where Halo adds it). The test flag "debug_nav_halo" draws
+them as Halo does, to compare the two in one program */
+#define N64_NAV_POINT_SCALE_FLOOR 0.75f
+#define n64_nav_point_as_halo() n64_debug_flag("debug_nav_halo")
+#endif
 
 /* ---------- private code */
 
@@ -676,12 +695,18 @@ short hud_get_nav_point_render_type(
 #ifdef HALO_N64
 	/* the line of sight to a nav point (a teammate's), tested again only
 	every few ticks: a ray through the BSP and the objects each HUD
-	recording was a tenth of the HUD's time */
+	recording was a tenth of the HUD's time. Not a point of no object (an
+	objective's, a flag's): those all shared one entry, so one objective's
+	answer stood for the others' -- the glyph of one drawn as the diamond of
+	another's wall. Their callers test each such point again only every
+	fourth draw or update, staggered, and keep its answer
+	(game_engine_render_nav_points, hud_update_nav_point_local_player) */
 	static struct { long reference_object_index; long time; short render_type; } n64_seen[MAXIMUM_LOCAL_PLAYERS][8];
 	short n64_slot = (short)(reference_object_index == NONE ? 7 :
 		(DATUM_INDEX_TO_ABSOLUTE_INDEX(reference_object_index) % 7));
 
-	if (local_player_index >= 0 && local_player_index < MAXIMUM_LOCAL_PLAYERS &&
+	if (reference_object_index != NONE &&
+		local_player_index >= 0 && local_player_index < MAXIMUM_LOCAL_PLAYERS &&
 		n64_seen[local_player_index][n64_slot].reference_object_index == reference_object_index &&
 		game_time_get() - n64_seen[local_player_index][n64_slot].time < 6 &&
 		game_time_get() >= n64_seen[local_player_index][n64_slot].time)
@@ -716,7 +741,7 @@ short hud_get_nav_point_render_type(
 	--global_current_collision_user_depth;
 
 #ifdef HALO_N64
-	if (local_player_index >= 0 && local_player_index < MAXIMUM_LOCAL_PLAYERS)
+	if (reference_object_index != NONE && local_player_index >= 0 && local_player_index < MAXIMUM_LOCAL_PLAYERS)
 	{
 		n64_seen[local_player_index][n64_slot].reference_object_index = reference_object_index;
 		n64_seen[local_player_index][n64_slot].time = game_time_get();
@@ -782,6 +807,11 @@ void custom_render_nav_point(
 			1.0f-distance*(1.0f/15.0f),
 			0.7) + 0.5f;
 	}
+#ifdef HALO_N64
+	if (arrow_scale < N64_NAV_POINT_SCALE_FLOOR && !n64_nav_point_as_halo())
+		arrow_scale = N64_NAV_POINT_SCALE_FLOOR;
+	n64_render_frustum_needed();
+#endif
 
 	matrix4x3_transform_point(
 		&render.frustum.world_to_view,
@@ -877,6 +907,9 @@ void custom_render_nav_point(
 			color.green *= PIN(fade, 0.0f, 1.0f);
 			color.blue *= PIN(fade, 0.0f, 1.0f);
 
+#ifdef HALO_N64
+			n64_hud_dense = !n64_nav_point_as_halo();
+#endif
 			hud_draw_bitmap_direct(
 				bitmap,
 				_hud_anchor_center,
@@ -886,6 +919,9 @@ void custom_render_nav_point(
 				theta,
 				((pixel32)alpha<<24) | real_rgb_color_to_pixel32(&color),
 				FALSE);
+#ifdef HALO_N64
+			n64_hud_dense = 0;
+#endif
 
 			if (waypoint_type!=_waypoint_off_screen)
 			{
@@ -1026,6 +1062,76 @@ void hud_render_nav_points(
 
 	return;
 }
+
+#if defined(HALO_N64) && (defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS))
+/* (the PC maps' cartridges: n64_hud.c HUD_PACKING) */
+/* (N64) a nav point's arrow -- its on screen, off screen and occluded
+sequences, each drawn as its objective moves in and out of view -- asked for
+with the HUD's critical sprites (hud_n64_load_critical_first): it shows the
+player where the objective is. The HUD sprites its sequences draw from
+(n64_hud_sprite_at), added to sprites[count..room) where not there yet; the
+new count. Each arrow's are found with the tags once a map (a type the map
+leaves without a sequence has none) */
+#define N64_NAV_SPRITE_ARROWS 32
+static unsigned n64_nav_sprites_map;
+static short n64_nav_sprites[N64_NAV_SPRITE_ARROWS][NUMBER_OF_WAYPOINT_TYPES];
+
+short hud_nav_point_n64_sprites(
+	short nav_index,
+	short *sprites,
+	short count,
+	short room)
+{
+	extern unsigned n64_hud_map_generation(void);
+	struct hud_waypoint_arrow *arrow = NULL;
+	short waypoint_type;
+
+	if (!hud_globals || hud_globals->waypoint.arrow_bitmap.index == NONE ||
+		nav_index < 0 || nav_index >= hud_globals->waypoint.arrows.count)
+	{
+		return count;
+	}
+	if (n64_nav_sprites_map != n64_hud_map_generation() + 1)
+	{
+		short i, j;
+
+		for (i = 0; i < N64_NAV_SPRITE_ARROWS; i++)
+		{
+			for (j = 0; j < NUMBER_OF_WAYPOINT_TYPES; j++)
+				n64_nav_sprites[i][j] = -2;
+		}
+		n64_nav_sprites_map = n64_hud_map_generation() + 1;
+	}
+	for (waypoint_type = 0; waypoint_type < NUMBER_OF_WAYPOINT_TYPES; waypoint_type++)
+	{
+		short sprite = nav_index < N64_NAV_SPRITE_ARROWS ? n64_nav_sprites[nav_index][waypoint_type] : -2;
+		short i;
+
+		if (sprite == -2)
+		{
+			if (!arrow)
+			{
+				arrow = TAG_BLOCK_GET_ELEMENT(
+					&hud_globals->waypoint.arrows,
+					nav_index,
+					struct hud_waypoint_arrow);
+			}
+			sprite = arrow->sequence_indices[waypoint_type] < 0 ? NONE : hud_draw_n64_sequence_sprite(
+				hud_globals->waypoint.arrow_bitmap.index,
+				arrow->sequence_indices[waypoint_type]);
+			if (nav_index < N64_NAV_SPRITE_ARROWS)
+				n64_nav_sprites[nav_index][waypoint_type] = sprite;
+		}
+		if (sprite == NONE)
+			continue;
+		for (i = 0; i < count && sprites[i] != sprite; i++)
+			;
+		if (i == count && count < room)
+			sprites[count++] = sprite;
+	}
+	return count;
+}
+#endif
 
 #ifdef HALO_N64
 static unsigned short n64_nav_point_updates[4];

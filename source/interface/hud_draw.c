@@ -1943,6 +1943,27 @@ void hud_draw_n64_mark_sequence_decoration(
 		clip ? (clip->y0 + clip->y1) * 0.25f * bitmap->height : 0.f);
 }
 
+/* (N64) the HUD sprite hud_draw_n64_load_sequence_first would load for a
+sequence, or NONE (n64_hud_sprite_at) */
+short hud_draw_n64_sequence_sprite(
+	long bitmap_group_index,
+	short sequence_index)
+{
+	extern int n64_hud_sprite_at(int number, int at, float s, float t);
+	struct bitmap_data const *bitmap = NULL;
+	real_rectangle2d const *clip = NULL;
+
+	if (bitmap_group_index == NONE)
+		return NONE;
+	hud_retrieve_bitmap_and_bounding_rect(bitmap_group_index, sequence_index, 0, &bitmap, &clip);
+	if (!bitmap || bitmap->pixels_offset <= 0)
+		return NONE;
+	if (clip)
+		return (short)n64_hud_sprite_at(bitmap->pixels_offset - 1, TRUE,
+			(clip->x0 + clip->x1) * 0.25f * bitmap->width, (clip->y0 + clip->y1) * 0.25f * bitmap->height);
+	return (short)n64_hud_sprite_at(bitmap->pixels_offset - 1, FALSE, 0.f, 0.f);
+}
+
 void hud_draw_n64_load_sequence_first(
 	long bitmap_group_index,
 	short sequence_index)
