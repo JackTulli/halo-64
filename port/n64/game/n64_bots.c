@@ -59,6 +59,8 @@ A cloaked enemy it sees only within 2 units, or for 1 s after it fires.
 #include "interface/hud.h"
 #include "interface/hud_definitions.h"
 #include "scenario/scenario_definitions.h"
+#include "game/game_engine_king.h"
+#include "math/geometry.h"
 
 #include "../src/n64.h"
 
@@ -308,6 +310,9 @@ struct bot
 	short side_timer, side_turn, side_ticks;
 	/* a returner: how long it has searched the place it knew */
 	short search_ticks;
+	/* King: whether it was near its hill's centre (where it never gives
+	up) at its last thought */
+	short hill_zone;
 	/* a way up to a point above it that its search could not reach: 0
 	none, 1 a search backward to make, 2 walking to the bend it found, 3
 	tried; that bend and its surface */
@@ -1540,6 +1545,38 @@ static long bot_hidden_enemy(
 }
 
 
+/* King: whether a point (a unit's centre, as king_engine_player_update
+tests it) is in the hill, and how far it is from the hill's edge */
+static boolean bot_in_hill(
+	real_point3d const *point,
+	real *edge)
+{
+	real_point2d at;
+	short i, count = (short)king_globals.hill_point_count;
+
+	*edge = 0.f;
+	if (count < 3 || point->z < king_globals.hill_bottom || point->z > king_globals.hill_top)
+		return FALSE;
+	at.x = point->x;
+	at.y = point->y;
+	if (!convex_hull2d_test_point(count, king_globals.convex_hull, &at, 0.f))
+		return FALSE;
+	*edge = 1e9f;
+	for (i = 0; i < count; i++)
+	{
+		real_point2d const *a = &king_globals.convex_hull[i], *b = &king_globals.convex_hull[(i + 1) % count];
+		real ex = b->x - a->x, ey = b->y - a->y, length = square_root(ex * ex + ey * ey);
+
+		if (length > 0.01f)
+		{
+			real d = fabsf((at.x - a->x) * ey - (at.y - a->y) * ex) / length;
+
+			if (d < *edge)
+				*edge = d;
+		}
+	}
+	return TRUE;
+}
 
 
 /* the point its role sends it to, if a point (FALSE: none, or a unit) */
@@ -1590,6 +1627,9 @@ static boolean bot_role_point(
 	case _bot_role_defend:
 		*point = objectives.base[team];
 		return TRUE;
+	case _bot_role_hill:
+		*point = king_globals.hill_center;
+		return king_globals.hill_point_count > 0;
 	}
 	return FALSE;
 }
@@ -1668,6 +1708,26 @@ static real bot_weapon_range(
 		return 6.f;
 	case _bot_role_carry:
 		return 0.f;
+	case _bot_role_hill:
+	{
+		real edge;
+
+		/* (on the hill: none, unless no weapon it carries can fire; on the way
+		to it, near its way) */
+		if (unit_alive(bot->unit_index) && bot_in_hill(&object_get(bot->unit_index)->object.bounding_sphere_center, &edge))
+		{
+			short i;
+
+			for (i = 0; i < 4; i++)
+			{
+				long weapon = unit_inventory_get_weapon(bot->unit_index, i);
+
+				if (weapon != NONE && weapon_can_be_fired(weapon))
+					return 0.f;
+			}
+		}
+		return 6.f;
+	}
 	}
 	return WEAPON_SEARCH_RANGE;
 }
@@ -1685,6 +1745,12 @@ static boolean bot_role_walks(
 	case _bot_role_defend:
 	case _bot_role_return:
 		return TRUE;
+	case _bot_role_hill:
+	{
+		real_point3d goal;
+
+		return !bot_role_point(bot, position, &goal) || horizontal_distance(position, &goal) < 25.f;
+	}
 	}
 	return FALSE;
 }
@@ -1767,13 +1833,38 @@ static short bot_walk_objective(
 	boolean point = bot_role_point(bot, position, &goal);
 	boolean engage = FALSE;
 	short team = bot_team(bot);
+	boolean zone;
 
 	if (bot->keep_timer > 0)
 		bot->keep_timer -= step;
+	/* (on the hill: it holds its place and fights from there, a pause or
+	not; a dodge that takes it off, and it walks back in) */
+	if (bot->role == _bot_role_hill)
+	{
+		real edge;
+
+		if (bot_in_hill(&unit->object.bounding_sphere_center, &edge))
+		{
+			/* (and its count of no progress starts afresh: a dodge off
+			the hill gets its full 3 s) */
+			bot->role_pause = 0;
+			bot->role_still = 0;
+			bot->role_best = 1e9f;
+			return _bot_goal_hold;
+		}
+	}
 	/* (a goal that moved -- a hill that moved, a flag that fell -- is a
 	new goal: no pause) */
 	if (point && bot->role_pause > 0 && bot->role_surface != NONE && distance3d(&goal, &bot->role_point) > 2.f)
 		bot->role_pause = 0;
+	/* (near the hill's centre -- 3 units across, 2 of its height -- a pause
+	ends: it goes back in) */
+	if (bot->role == _bot_role_hill && bot->role_pause > 0 &&
+		horizontal_distance(position, &king_globals.hill_center) < 3.f &&
+		fabsf(king_globals.hill_center.z - position->z) < 2.f)
+	{
+		bot->role_pause = 0;
+	}
 	if (bot->role_pause > 0)
 	{
 		/* (a goal given up a while ago: it fights as in Slayer) */
@@ -1828,6 +1919,20 @@ static short bot_walk_objective(
 		}
 		*moving = TRUE;
 		return _bot_goal_move;
+	case _bot_role_hill:
+	{
+		/* (just off it -- within 2 units of its widest point -- back in
+		first) */
+		{
+			real reach = 0.f;
+			short i;
+
+			for (i = 0; i < (short)king_globals.hill_point_count; i++)
+				reach = MAX(reach, horizontal_distance(&king_globals.hill_center, &king_globals.hill_points[i]));
+			engage = in_range && distance < 10.f && horizontal_distance(position, &king_globals.hill_center) > reach + 2.f;
+		}
+		break;
+	}
 	}
 	if (!point)
 		return _bot_goal_fight;
@@ -1893,6 +1998,14 @@ static short bot_walk_objective(
 			d = horizontal_distance(position, &goal);
 		}
 	}
+	/* (near the hill's centre -- 3 units across, 2 of its height -- it never
+	leaves the goal (but on its way to a bend found backward): there its
+	count runs only to just under the give-up, for its 1-s stop below, and
+	it starts afresh as the bot steps out: there it gets its full 3 s) */
+	zone = bot->role == _bot_role_hill && bot->approach_state != 2 && d < 3.f && fabsf(goal.z - position->z) < 2.f;
+	if (bot->hill_zone && !zone)
+		bot->role_still = 0;
+	bot->hill_zone = (short)zone;
 	/* (in 3 s of its thoughts neither a unit nearer nor 2 units moved (not
 	on a free way: that leads off the path) --
 	a way round may lead away at first: given up for 10 s; a carrier finds
@@ -1903,6 +2016,11 @@ static short bot_walk_objective(
 		bot->role_best = MIN(d, bot->role_best);
 		bot->role_from = *position;
 		bot->role_still = 0;
+	}
+	else if (zone)
+	{
+		if ((bot->role_still += step) >= OBJECTIVE_PROGRESS_TICKS)
+			bot->role_still = OBJECTIVE_PROGRESS_TICKS - 1;
 	}
 	else if ((bot->role_still += step) >= OBJECTIVE_PROGRESS_TICKS)
 	{
@@ -2253,6 +2371,10 @@ static void objectives_update(
 				}
 			}
 			break;
+		case game_engine_king:
+			if (king_globals.hill_point_count > 0)
+				objectives.engine = game_engine_king;
+			break;
 		}
 	}
 	if (objectives.engine == game_engine_none)
@@ -2356,6 +2478,10 @@ static void objectives_update(
 	case game_engine_ctf:
 		bots_share_ctf(0);
 		bots_share_ctf(1);
+		break;
+	case game_engine_king:
+		for (i = 0; i < bots.created; i++)
+			bot_set_role(&bots.bots[i], _bot_role_hill, 0, NONE);
 		break;
 	}
 }
