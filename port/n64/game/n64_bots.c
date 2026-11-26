@@ -58,6 +58,7 @@ A cloaked enemy it sees only within 2 units, or for 1 s after it fires.
 #include "items/items.h"
 #include "interface/hud.h"
 #include "interface/hud_definitions.h"
+#include "scenario/scenario_definitions.h"
 
 #include "../src/n64.h"
 
@@ -1319,6 +1320,14 @@ them: the stand-ins at the end of this section give no role) */
 #endif
 
 #if BOT_OBJECTIVES
+/* the bot's unit as its player has it now (a dead bot's: NONE) */
+static long bot_player_unit(
+	struct bot const *bot)
+{
+	struct player_datum *player = (struct player_datum *)datum_try_and_get(player_data, bot->player_index);
+
+	return player && unit_alive(player->unit_index) ? player->unit_index : NONE;
+}
 
 static short bot_team(
 	struct bot const *bot)
@@ -1423,6 +1432,81 @@ static boolean bot_senses(
 	return magnitude_squared3d(&velocity) >= hud_globals->defaults.motion_sensor_velocity_sensitivity;
 }
 
+/* how long a sight of its own flag or its carrier counts (as in sight now):
+more than the longest gap between two looks, 16 ticks (a look each 10
+ticks or more, a thought each 8 ticks at most) */
+#define OWN_FLAG_SIGHT_TICKS 24
+
+/* CTF: what the bot knows of its own flag, looked at a few times a second
+while it is away, and at once when its carrier changed: its carrier where
+the bot sees it or its sensor shows it; the flag lying where the bot sees
+it */
+static void bot_watch_own_flag(
+	struct bot *bot,
+	real_point3d const *position,
+	real_point3d const *eye,
+	short step)
+{
+	short team = bot_team(bot);
+	long flag = objectives.flag[team], carrier = objectives.carrier[team];
+	/* (as its target's sight test: a seated bot's ray leaves its vehicle
+	out; a seated carrier's vehicle may end it) */
+	long vehicle = object_get(bot->unit_index)->object.parent_object_index;
+	long ignore = vehicle != NONE ? vehicle : bot->unit_index;
+	real_point3d at;
+
+	if (flag == NONE)
+		return;
+	if (!objectives.away[team])
+	{
+		bot->flag_known = objectives.base[team];
+		bot->flag_known_time = game_time_get();
+		bot->flag_known_unit = NONE;
+		return;
+	}
+	if (objectives.changed[team] >= bot->last_think)
+		bot->flag_look = 0;
+	if ((bot->flag_look -= step) > 0)
+		return;
+	bot->flag_look = 10;
+	if (carrier != NONE)
+	{
+		real_point3d carrier_eye;
+
+		object_get_origin(carrier, &at);
+		unit_get_camera_position(carrier, &carrier_eye);
+		if (bot_senses(bot, carrier, position) ||
+			(horizontal_distance(position, &at) < SIGHT_RANGE && !bot_camouflaged(carrier, horizontal_distance(position, &at)) &&
+			n64_ai_clusters_may_see(bot->unit_index, carrier) &&
+			line_of_sight_past(eye, &carrier_eye, ignore, object_get(carrier)->object.parent_object_index != NONE ?
+				object_get_ultimate_parent(carrier) : NONE)))
+		{
+			bot->flag_known = at;
+			bot->flag_known_time = game_time_get();
+			bot->flag_known_unit = carrier;
+		}
+		return;
+	}
+	item_get_position_even_if_in_inventory(flag, &at);
+	at.z += 0.3f;
+	if (horizontal_distance(position, &at) < SIGHT_RANGE && n64_ai_clusters_may_see(bot->unit_index, flag) &&
+		line_of_sight(eye, &at, ignore))
+	{
+		bot->flag_known = at;
+		bot->flag_known_time = game_time_get();
+		bot->flag_known_unit = NONE;
+	}
+}
+
+/* whether it knows where its own flag (or its carrier) is since the last
+announcement about it (the flag taken from home, returned, captured) */
+static boolean bot_knows_own_flag(
+	struct bot const *bot)
+{
+	short team = bot_team(bot);
+
+	return bot->flag_known_time > 0 && bot->flag_known_time >= objectives.announced[team];
+}
 
 /* whether the bot saw (or its sensor showed) this very unit carrying its
 own flag in the last OWN_FLAG_SIGHT_TICKS */
@@ -1430,8 +1514,11 @@ static boolean bot_sees_own_carrier(
 	struct bot const *bot,
 	long carrier)
 {
-	(void)bot;
-	(void)carrier;
+	if (carrier != NONE && bot_knows_own_flag(bot) && bot->flag_known_unit == carrier &&
+		game_time_get() - bot->flag_known_time <= OWN_FLAG_SIGHT_TICKS)
+	{
+		return TRUE;
+	}
 	return FALSE;
 }
 
@@ -1442,7 +1529,13 @@ it is */
 static long bot_hidden_enemy(
 	struct bot const *bot)
 {
-	(void)bot;
+	if (objectives.engine == game_engine_ctf)
+	{
+		long carrier = objectives.carrier[bot_team(bot)];
+
+		if (carrier != NONE && !bot_sees_own_carrier(bot, carrier))
+			return carrier;
+	}
 	return NONE;
 }
 
@@ -1460,6 +1553,43 @@ static boolean bot_role_point(
 
 	switch (bot->role)
 	{
+	case _bot_role_attack:
+		/* (the enemy flag, as the HUD marks it: at its base, or lying) */
+		if (objectives.flag[1 - team] == NONE)
+			return FALSE;
+		item_get_position_even_if_in_inventory(objectives.flag[1 - team], point);
+		return TRUE;
+	case _bot_role_carry:
+		if (objectives.engine == game_engine_ctf)
+		{
+			*point = objectives.base[team];
+			return TRUE;
+		}
+		return FALSE;
+	case _bot_role_return:
+		*point = bot->flag_known;
+		return TRUE;
+	case _bot_role_chase:
+		/* (where it last knew the carrier, for 5 s, until it gets within 3
+		units with no sight of it in the last OWN_FLAG_SIGHT_TICKS -- then
+		that sight counts as old, searched; then the carrier's likely way: to
+		the enemy base) */
+		if (bot_knows_own_flag(bot) && game_time_get() - bot->flag_known_time < 5 * TICKS_PER_SECOND)
+		{
+			if (horizontal_distance(position, &bot->flag_known) > 3.f || fabsf(bot->flag_known.z - position->z) > 2.f ||
+				game_time_get() - bot->flag_known_time <= OWN_FLAG_SIGHT_TICKS)
+			{
+				*point = bot->flag_known;
+				return TRUE;
+			}
+			/* (there, and the carrier not seen lately) */
+			bot->flag_known_time = game_time_get() - 5 * TICKS_PER_SECOND - 1;
+		}
+		*point = objectives.base[1 - team];
+		return TRUE;
+	case _bot_role_defend:
+		*point = objectives.base[team];
+		return TRUE;
 	}
 	return FALSE;
 }
@@ -1475,6 +1605,18 @@ static long bot_objective_target(
 {
 	switch (bot->role)
 	{
+	case _bot_role_chase:
+	case _bot_role_defend:
+	{
+		long carrier = objectives.carrier[bot_team(bot)];
+
+		if (bot_sees_own_carrier(bot, carrier) &&
+			(bot->role == _bot_role_chase || horizontal_distance(&bot->flag_known, &objectives.base[bot_team(bot)]) < 20.f))
+		{
+			return carrier;
+		}
+		break;
+	}
 	case _bot_role_escort:
 	{
 		struct data_iterator iterator;
@@ -1640,6 +1782,23 @@ static short bot_walk_objective(
 	}
 	switch (bot->role)
 	{
+	case _bot_role_attack:
+	case _bot_role_return:
+		engage = in_range && distance < (bot->role == _bot_role_attack ? 10.f : 6.f);
+		break;
+	case _bot_role_carry:
+		arrive = objectives.engine == game_engine_ctf ? 0.3f : 1.f;
+		break;
+	case _bot_role_chase:
+		engage = in_range;
+		arrive = 3.f;
+		break;
+	case _bot_role_defend:
+		/* (a fight near its base, within 20 units of it) */
+		engage = bot->target_unit != NONE && bot->target_visible &&
+			horizontal_distance(object_get_origin(bot->target_unit, &enemy), &objectives.base[team]) < 20.f;
+		arrive = 3.f;
+		break;
 	case _bot_role_escort:
 		if (!unit_alive(bot->role_unit))
 			return _bot_goal_fight;
@@ -1677,6 +1836,37 @@ static short bot_walk_objective(
 	bot_goal_ground(bot, &goal);
 	goal = bot->role_ground;
 	d = horizontal_distance(position, &goal);
+	/* (a returner at the place it searches: a second there without seeing
+	the flag, and it knows no more; the roles are shared again) */
+	if (bot->role == _bot_role_return)
+	{
+		if (d > 1.5f || fabsf(goal.z - position->z) > 1.f || game_time_get() - bot->flag_known_time <= OWN_FLAG_SIGHT_TICKS)
+			bot->search_ticks = 0;
+		else if ((bot->search_ticks += step) >= TICKS_PER_SECOND)
+		{
+			short i;
+
+			/* (and its teammates who knew it lying there -- within 2 units
+			across and 1 in height, seen no later than this bot saw it --
+			forget it too: the team shares what it found) */
+			for (i = 0; i < bots.created; i++)
+			{
+				struct bot *mate = &bots.bots[i];
+
+				if (mate != bot && bot_team(mate) == team && mate->flag_known_unit == NONE &&
+					mate->flag_known_time > 0 && mate->flag_known_time <= bot->flag_known_time &&
+					horizontal_distance(&mate->flag_known, &bot->flag_known) < 2.f &&
+					fabsf(mate->flag_known.z - bot->flag_known.z) < 1.f)
+				{
+					mate->flag_known_time = 0;
+				}
+			}
+			bot->search_ticks = 0;
+			bot->flag_known_time = 0;
+			objectives.next_share = 0;
+			return _bot_goal_fight;
+		}
+	}
 	if (d <= arrive && goal.z - position->z < (arrive >= 3.f ? 2.f : 0.4f) &&
 		position->z - goal.z < (arrive >= 3.f ? 2.f : 1.f))
 	{
@@ -1835,7 +2025,189 @@ static boolean bot_near_pickup(
 		fabsf(goal.z - position->z) < 2.f;
 }
 
+/* CTF: a carrier riding: out within 6 units of its base (it scores on
+foot, with the flag in hand) */
+static boolean bot_ride_done(
+	struct bot *bot,
+	real_point3d const *position)
+{
+	return objectives.engine == game_engine_ctf && bot->role == _bot_role_carry &&
+		horizontal_distance(position, &objectives.base[bot_team(bot)]) < 6.f;
+}
 
+/* the share: a role for each living bot of a team (or each bot in
+free-for-all), its previous role kept where the case allows (ties: the
+lower bot number) */
+static void bot_set_role(
+	struct bot *bot,
+	short role,
+	short rank,
+	long role_unit)
+{
+	if (bot->role != role || bot->role_rank != rank || bot->role_unit != role_unit)
+	{
+		bot->role = role;
+		bot->role_rank = rank;
+		bot->role_unit = role_unit;
+		bot->role_surface = NONE;
+		bot->role_pause = 0;
+		bot->path_valid = FALSE;
+		bot->goal_weapon = NONE;
+		bot->keep_timer = 0;
+		/* (its own path search going on is for the old goal: dropped) */
+		if (bots.search_owner == (short)(bot - bots.bots) + 1)
+		{
+			bots.search_owner = 0;
+			bots.path_cooldown = TICKS_BETWEEN_PATHS;
+		}
+	}
+}
+
+/* the living bot of a team without a role yet nearest a point (one with
+that role and rank already first), or NONE */
+static short bot_nearest_free(
+	short team,
+	unsigned long taken,
+	short role,
+	short rank,
+	real_point3d const *point)
+{
+	short i, best = NONE;
+	real best_value = 1e30f;
+
+	for (i = 0; i < bots.created; i++)
+	{
+		struct bot *bot = &bots.bots[i];
+		long unit_index = bot_player_unit(bot);
+		real_point3d at;
+		real value;
+
+		if ((taken & (1UL << i)) || unit_index == NONE || (team != NONE && bot_team(bot) != team))
+			continue;
+		value = point ? horizontal_distance(object_get_origin(unit_index, &at), point) : 0.f;
+		if (bot->role == role && bot->role_rank == rank)
+			value -= 1000.f;
+		if (value < best_value)
+		{
+			best_value = value;
+			best = i;
+		}
+	}
+	return best;
+}
+
+static short bot_team_members(
+	short team)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+	short count = 0;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL)
+	{
+		if (player->team_index == team)
+			count++;
+	}
+	return count;
+}
+
+/* CTF, for a team: the carrier; a returner (its flag lying where one of
+its bots knows); chasers (its flag carried: 1, 2 with 4 bots or more); an
+escort (a teammate carries the enemy flag); a defender from 3 members (2
+from 6); the rest attack -- or, the enemy flag carried by a teammate, go
+with it farther back */
+static void bots_share_ctf(
+	short team)
+{
+	unsigned long taken = 0;
+	long enemy_carrier = objectives.carrier[1 - team];
+	boolean ours = enemy_carrier != NONE && unit_get(enemy_carrier)->unit.player_index != NONE &&
+		player_get(unit_get(enemy_carrier)->unit.player_index)->team_index == team;
+	short members = bot_team_members(team), living = 0, defenders, chasers, i, b;
+	real_point3d carrier_at;
+
+	for (i = 0; i < bots.created; i++)
+	{
+		struct bot *bot = &bots.bots[i];
+		long unit_index = bot_player_unit(bot);
+
+		if (unit_index == NONE || bot_team(bot) != team)
+			continue;
+		living++;
+		if (unit_index == enemy_carrier)
+		{
+			bot_set_role(bot, _bot_role_carry, 0, NONE);
+			taken |= 1UL << i;
+		}
+	}
+	if (objectives.believed[team] == _bot_flag_lying)
+	{
+		/* (the nearest of those that saw it lying, one returning already
+		first) */
+		real best_distance = 1e30f;
+
+		b = NONE;
+		for (i = 0; i < bots.created; i++)
+		{
+			struct bot *bot = &bots.bots[i];
+			long unit_index = bot_player_unit(bot);
+			real_point3d at;
+			real d;
+
+			if ((taken & (1UL << i)) || unit_index == NONE || bot_team(bot) != team || !bot_knows_own_flag(bot) ||
+				bot->flag_known_unit != NONE)
+			{
+				continue;
+			}
+			d = horizontal_distance(object_get_origin(unit_index, &at), &bot->flag_known) -
+				(bot->role == _bot_role_return ? 1000.f : 0.f);
+			if (d < best_distance)
+			{
+				best_distance = d;
+				b = i;
+			}
+		}
+		if (b != NONE)
+		{
+			bot_set_role(&bots.bots[b], _bot_role_return, 0, NONE);
+			taken |= 1UL << b;
+		}
+	}
+	if (objectives.believed[team] == _bot_flag_taken)
+	{
+		chasers = living >= 4 ? 2 : 1;
+		while (chasers-- > 0 && (b = bot_nearest_free(team, taken, _bot_role_chase, 0, &objectives.base[team])) != NONE)
+		{
+			bot_set_role(&bots.bots[b], _bot_role_chase, 0, NONE);
+			taken |= 1UL << b;
+		}
+	}
+	if (ours)
+	{
+		object_get_origin(enemy_carrier, &carrier_at);
+		if ((b = bot_nearest_free(team, taken, _bot_role_escort, 0, &carrier_at)) != NONE)
+		{
+			bot_set_role(&bots.bots[b], _bot_role_escort, 0, enemy_carrier);
+			taken |= 1UL << b;
+		}
+	}
+	defenders = members >= 6 ? 2 : members >= 3 ? 1 : 0;
+	while (defenders-- > 0 && (b = bot_nearest_free(team, taken, _bot_role_defend, 0, &objectives.base[team])) != NONE)
+	{
+		bot_set_role(&bots.bots[b], _bot_role_defend, 0, NONE);
+		taken |= 1UL << b;
+	}
+	for (i = 0; i < bots.created; i++)
+	{
+		if ((taken & (1UL << i)) || bot_player_unit(&bots.bots[i]) == NONE || bot_team(&bots.bots[i]) != team)
+			continue;
+		if (ours)
+			bot_set_role(&bots.bots[i], _bot_role_escort, 1, enemy_carrier);
+		else
+			bot_set_role(&bots.bots[i], _bot_role_attack, 0, NONE);
+	}
+}
 
 
 /* the objectives' state, each tick before the bots think: the game type
@@ -1860,6 +2232,27 @@ static void objectives_update(
 		objectives.carrier[0] = objectives.carrier[1] = NONE;
 		switch (variant->game_engine_index)
 		{
+		case game_engine_ctf:
+			/* (both bases on the map, two flags, no flag swapping sides:
+			the built-in variant) */
+			if (game_engine_has_teams() && variant->game_engine_variant.ctf.single_flag_time <= 0 &&
+				!variant->game_engine_variant.ctf.assault)
+			{
+				short team;
+
+				objectives.engine = game_engine_ctf;
+				for (team = 0; team < 2; team++)
+				{
+					long flag = find_netgame_flag(NULL, 0.f, 0.f, _netgame_flag_ctf_flag, team);
+
+					if (flag == NONE)
+						objectives.engine = game_engine_none;
+					else
+						objectives.base[team] = TAG_BLOCK_GET_ELEMENT(&global_scenario_get()->netgame_flags, flag,
+							struct scenario_netgame_flag)->position;
+				}
+			}
+			break;
 		}
 	}
 	if (objectives.engine == game_engine_none)
@@ -1903,11 +2296,67 @@ static void objectives_update(
 			changed = TRUE;
 		}
 	}
+	/* (what each team's bots can know of their own flag: home; taken, as
+	the grab from home is announced; lying, or taken again, once one of
+	them sees it or its carrier) */
+	if (objectives.engine == game_engine_ctf)
+	{
+		short team;
+
+		for (team = 0; team < 2; team++)
+		{
+			short was = objectives.believed[team];
+			boolean seen_lying = FALSE, seen_carried = FALSE, known_lying = FALSE;
+
+			/* (a bot of the team saw it lying, or saw its carrier, lately; one
+		knows where it lies) */
+			for (i = 0; i < bots.created; i++)
+			{
+				struct bot *bot = &bots.bots[i];
+
+				if (bot_team(bot) == team && bot_knows_own_flag(bot) && bot->flag_known_unit == NONE)
+					known_lying = TRUE;
+				if (bot_team(bot) == team && bot_knows_own_flag(bot) && bot->flag_known_time >= now - OWN_FLAG_SIGHT_TICKS)
+				{
+					if (bot->flag_known_unit == NONE)
+						seen_lying = TRUE;
+					else if (bot->flag_known_unit == objectives.carrier[team])
+						seen_carried = TRUE;
+				}
+			}
+			if (!objectives.away[team])
+				objectives.believed[team] = _bot_flag_home;
+			else if (objectives.believed[team] == _bot_flag_home)
+			{
+				objectives.believed[team] = _bot_flag_taken;
+				objectives.announced[team] = now;
+			}
+			else if (seen_lying)
+				objectives.believed[team] = _bot_flag_lying;
+			else if (seen_carried)
+				objectives.believed[team] = _bot_flag_taken;
+			/* (lying, but no bot of the team knows the place any more -- its
+			search found nothing: someone picked it up, unseen; the chasers go
+			to the enemy base, the carrier's way home) */
+			else if (objectives.believed[team] == _bot_flag_lying && !known_lying)
+				objectives.believed[team] = _bot_flag_taken;
+			if (objectives.believed[team] != was)
+			{
+				changed = TRUE;
+				if (objectives.believed[team] == _bot_flag_home)
+					objectives.announced[team] = now;
+			}
+		}
+	}
 	if (!changed && now < objectives.next_share)
 		return;
 	objectives.next_share = now + OBJECTIVE_SHARE_TICKS;
 	switch (objectives.engine)
 	{
+	case game_engine_ctf:
+		bots_share_ctf(0);
+		bots_share_ctf(1);
+		break;
 	}
 }
 
@@ -1926,6 +2375,8 @@ static long bot_hidden_enemy(
 #define bot_role_walks(bot, position) FALSE
 #define bot_walk_objective(bot, unit, position, in_range, distance, move, moving, along_path, step) _bot_goal_fight
 #define bot_near_pickup(bot, position) FALSE
+#define bot_watch_own_flag(bot, position, eye, step) ((void)0)
+#define bot_ride_done(bot, position) FALSE
 #define objectives_update(now) ((void)0)
 #endif
 /* a better weapon lying near enough and in sight, or NONE: with two
@@ -3161,6 +3612,9 @@ static void think(
 		weapon = entry == NONE ? &unarmed : &bot_weapons[entry];
 	}
 
+	/* what it knows of its own flag (CTF), before it chooses whom to fight */
+	if (objectives.engine == game_engine_ctf)
+		bot_watch_own_flag(bot, &position, &eye, step);
 	/* whom to fight (now and then), and can it see them (a few times a
 	second) */
 	if ((bot->choose_timer -= step) <= 0 || !unit_alive(bot->target_unit))
@@ -3471,6 +3925,10 @@ static void think(
 		bot->upset_ticks = (short)(unit_get(vehicle_index)->object.up.k < 0.5f ? bot->upset_ticks + step : 0);
 		if (bot->reach_ticks >= TICKS_PER_SECOND || bot->upset_ticks >= TICKS_PER_SECOND)
 			bot_leave_vehicle(bot, vehicle_index, bot->upset_ticks >= TICKS_PER_SECOND, &flags);
+		/* (a carrier riding: out near its base; a defender or a returner: out) */
+		if (bot->reach_ticks < TICKS_PER_SECOND && bot->upset_ticks < TICKS_PER_SECOND &&
+			(bot_ride_done(bot, &position) || bot->role == _bot_role_defend || bot->role == _bot_role_return))
+			bot_leave_vehicle(bot, vehicle_index, FALSE, &flags);
 	}
 	else if (moving)
 	{
