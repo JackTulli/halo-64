@@ -593,7 +593,8 @@ Builder carries, are built without them: `python3 tools/n64_build.py
 
 - Straight into a game, without the menu: `debug_map=<map>` (with
   `debug_players=<1-4>`, `debug_bots=<n>`, `debug_bot_skill=<0-3>`,
-  `debug_game_type=<variant>`, `debug_firefight=<difficulty>`), `autotest`
+  `debug_game_type=<n>` (the game type's position in the menu's GAME TYPE
+  list, 0 = SLAYER), `debug_firefight=<difficulty>`), `autotest`
   (scripted controllers), `debug_menu=<script>` (drives the menu: a press
   every 20 frames, `u d l r a b z s` on port 1, upper case on port 2, `.`
   none), `debug_title_time=<seconds>` (the title's camera path from there),
