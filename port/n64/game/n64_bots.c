@@ -62,6 +62,7 @@ A cloaked enemy it sees only within 2 units, or for 1 s after it fires.
 #include "game/game_engine_king.h"
 #include "math/geometry.h"
 #include "game/players_runtime.h"
+#include "game/game_engine_race.h"
 
 #include "../src/n64.h"
 
@@ -1657,6 +1658,26 @@ static boolean bot_in_hill(
 	return TRUE;
 }
 
+/* Race: a player's next checkpoint (the one the game lets it touch, as the
+HUD marks it), or NONE */
+real_point3d *game_engine_get_goal_position(real_point3d *position, short index);
+
+static short bot_next_checkpoint(
+	long player_index,
+	real_point3d *point)
+{
+	short k;
+
+	for (k = 0; k < 32; k++)
+	{
+		if (game_engine_get_goal_in_use(k) && race_goal_matches_player(player_index, k))
+		{
+			game_engine_get_goal_position(point, k);
+			return k;
+		}
+	}
+	return NONE;
+}
 
 /* the point its role sends it to, if a point (FALSE: none, or a unit) */
 static boolean bot_role_point(
@@ -1724,6 +1745,8 @@ static boolean bot_role_point(
 			return FALSE;
 		item_get_position_even_if_in_inventory(objectives.flag[0], point);
 		return TRUE;
+	case _bot_role_race:
+		return bot_next_checkpoint(bot->player_index, point) != NONE;
 	}
 	return FALSE;
 }
@@ -1846,6 +1869,19 @@ static boolean bot_role_walks(
 		real_point3d goal;
 
 		return !bot_role_point(bot, position, &goal) || horizontal_distance(position, &goal) < 25.f;
+	}
+	case _bot_role_race:
+	{
+		/* (near its checkpoint; within 25 units of one up on something, below
+		it or on its path round to it: on foot there, no vehicle to fetch) */
+		real_point3d goal;
+		real d;
+
+		if (!bot_role_point(bot, position, &goal))
+			return FALSE;
+		d = horizontal_distance(position, &goal);
+		return d < 15.f || (d < 25.f && (goal.z - position->z > 1.f || bot->approach_state == 2 ||
+			(bot->path_valid && horizontal_distance(&bot->path_goal, &goal) < 2.f)));
 	}
 	}
 	return FALSE;
@@ -2035,6 +2071,9 @@ static short bot_walk_objective(
 		break;
 	case _bot_role_hunt:
 		return _bot_goal_fight;
+	case _bot_role_race:
+		/* (a racer races: it fires as it goes, and no fight stops it) */
+		break;
 	}
 	if (!point)
 		return _bot_goal_fight;
@@ -2538,6 +2577,9 @@ static void objectives_update(
 			if (variant->game_engine_variant.oddball.oddball_ball_type == 0)
 				objectives.engine = game_engine_oddball;
 			break;
+		case game_engine_race:
+			objectives.engine = game_engine_race;
+			break;
 		}
 	}
 	if (objectives.engine == game_engine_none)
@@ -2648,6 +2690,10 @@ static void objectives_update(
 		break;
 	case game_engine_oddball:
 		bots_share_oddball();
+		break;
+	case game_engine_race:
+		for (i = 0; i < bots.created; i++)
+			bot_set_role(&bots.bots[i], _bot_role_race, 0, NONE);
 		break;
 	}
 }
