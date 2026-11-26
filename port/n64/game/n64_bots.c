@@ -61,6 +61,7 @@ A cloaked enemy it sees only within 2 units, or for 1 s after it fires.
 #include "scenario/scenario_definitions.h"
 #include "game/game_engine_king.h"
 #include "math/geometry.h"
+#include "game/players_runtime.h"
 
 #include "../src/n64.h"
 
@@ -1544,6 +1545,84 @@ static long bot_hidden_enemy(
 	return NONE;
 }
 
+/* Oddball: where the holder runs to: of the players' starting points 3-30
+units off and within 4 units of its height, the one farthest from the
+enemies it knows of (in sight, or on its motion sensor); the point it walks
+to kept unless another is 5 units better, and until it is there; knowing
+of none, it keeps that point until it is there */
+static void bot_choose_keep_away(
+	struct bot *bot,
+	real_point3d const *position)
+{
+	short count = player_get_starting_location_count(), i;
+	real best = -1.f;
+	real_point3d chosen = *position;
+	struct data_iterator iterator;
+	struct player_datum *player;
+	real_point3d enemies[MAXIMUM_BOTS + 4];
+	short enemy_count = 0;
+	/* (the point it walks to now, if any) */
+	boolean current = bot->role_surface != NONE && fabsf(bot->role_point.x - bot->flag_known.x) < 0.5f &&
+		fabsf(bot->role_point.y - bot->flag_known.y) < 0.5f && fabsf(bot->role_point.z - bot->flag_known.z) < 0.5f;
+	real_point3d const previous = bot->flag_known;
+	boolean teams = game_engine_has_teams();
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL && enemy_count < (short)NUMBEROF(enemies))
+	{
+		if (iterator.datum_index == bot->player_index || !unit_alive(player->unit_index) ||
+			(teams && player->team_index == bot_team(bot)))
+		{
+			continue;
+		}
+		if ((player->unit_index == bot->target_unit && bot->target_visible) ||
+			bot_senses(bot, player->unit_index, position))
+		{
+			object_get_origin(player->unit_index, &enemies[enemy_count++]);
+		}
+	}
+	if (!enemy_count && current &&
+		(horizontal_distance(position, &previous) >= 1.5f || fabsf(previous.z - position->z) >= 1.f))
+	{
+		bot->keep_timer = 3 * TICKS_PER_SECOND;
+		return;
+	}
+	for (i = 0; i < count; i++)
+	{
+		real_point3d const *at = &player_get_starting_location(i)->position;
+		real d = horizontal_distance(position, at), nearest = 1e9f;
+		/* (the point it walks to: kept unless another is clearly better,
+		and until it is there) */
+		boolean kept = current && fabsf(at->x - previous.x) < 0.5f && fabsf(at->y - previous.y) < 0.5f &&
+			fabsf(at->z - previous.z) < 0.5f;
+		short k;
+
+		if ((kept ? d < 1.5f && fabsf(at->z - position->z) < 1.f : d < 3.f) || d > 30.f ||
+			fabsf(at->z - position->z) > 4.f)
+		{
+			continue;
+		}
+		for (k = 0; k < enemy_count; k++)
+		{
+			real e = horizontal_distance(at, &enemies[k]);
+
+			if (e < nearest)
+				nearest = e;
+		}
+		/* (with no enemy known, the nearest such point: it keeps moving) */
+		if (!enemy_count)
+			nearest = 100.f - d;
+		if (kept)
+			nearest += 5.f;
+		if (nearest > best)
+		{
+			best = nearest;
+			chosen = *at;
+		}
+	}
+	bot->flag_known = chosen;
+	bot->keep_timer = 3 * TICKS_PER_SECOND;
+}
 
 /* King: whether a point (a unit's centre, as king_engine_player_update
 tests it) is in the hill, and how far it is from the hill's edge */
@@ -1602,7 +1681,17 @@ static boolean bot_role_point(
 			*point = objectives.base[team];
 			return TRUE;
 		}
-		return FALSE;
+		/* (Oddball: where it runs to, chosen again every 3 s or with an
+		enemy within 5 units, or there) */
+		if (bot->keep_timer <= 0 ||
+			(horizontal_distance(position, &bot->flag_known) < 1.5f && fabsf(bot->flag_known.z - position->z) < 1.f) ||
+			(bot->keep_timer <= 2 * TICKS_PER_SECOND && bot->target_visible && bot->target_unit != NONE &&
+			horizontal_distance(position, object_get_origin(bot->target_unit, &enemy)) < 5.f))
+		{
+			bot_choose_keep_away(bot, position);
+		}
+		*point = bot->flag_known;
+		return TRUE;
 	case _bot_role_return:
 		*point = bot->flag_known;
 		return TRUE;
@@ -1630,6 +1719,11 @@ static boolean bot_role_point(
 	case _bot_role_hill:
 		*point = king_globals.hill_center;
 		return king_globals.hill_point_count > 0;
+	case _bot_role_ball:
+		if (objectives.flag[0] == NONE)
+			return FALSE;
+		item_get_position_even_if_in_inventory(objectives.flag[0], point);
+		return TRUE;
 	}
 	return FALSE;
 }
@@ -1689,6 +1783,8 @@ static long bot_objective_target(
 		}
 		return best;
 	}
+	case _bot_role_hunt:
+		return objective_carrier(objectives.flag[0]);
 	}
 	return NONE;
 }
@@ -1933,6 +2029,12 @@ static short bot_walk_objective(
 		}
 		break;
 	}
+	case _bot_role_ball:
+		engage = in_range && distance < 10.f;
+		arrive = bot->role_rank ? 8.f : 0.3f;
+		break;
+	case _bot_role_hunt:
+		return _bot_goal_fight;
 	}
 	if (!point)
 		return _bot_goal_fight;
@@ -2327,6 +2429,62 @@ static void bots_share_ctf(
 	}
 }
 
+/* Oddball: the holder keeps the ball away; the ball lying free, every bot
+goes for it in free-for-all, the 2 nearest of each team in a team game
+(the rest near it); the ball held, the holder's teammates go with it and
+the others hunt it */
+static void bots_share_oddball(
+	void)
+{
+	long holder = objective_carrier(objectives.flag[0]);
+	short holder_team = holder != NONE && unit_get(holder)->unit.player_index != NONE ?
+		player_get(unit_get(holder)->unit.player_index)->team_index : NONE;
+	boolean teams = game_engine_has_teams();
+	unsigned long taken = 0;
+	short i, team;
+
+	for (i = 0; i < bots.created; i++)
+	{
+		struct bot *bot = &bots.bots[i];
+		long unit_index = bot_player_unit(bot);
+
+		if (unit_index == NONE)
+			continue;
+		if (unit_index == holder)
+			bot_set_role(bot, _bot_role_carry, 0, NONE);
+		else if (holder != NONE && teams && bot_team(bot) == holder_team)
+			bot_set_role(bot, _bot_role_escort, 0, holder);
+		else if (holder != NONE)
+			bot_set_role(bot, _bot_role_hunt, 0, NONE);
+		else if (objectives.flag[0] == NONE)
+			bot_set_role(bot, _bot_role_none, 0, NONE);
+		else if (!teams)
+			bot_set_role(bot, _bot_role_ball, 0, NONE);
+		else
+			continue;
+		taken |= 1UL << i;
+	}
+	if (holder != NONE || objectives.flag[0] == NONE || !teams)
+		return;
+	for (team = 0; team < 2; team++)
+	{
+		real_point3d ball;
+		short n, b;
+
+		item_get_position_even_if_in_inventory(objectives.flag[0], &ball);
+		for (n = 0; n < 2 && (b = bot_nearest_free(team, taken, _bot_role_ball, 0, &ball)) != NONE; n++)
+		{
+			/* (keeping its rank: first those already going for it) */
+			bot_set_role(&bots.bots[b], _bot_role_ball, 0, NONE);
+			taken |= 1UL << b;
+		}
+	}
+	for (i = 0; i < bots.created; i++)
+	{
+		if (!(taken & (1UL << i)) && bot_player_unit(&bots.bots[i]) != NONE)
+			bot_set_role(&bots.bots[i], _bot_role_ball, 1, NONE);
+	}
+}
 
 /* the objectives' state, each tick before the bots think: the game type
 and its objectives once a game is under way; the flags' or the ball's
@@ -2374,6 +2532,11 @@ static void objectives_update(
 		case game_engine_king:
 			if (king_globals.hill_point_count > 0)
 				objectives.engine = game_engine_king;
+			break;
+		case game_engine_oddball:
+			/* (the plain ball: held for time) */
+			if (variant->game_engine_variant.oddball.oddball_ball_type == 0)
+				objectives.engine = game_engine_oddball;
 			break;
 		}
 	}
@@ -2482,6 +2645,9 @@ static void objectives_update(
 	case game_engine_king:
 		for (i = 0; i < bots.created; i++)
 			bot_set_role(&bots.bots[i], _bot_role_hill, 0, NONE);
+		break;
+	case game_engine_oddball:
+		bots_share_oddball();
 		break;
 	}
 }
@@ -2954,6 +3120,9 @@ static void find_vehicle(
 	if (bot_role_walks(bot, position))
 		may_drive = FALSE;
 	if (bot->role == _bot_role_defend || bot->role == _bot_role_return)
+		may_ride = FALSE;
+	/* (Oddball: the ball's holder keeps away on foot, with no ride) */
+	if (bot->role == _bot_role_carry && objectives.engine == game_engine_oddball)
 		may_ride = FALSE;
 	long best = NONE;
 	short best_seat = NONE, best_role = _bot_seat_none;
@@ -3897,6 +4066,9 @@ static void think(
 	{
 		bot->goal_vehicle = NONE;
 	}
+	/* (the ball's holder: none) */
+	if (bot->goal_vehicle != NONE && bot->role == _bot_role_carry && objectives.engine == game_engine_oddball)
+		bot->goal_vehicle = NONE;
 	/* a vehicle near, on foot with no weapon to go for (the vehicles
 	section) -- in a fight in sight only a teammate's to ride, which it
 	fights from as it goes -- or one it got out of flipped, turned back over */
@@ -4055,6 +4227,12 @@ static void think(
 		if (bot->reach_ticks < TICKS_PER_SECOND && bot->upset_ticks < TICKS_PER_SECOND &&
 			(bot_ride_done(bot, &position) || bot->role == _bot_role_defend || bot->role == _bot_role_return))
 			bot_leave_vehicle(bot, vehicle_index, FALSE, &flags);
+		/* (the ball's holder in a seat: out) */
+		if (bot->reach_ticks < TICKS_PER_SECOND && bot->upset_ticks < TICKS_PER_SECOND &&
+			bot->role == _bot_role_carry && objectives.engine == game_engine_oddball)
+		{
+			bot_leave_vehicle(bot, vehicle_index, FALSE, &flags);
+		}
 	}
 	else if (moving)
 	{
