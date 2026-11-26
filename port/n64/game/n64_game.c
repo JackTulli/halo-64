@@ -207,7 +207,7 @@ static void n64_game_start(
 	{
 		n64_firefight_stop();
 		/* (up to 8, whatever the players: each biped ~2.7 ms of a tick) */
-		n64_bots_begin(PIN(n64_choice.bots, n64_menu_game_bots(n64_choice.game_type) ? 1 : 0, 8), n64_choice.bot_skill,
+		n64_bots_begin(PIN(n64_choice.bots, 0, 8), n64_choice.bot_skill,
 			n64_menu_game_teams(n64_choice.game_type));
 	}
 	player_spawn_count = (short)n64_choice.player_count;

@@ -725,7 +725,6 @@ const char *n64_menu_map_name(int map);
 int n64_menu_map_from_folder(const char *folder);
 const char *n64_menu_game_variant(int game_type);
 int n64_menu_game_teams(int game_type);
-int n64_menu_game_bots(int game_type);
 
 /* ---------- the HUD (n64_hud.c): drawn by the game's own HUD code
 (port/n64/game/n64_hud_game.c passes its quads, text and blips on).

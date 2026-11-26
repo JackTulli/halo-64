@@ -141,7 +141,6 @@ static const struct
 	const char *unit;
 	int scores[5];
 	int default_score;
-	int bot_match;
 } game_types[] = {
 	{"slayer", "SLAYER", 0, 2, "KILLS", {5, 10, 15, 25, 50}, 2},
 	{"team_slayer", "TEAM SLAYER", 1, 2, "KILLS", {10, 25, 50, 75, 100}, 2},
@@ -156,7 +155,6 @@ static const struct
 	{"team_oddball", "TEAM ODDBALL", 1, 3, "MINUTES", {1, 2, 3, 5, 10}, 1},
 	{"race", "RACE", 0, 4, "LAPS", {1, 3, 5, 7, 10}, 1},
 	{"team_race", "TEAM RACE", 1, 4, "LAPS", {1, 3, 5, 7, 10}, 1},
-	{"slayer", "BOT MATCH", 0, 2, "KILLS", {5, 10, 15, 25, 50}, 2, 1},
 };
 #define GAME_TYPE_COUNT ((int)(sizeof(game_types) / sizeof(game_types[0])))
 
@@ -171,7 +169,6 @@ int n64_menu_map_count(void) { return MAP_COUNT; }
 const char *n64_menu_map_name(int map) { return map >= 0 && map < MAP_COUNT ? maps[map].name : ""; }
 const char *n64_menu_game_variant(int type) { return type >= 0 && type < GAME_TYPE_COUNT ? game_types[type].variant : "slayer"; }
 int n64_menu_game_teams(int type) { return type >= 0 && type < GAME_TYPE_COUNT && game_types[type].teams; }
-int n64_menu_game_bots(int type) { return type >= 0 && type < GAME_TYPE_COUNT && game_types[type].bot_match; }
 
 int n64_menu_map_from_folder(const char *folder)
 {
@@ -2199,25 +2196,24 @@ static void draw_content(const struct n64_menu_choice *c, int item)
 /* the bots, one at a time from the least to the most there is room for
 beside the players (the PC expansion's menu went 4 then 8: 5, 6 and 7 were
 gone) */
-static int setup_bot_count(int count, int minimum, int players)
+static int setup_bot_count(int count, int players)
 {
 	int most = GAME_PLAYERS - (players > 1 ? players : 1);
 
 	if (most > MAXIMUM_BOTS)
 		most = MAXIMUM_BOTS;
-	return count > most ? most : count < minimum ? minimum : count;
+	return count > most ? most : count < 0 ? 0 : count;
 }
 
-static int setup_bot_step(int count, int step, int minimum, int players)
+static int setup_bot_step(int count, int step, int players)
 {
-	return setup_bot_count(count + (step > 0) - (step < 0), minimum, players);
+	return setup_bot_count(count + (step > 0) - (step < 0), players);
 }
 
 static void setup_normalize_bots(struct n64_menu_choice *c, int automated_roster)
 {
 	if (!automated_roster)
-		c->bots = setup_bot_count(c->bots, !DIFFICULTY_GAME(c) && n64_menu_game_bots(c->game_type) ? 1 : 0,
-			c->player_count);
+		c->bots = setup_bot_count(c->bots, c->player_count);
 }
 
 /* more bots than any console keeps up with: the menu says so */
@@ -3081,7 +3077,6 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					{
 						c->game_type = (c->game_type + GAME_TYPE_COUNT + step) % GAME_TYPE_COUNT;
 						score_index = game_types[c->game_type].default_score;
-						if (n64_menu_game_bots(c->game_type) && !c->bots) c->bots = 2;
 					}
 					else if (row == ROW_MAP)
 					{
@@ -3091,8 +3086,7 @@ int n64_menu_run(struct n64_menu_choice *c, const char *const *results, int resu
 					else if (row == ROW_SCORE)
 						score_index = (score_index + 5 + step) % 5;
 					else if (row == ROW_BOTS)
-						c->bots = setup_bot_step(c->bots, step, n64_menu_game_bots(c->game_type) ? 1 : 0, c->player_count);
-					if (!DIFFICULTY_GAME(c) && n64_menu_game_bots(c->game_type) && !c->bots) c->bots = 1;
+						c->bots = setup_bot_step(c->bots, step, c->player_count);
 				}
 				if (pad->pressed.start || (pad->pressed.a && row == ROW_START && slot >= 0))
 					start = c->player_count > 0;
