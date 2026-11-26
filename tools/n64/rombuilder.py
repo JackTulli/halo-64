@@ -41,6 +41,7 @@ log file.
 
 import argparse
 import ctypes
+import gc
 import json
 import os
 import shutil
@@ -75,9 +76,10 @@ CUSTOM_MAP_LIMIT = 24
 CE_MAP_BYTES = 1 << 30
 # a converter's memory at most (three at a time took ~2.4 GB)
 CONVERSION_BYTES = 900 << 20
-# a Custom Edition map's preparation with the campaign maps staged (its
-# largest process took 1,713 MiB; 781 MiB without them)
-PREPARATION_BYTES = 1800 << 20
+# a Custom Edition map's preparation with the campaign maps staged: its
+# largest process took 590 MiB at its peak (Yoyorast Island; pack 3's
+# 580-581), while it read the largest Xbox map; about 8 % more
+PREPARATION_BYTES = 640 << 20
 MAX_ROM_BYTES = 64 << 20
 
 
@@ -615,6 +617,12 @@ class RomBuilder:
                 except (BuildError, OSError, ValueError, KeyError, IndexError, struct.error) as error:
                     self.log(f"{name}.map not used for Custom Edition's shared tags: {error}")
                 shutil.rmtree(optional, ignore_errors=True)
+                # (the map just read, all of it decompressed, is held by
+                # objects that refer to each other (an XboxMap and its tags),
+                # so it stays in memory until a full garbage collection: the
+                # 9 campaign maps kept 1,878 MiB. Collected here, the next
+                # map is read without it)
+                gc.collect()
         if self.source.disc:
             self.step(10, "Maps copied from the disc")
         return maps

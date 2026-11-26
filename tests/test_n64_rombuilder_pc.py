@@ -1,4 +1,5 @@
 """Installer contracts exercised without invoking content converters or ROM tools."""
+import gc
 import json
 from pathlib import Path
 import queue
@@ -9,6 +10,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+import weakref
 
 from tools.n64 import rombuilder as rb
 from tools.n64.pc_input import PC_MAPS
@@ -273,6 +275,40 @@ class BuilderTests(unittest.TestCase):
         builder = self.builder(["multiplayer"])
         builder.run()
         self.assertEqual(len([a for m, a in builder.calls if m == "convert"]), 13)
+
+    def test_campaign_maps_staged_for_custom_edition_are_not_kept_in_memory(self):
+        # (a map's tag names are read into objects that refer to each other,
+        # as XboxMap and its tags, and that outlive a collection while they
+        # are made, so only a full collection frees them; each must be freed
+        # before the next map is read, also after a read that failed, with no
+        # automatic collection to rely on)
+        for name in ("a10", "a50", "b30"):
+            cache(self.xbox / (name + ".map"))
+        reads, held = [], []
+
+        class Read:
+            pass
+
+        def tag_names(path):
+            held.append(sum(ref() is not None for ref in reads))
+            read = Read()
+            read.cycle = read
+            reads.append(weakref.ref(read))
+            gc.collect()
+            if path.stem == "a50":
+                raise ValueError("damaged")
+            return set()
+
+        builder = self.builder(["custom"])
+        builder.input_stage = self.root / "stage"
+        if gc.isenabled():
+            gc.disable()
+            self.addCleanup(gc.enable)
+        with patch("tools.n64.ce_prepare.xbox_tag_names", tag_names):
+            builder.provide_maps()
+        self.assertEqual(builder.optional_maps, ["a10", "b30"])
+        self.assertEqual(held, [0, 0, 0])
+        self.assertEqual([ref() for ref in reads], [None, None, None])
 
     def test_cli_defaults_and_pc_selection(self):
         for options, expected in (([], ["multiplayer", "campaign"]),

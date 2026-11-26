@@ -3,10 +3,12 @@
 The layouts are Invader's definitions (INVADER_DEFINITIONS, as the converter reads them); without them the tests
 are skipped.
 """
+import gc
 import struct
 import tempfile
 import unittest
 import wave
+import weakref
 import zlib
 from unittest import mock
 from pathlib import Path
@@ -250,6 +252,41 @@ class CERepairTests(unittest.TestCase):
         self.space.edit = lambda tag, *args: edits.append((tag, *args))
         ce_prepare.keep_one_bsp(self.space, "levels\\test\\test", print)
         self.assertEqual(edits, [])
+
+
+class ResourceSourceTests(unittest.TestCase):
+    def test_each_xbox_map_read_is_freed_before_the_next(self):
+        # (a map's tag names are read into objects that refer to each other,
+        # as XboxMap and its tags, and that outlive a collection while they
+        # are made, so only a full collection frees them; only the names are
+        # kept, with no automatic collection to rely on)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        maps = Path(folder.name)
+        for name in ("bloodgulch", "a10"):
+            (maps / f"{name}.map").write_bytes(b"")
+        reads, held = [], []
+
+        class Read:
+            pass
+
+        def tag_names(path):
+            held.append(sum(ref() is not None for ref in reads))
+            read = Read()
+            read.cycle = read
+            reads.append(weakref.ref(read))
+            gc.collect()
+            return {("bitm", path.stem)}
+
+        if gc.isenabled():
+            gc.disable()
+            self.addCleanup(gc.enable)
+        tags = [("bitm", "bloodgulch", True), ("bitm", "a10", True), ("bitm", "nowhere", True)]
+        with mock.patch.object(ce_prepare, "xbox_tag_names", tag_names):
+            found = ce_prepare.resource_sources(tags, maps, lambda _: None)
+        self.assertEqual(found, {("bitm", "bloodgulch"): maps / "bloodgulch.map", ("bitm", "a10"): maps / "a10.map"})
+        self.assertEqual(held, [0, 0])
+        self.assertEqual([ref() for ref in reads], [None, None])
 
 
 if __name__ == "__main__":

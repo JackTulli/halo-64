@@ -32,6 +32,7 @@ them, ogg2wav or ffmpeg); the input maps are only read.
 
 import argparse
 import array
+import gc
 import json
 import os
 from pathlib import Path
@@ -260,6 +261,12 @@ def resource_sources(tags, xbox_maps, log):
         if not path.is_file():
             continue
         names = xbox_tag_names(path)
+        # (the map just read, all of it decompressed, is held by objects that
+        # refer to each other (an XboxMap and its tags) until a full garbage
+        # collection; only its names are needed. Without this, the process
+        # kept 1,250 MiB through the rest of a preparation with the campaign
+        # maps (524 MiB without them))
+        gc.collect()
         for tag in wanted - found.keys():
             if tag in names:
                 found[tag] = path
