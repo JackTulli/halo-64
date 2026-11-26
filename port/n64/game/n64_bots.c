@@ -55,6 +55,9 @@ A cloaked enemy it sees only within 2 units, or for 1 s after it fires.
 #include "ai/ai_debug.h"
 #include "scenario/scenario.h"
 #include "structures/structure_bsp_definitions.h"
+#include "items/items.h"
+#include "interface/hud.h"
+#include "interface/hud_definitions.h"
 
 #include "../src/n64.h"
 
@@ -116,6 +119,11 @@ some 0.8-1.6 units a second, its net move short when its strafe turns back) */
 /* no new driver goal while this many bots drive or have one: a moving vehicle's
 physics and pose are the dearest part of a bot's driving */
 #define MAXIMUM_BOT_DRIVERS 2
+/* objectives (the objectives section): a goal that gets no unit nearer
+this long (its thoughts) is left for a while */
+#define OBJECTIVE_SHARE_TICKS 30
+#define OBJECTIVE_PROGRESS_TICKS (3 * TICKS_PER_SECOND)
+#define OBJECTIVE_PAUSE_TICKS (10 * TICKS_PER_SECOND)
 
 enum
 {
@@ -277,12 +285,40 @@ struct bot
 	(seat_weapon) changes */
 	short seat_kind, seat_gun, seat_index;
 	long seat_vehicle, seat_weapon;
+	/* its objective (the objectives section): its role and its rank there
+	(an escort's second, a second ball-goer), the unit it goes with, the
+	goal point asked for last and the ground under it and the pathfinding surface there (NONE: not
+	looked for, -2: none), the nearest it came, where it was and the ticks
+	since it came a unit nearer or moved 2 units, a pause after a give-up; CTF: where it last knew its own
+	flag (or its carrier) to be, when, and the carrier it saw (NONE: the flag itself), its next look; Oddball: where its
+	holder runs to (flag_known) and when it chooses again */
+	short role, role_rank;
+	long role_unit;
+	real_point3d role_point, role_ground;
+	long role_surface;
+	real role_best;
+	real_point3d role_from;
+	short role_still, role_pause;
+	real_point3d flag_known;
+	long flag_known_time, flag_known_unit;
+	short flag_look, keep_timer;
+	/* walking straight to its goal along a wall: how long more, to which
+	side, and how long it has done so */
+	short side_timer, side_turn, side_ticks;
+	/* a returner: how long it has searched the place it knew */
+	short search_ticks;
+	/* a way up to a point above it that its search could not reach: 0
+	none, 1 a search backward to make, 2 walking to the bend it found, 3
+	tried; that bend and its surface */
+	short approach_state;
+	real_point3d approach;
+	long approach_surface;
 };
 
 /* New LOD fields extend the old prefix; read diagnostic stride from DWARF.
 (The vehicles' fields come after the rest: the stride grows, the old offsets
 stay.) */
-typedef char n64_bot_observer_stride[sizeof(struct bot) == 392 ? 1 : -1];
+typedef char n64_bot_observer_stride[sizeof(struct bot) == 500 ? 1 : -1];
 typedef char n64_bot_observer_ghost_offset[offsetof(struct bot, ghost_profile) == 246 ? 1 : -1];
 
 static struct
@@ -302,12 +338,34 @@ static struct
 	short search_owner;
 	long search_unit;
 	real_point3d search_goal;
+	/* (whether the search is to a point, and whether it goes backward:
+	from a point above its bot to the bot) */
+	boolean search_point, search_backward;
 	long weapon_definitions[NUMBER_OF_BOT_WEAPONS];
 	struct bot bots[MAXIMUM_BOTS];
 } bots;
 
-/* the pathfinder's working state (47 KB, only while there are bots) */
+/* the pathfinder's working state (32,908 bytes, only while there are bots) */
 static struct path_state *bots_path_state;
+
+/* the game's objectives, as the bots read them (the objectives section):
+the game type's engine if it has objectives the bots play (else none, as
+in Slayer); CTF: each team's flag, its carrier, whether it is away from
+home, what its team's bots can know of it (home, taken, lying where one
+of them knows), its base point, the tick it last changed hands and the tick of the last
+announcement about it (taken from home, home again); Oddball: the ball
+(flag[0]) and its holder; the next share of roles */
+static struct
+{
+	boolean ready;
+	short engine;
+	long flag[2], carrier[2];
+	boolean away[2];
+	short believed[2];
+	real_point3d base[2];
+	long changed[2], announced[2];
+	long next_share;
+} objectives;
 
 /* A lobby plan survives bots' per-map reset. Moving between teams never
 rerolls names. The same seed and count produce the preview and real roster. */
@@ -820,6 +878,7 @@ void n64_bots_create_players(
 	short i;
 
 	bots.created = 0;
+	csmemset(&objectives, 0, sizeof(objectives));
 	for (i = 0; i < MAXIMUM_BOTS; i++) bot_ghost_spawn_units[i] = NONE;
 	/* The native map has loaded now; keep this 32 KiB scratch outside the
 	arena, rather than pinning its released tail before a larger map loads. */
@@ -868,12 +927,17 @@ void n64_bots_create_players(
 		bot->goal_vehicle = NONE;
 		bot->given_up_vehicle = NONE;
 		bot->flip_vehicle = NONE;
+		bot->role_unit = NONE;
+		bot->role_surface = NONE;
+		bot->flag_known_unit = NONE;
 		bots.created++;
 	}
 	{
 		char line[64];
 
-		snprintf(line, sizeof(line), "n64: %d bots (skill %d)", bots.created, bots.skill);
+		/* (and when the path search's memory did not fit: no paths then) */
+		snprintf(line, sizeof(line), "n64: %d bots (skill %d)%s", bots.created, bots.skill,
+			bots_path_state ? "" : ", no path memory");
 		n64_log(line);
 	}
 }
@@ -918,6 +982,8 @@ static boolean bot_camouflaged(
 	return TRUE;
 }
 
+static long bot_hidden_enemy(struct bot const *bot); /* (the objectives section) */
+
 /* the nearest enemy's living unit: another team's player in a team game,
 any other player otherwise -- none it cannot see for its camouflage
 (bot_camouflaged: it would otherwise go straight for it, its way found
@@ -932,6 +998,8 @@ static long nearest_enemy(
 	struct player_datum *player;
 	long best = NONE;
 	real best_distance = 1e9f;
+	/* (CTF: its own flag's carrier only where it knows it) */
+	long hidden = bot_hidden_enemy(bot);
 
 	data_iterator_new(&iterator, player_data);
 	while ((player = data_iterator_next(&iterator)) != NULL)
@@ -941,7 +1009,7 @@ static long nearest_enemy(
 
 		if (iterator.datum_index == bot->player_index || !unit_alive(player->unit_index))
 			continue;
-		if (teams && player->team_index == self->team_index)
+		if ((teams && player->team_index == self->team_index) || player->unit_index == hidden)
 			continue;
 		/* (a rider's own position is its seat's, in its vehicle: objects.c,
 		object_get_origin) */
@@ -1023,25 +1091,82 @@ static void bots_search_step(
 		bot->path_age = 0;
 		bot->path_goal = bots.search_goal;
 	}
+	if (bots.search_backward)
+	{
+		/* (backward, from the point above: the bot walks first to the last
+		bend of that way that is not its own place) */
+		short k = (short)(bot->path.step_count - (bot->path.steps_finish_path ? 2 : 1));
+		real_point3d position;
+
+		bot->path_valid = FALSE;
+		bot->approach_state = 3;
+		object_get_origin(bot->unit_index, &position);
+		if (built && k >= 0 && horizontal_distance(&bot->path.steps[k].point, &position) > 2.f)
+		{
+			bot->approach = bot->path.steps[k].point;
+			bot->approach_surface = bot->path.steps[k].surface_index;
+			bot->approach_state = 2;
+			bot->role_best = 1e9f;
+			bot->role_still = 0;
+		}
+	}
+	else if (built && bots.search_point && bot->approach_state == 0 && bot->path.steps_finish_path &&
+		bot->path.step_count > 0)
+	{
+		/* (a whole way to a point that ends short of it, under it -- its
+		closest place, over a unit below it and within 6 units across: a
+		search backward next; not for a point at its end's height, such as a
+		flag room the path data leaves apart, whose way backward leads out) */
+		real_point3d const *end = &bot->path.steps[bot->path.step_count - 1].point;
+
+		if (horizontal_distance(end, &bots.search_goal) < 6.f && bots.search_goal.z - end->z > 1.f &&
+			distance3d(&bots.search_goal, &bot->role_ground) < 0.5f)
+			bot->approach_state = 1;
+	}
 }
 
 /* a path to the target, if this tick still has one to find: Halo's own
 over the collision BSP's surfaces; partial paths are kept */
 static void plan_path(
 	struct bot *bot,
-	long target_unit)
+	long target_unit,
+	real_point3d const *goal_point,
+	long goal_point_surface)
 {
 	struct path_input input;
 	real_point3d start, goal;
 	long start_surface, goal_surface;
 	boolean search = !bots.paths_this_tick && bots.path_cooldown <= 0 && !bots.search_owner;
 	boolean direct = bot->direct_wait <= 0 && bots.direct_tests_this_tick < DIRECT_TESTS_PER_TICK;
+	boolean backward = FALSE;
 
 	/* (its own search still going on: it waits for that) */
 	if (!bots_path_state || (!search && !direct) || bots.search_owner == (short)(bot - bots.bots) + 1)
 		return;
 	start_surface = biped_find_pathfinding_surface_index(bot->unit_index, &start);
-	goal_surface = biped_find_pathfinding_surface_index(target_unit, &goal);
+	/* (a unit's own point on its surface, or a point and its surface: an
+	objective's) */
+	if (target_unit != NONE)
+		goal_surface = biped_find_pathfinding_surface_index(target_unit, &goal);
+	else
+	{
+		goal = *goal_point;
+		goal_surface = goal_point_surface;
+	}
+	/* (a point above it its search did not reach: a search backward, from
+	the point to the bot -- its last bend is on the way up) */
+	if (target_unit == NONE && bot->approach_state == 1 && search)
+	{
+		real_point3d point = start;
+		long surface = start_surface;
+
+		start = goal;
+		start_surface = goal_surface;
+		goal = point;
+		goal_surface = surface;
+		backward = TRUE;
+		direct = FALSE;
+	}
 	if (start_surface == NONE || goal_surface == NONE)
 	{
 		if (search)
@@ -1086,8 +1211,12 @@ static void plan_path(
 	path_input_new(&input, 0.3f, FALSE, bot->unit_index);
 	path_input_set_start(&input, &start, start_surface);
 	/* (Halo's own bound for its AI's searches: a way much longer than the
-	straight line is not worth the search -- the closest point instead) */
-	path_input_set_search_bounds(&input, 2.5f * distance3d(&start, &goal) + 15.f);
+	straight line is not worth the search -- the closest point instead; to
+	a point, an objective, a longer way round is: up a ramp, round a ledge;
+	between a point and one above it, the way may start far off: round a
+	hill) */
+	path_input_set_search_bounds(&input, target_unit != NONE ? 2.5f * distance3d(&start, &goal) + 15.f :
+		4.f * distance3d(&start, &goal) + (fabsf(goal.z - start.z) > 1.f ? 80.f : 30.f));
 	path_state_new(&input, bots_path_state, NULL);
 	path_state_destination(bots_path_state, &goal, goal_surface, 40.f);
 	/* (in parts, bots_search_step; the next search waits for its end) */
@@ -1096,6 +1225,8 @@ static void plan_path(
 	bots.search_owner = (short)(bot - bots.bots) + 1;
 	bots.search_unit = bot->unit_index;
 	bots.search_goal = goal;
+	bots.search_point = target_unit == NONE;
+	bots.search_backward = backward;
 	bots_search_step();
 }
 
@@ -1126,6 +1257,677 @@ static boolean follow_path(
 	return FALSE;
 }
 
+/* ---------- objectives
+
+In Capture the Flag, King of the Hill, Oddball and Race (and their team
+forms) each bot has a role, shared out by its team (n64_bots_actions, once a
+second and at once when a flag or the ball changes hands): a goal (a point,
+or a unit to go with) and how far a fight may hold it from that goal. Its
+fight is the same as in Slayer; the role chooses where it walks when no
+enemy holds it, and which enemy comes first. A bot knows what a player
+knows: what the HUD marks (the enemy flag, the hill, the ball, its next
+checkpoint), its own base, what it sees itself, and what its motion sensor
+would show (motion_sensor.c's rule). With a flag or the ball in hand it
+never pulls a trigger or throws -- Halo drops what it carries then
+(players.c) -- and it melees only; no bot holds a trigger near an
+objective it is to pick up (players.c picks up no flag or ball then). In
+the other game types, and on a map without the game type's objectives,
+the bots have no role and play as before */
+
+enum
+{
+	_bot_role_none = 0,
+	_bot_role_attack, /* CTF: to the enemy flag */
+	_bot_role_carry, /* CTF: the enemy flag home; Oddball: the ball, kept away */
+	_bot_role_return, /* CTF: to its own flag, dropped where it was seen */
+	_bot_role_chase, /* CTF: after its own flag's carrier */
+	_bot_role_escort, /* CTF, Team Oddball: with a teammate who carries */
+	_bot_role_defend, /* CTF: at its own base */
+	_bot_role_hill, /* King: to the hill and on it */
+	_bot_role_ball, /* Oddball: to the ball lying free */
+	_bot_role_hunt, /* Oddball: after the ball's holder */
+	_bot_role_race /* Race: to its next checkpoint */
+};
+
+/* what a team's bots can know of their own flag (CTF): at home (seen, or
+announced: a return, a capture), taken (announced as it leaves home), or
+lying where one of them knows -- a drop is not announced; a dropped flag
+taken again is not either */
+enum
+{
+	_bot_flag_home = 0,
+	_bot_flag_taken,
+	_bot_flag_lying
+};
+
+/* what its role makes of a thought: walk to the goal, stay where it is (a
+fight in range strafes there), or fight as in Slayer */
+enum
+{
+	_bot_goal_fight = 0,
+	_bot_goal_move,
+	_bot_goal_hold
+};
+
+/* (the campaign and online cartridges start no game with objectives -- a
+campaign level, online Slayer (n64_game.c) -- so the code is left out of
+them: the stand-ins at the end of this section give no role) */
+#if !defined(HALO_N64_CAMPAIGN) && !defined(HALO_N64_ONLINE)
+#define BOT_OBJECTIVES 1
+#else
+#define BOT_OBJECTIVES 0
+#endif
+
+#if BOT_OBJECTIVES
+
+static short bot_team(
+	struct bot const *bot)
+{
+	return player_get(bot->player_index)->team_index;
+}
+
+/* the point under a goal on the level and its pathfinding surface: a ray
+down from just above it (once for each new goal point) */
+static void bot_goal_ground(
+	struct bot *bot,
+	real_point3d const *point)
+{
+	struct collision_result collision;
+	real_point3d from = *point;
+	real_vector3d down = { 0.f, 0.f, -3.f };
+
+	/* (the same point as asked for last, within half a unit) */
+	if (bot->role_surface != NONE && fabsf(bot->role_point.x - point->x) < 0.5f &&
+		fabsf(bot->role_point.y - point->y) < 0.5f && fabsf(bot->role_point.z - point->z) < 0.5f)
+	{
+		return;
+	}
+	bot->role_point = *point;
+	from.z += 0.5f;
+	bot->role_ground = *point;
+	bot->role_surface = NONE;
+	bot->role_best = 1e9f;
+	bot->role_still = 0;
+	bot->role_from = *point;
+	bot->side_timer = bot->side_ticks = 0;
+	bot->approach_state = 0;
+	/* (its own path search going on, a search backward or one for a point
+	over 2 units from this one: dropped) */
+	if (bots.search_owner == (short)(bot - bots.bots) + 1 &&
+		(bots.search_backward || horizontal_distance(point, &bots.search_goal) > 2.f))
+	{
+		bots.search_owner = 0;
+		bots.path_cooldown = TICKS_BETWEEN_PATHS;
+	}
+	if (collision_test_vector(FLAG(_collision_test_front_facing_surfaces_bit) | FLAG(_collision_test_structure_bit),
+		&from, &down, NONE, &collision) && collision.type == _collision_result_structure)
+	{
+		bot->role_ground = collision.point;
+		bot->role_surface = collision.surface_index;
+	}
+	else
+		bot->role_surface = -2; /* (none under it: walked to straight) */
+}
+
+/* the unit carrying an objective (a flag, the ball), or NONE */
+static long objective_carrier(
+	long weapon_index)
+{
+	struct object_datum *object = weapon_index != NONE ? object_try_and_get(weapon_index) : NULL;
+	long parent = object ? object->object.parent_object_index : NONE;
+
+	if (parent == NONE || !TEST_FLAG(_object_mask_unit, object_get(parent)->object.type))
+		return NONE;
+	return parent;
+}
+
+/* whether a bot holds a flag or the ball in its hands */
+static boolean bot_holds_objective(
+	long weapon_index)
+{
+	return weapon_index != NONE && weapon_is_flag(weapon_index);
+}
+
+/* whether the bot's motion sensor would show a unit: within its range and
+moving, or firing or throwing (motion_sensor.c, should_draw_object; the
+variant can turn the sensor off) */
+static boolean bot_senses(
+	struct bot const *bot,
+	long unit_index,
+	real_point3d const *position)
+{
+	struct unit_datum *unit;
+	real_vector3d velocity;
+	real range = hud_globals ? hud_globals->defaults.motion_sensor_range : 0.f;
+	real_point3d at;
+
+	if (range <= 0.f || !unit_alive(unit_index) || !game_engine_hud_draw_motion_sensor(bot->player_index) ||
+		!game_engine_draw_object_in_motion_sensor(unit_index))
+	{
+		return FALSE;
+	}
+	object_get_origin(unit_index, &at);
+	if (fabsf(at.x - position->x) >= range || fabsf(at.y - position->y) >= range ||
+		horizontal_distance(&at, position) >= range)
+	{
+		return FALSE;
+	}
+	unit = unit_get(unit_index);
+	if (TEST_FLAG(unit->unit.control_flags, _unit_control_weapon_primary_trigger_bit) ||
+		(unit->unit.grenade_throw_state != _unit_grenade_throw_idle &&
+		unit->unit.grenade_throw_state != _unit_grenade_throw_ending))
+	{
+		return TRUE;
+	}
+	object_get_velocities(unit_index, &velocity, NULL);
+	return magnitude_squared3d(&velocity) >= hud_globals->defaults.motion_sensor_velocity_sensitivity;
+}
+
+
+/* whether the bot saw (or its sensor showed) this very unit carrying its
+own flag in the last OWN_FLAG_SIGHT_TICKS */
+static boolean bot_sees_own_carrier(
+	struct bot const *bot,
+	long carrier)
+{
+	(void)bot;
+	(void)carrier;
+	return FALSE;
+}
+
+/* the enemy a bot may not choose as its target now (NONE: any): CTF, its
+own flag's carrier, unless it knows where that carrier is (seen or on its
+motion sensor within OWN_FLAG_SIGHT_TICKS) -- a player is not told where
+it is */
+static long bot_hidden_enemy(
+	struct bot const *bot)
+{
+	(void)bot;
+	return NONE;
+}
+
+
+
+
+/* the point its role sends it to, if a point (FALSE: none, or a unit) */
+static boolean bot_role_point(
+	struct bot *bot,
+	real_point3d const *position,
+	real_point3d *point)
+{
+	short team = bot_team(bot);
+	real_point3d enemy;
+
+	switch (bot->role)
+	{
+	}
+	return FALSE;
+}
+
+/* the enemy its role puts first, or NONE (the nearest enemy then):
+CTF: its own flag's carrier for a chaser or a defender that knows where it
+is now; of the enemies it knows of (its target in sight, or on its motion
+sensor), the one nearest a carrier it escorts, within 15 units of it;
+Oddball: the holder (the HUD marks the ball) */
+static long bot_objective_target(
+	struct bot *bot,
+	real_point3d const *position)
+{
+	switch (bot->role)
+	{
+	case _bot_role_escort:
+	{
+		struct data_iterator iterator;
+		struct player_datum *player;
+		real_point3d with;
+		long best = NONE;
+		real best_distance = 15.f;
+
+		if (!unit_alive(bot->role_unit))
+			break;
+		object_get_origin(bot->role_unit, &with);
+		data_iterator_new(&iterator, player_data);
+		while ((player = data_iterator_next(&iterator)) != NULL)
+		{
+			real_point3d at;
+			real d;
+
+			if (!unit_alive(player->unit_index) || player->team_index == bot_team(bot) ||
+				!((player->unit_index == bot->target_unit && bot->target_visible) ||
+				bot_senses(bot, player->unit_index, position)))
+			{
+				continue;
+			}
+			d = horizontal_distance(&with, object_get_origin(player->unit_index, &at));
+			if (d < best_distance && !bot_camouflaged(player->unit_index, horizontal_distance(position, &at)))
+			{
+				best_distance = d;
+				best = player->unit_index;
+			}
+		}
+		return best;
+	}
+	}
+	return NONE;
+}
+
+/* how far it may search for a better weapon: near its way while it goes
+for an objective; none with a flag or the ball in hand (a swap drops what
+is in hand: players.c) */
+static real bot_weapon_range(
+	struct bot const *bot)
+{
+	switch (bot->role)
+	{
+	case _bot_role_attack:
+	case _bot_role_escort:
+	case _bot_role_race:
+	case _bot_role_ball:
+		return 6.f;
+	case _bot_role_carry:
+		return 0.f;
+	}
+	return WEAPON_SEARCH_RANGE;
+}
+
+/* whether its role keeps it on foot (no driver's seat): a carrier (it
+rides only as a passenger), a defender, a returner, and a bot within 25
+units of its hill */
+static boolean bot_role_walks(
+	struct bot *bot,
+	real_point3d const *position)
+{
+	switch (bot->role)
+	{
+	case _bot_role_carry:
+	case _bot_role_defend:
+	case _bot_role_return:
+		return TRUE;
+	}
+	return FALSE;
+}
+
+/* the walk to its role's goal (a point by a path over the level, or the
+unit it goes with), unless a fight within its reach holds it: what it
+does this thought (move, hold, or fight as in Slayer) */
+/* the eight ways round a bot (1-8 in bot_free_way's answer) */
+static real const bot_ways[8][2] = { { 1.f, 0.f }, { 0.7071f, 0.7071f }, { 0.f, 1.f }, { -0.7071f, 0.7071f },
+	{ -1.f, 0.f }, { -0.7071f, -0.7071f }, { 0.f, -1.f }, { 0.7071f, -0.7071f } };
+
+/* whether a ray from a point (raised by a height), along a horizontal way
+for a length, is free of the level and of the objects that stop a body
+(the bot's own vehicle left out when it sits in one; a walkable slope of
+the level, rising ground, is no blockage) */
+static boolean bot_way_free(
+	struct bot *bot,
+	real_point3d const *position,
+	real height,
+	real i,
+	real j,
+	real length)
+{
+	struct collision_result collision;
+	real_point3d from = *position;
+	real_vector3d ray;
+	long vehicle = object_get(bot->unit_index)->object.parent_object_index;
+
+	from.z += height;
+	ray.i = length * i;
+	ray.j = length * j;
+	ray.k = 0.f;
+	return !collision_test_vector(FLAG(_collision_test_front_facing_surfaces_bit) | FLAG(_collision_test_structure_bit) |
+		FLAG(_collision_test_objects_bit) | FLAG(_collision_test_objects_scenery_bit) |
+		FLAG(_collision_test_objects_machines_bit) | FLAG(_collision_test_objects_vehicles_bit),
+		&from, &ray, vehicle != NONE ? vehicle : bot->unit_index, &collision) ||
+		(collision.type == _collision_result_structure && collision.plane.n.k > 0.7f);
+}
+
+/* a bot stopped or blocked on its way: of the eight ways round it (rays of
+a length, at a height above its point), the free one nearest its goal's,
+not straight on (it is stopped there); 1-8, or 0 when none is free */
+static short bot_free_way(
+	struct bot *bot,
+	real_point3d const *position,
+	real ti,
+	real tj,
+	real height,
+	real length)
+{
+	real best = -2.f;
+	short k, way = 0;
+
+	for (k = 0; k < 8; k++)
+	{
+		real along = bot_ways[k][0] * ti + bot_ways[k][1] * tj;
+
+		if (along > 0.9f || along <= best || !bot_way_free(bot, position, height, bot_ways[k][0], bot_ways[k][1], length))
+			continue;
+		best = along;
+		way = (short)(k + 1);
+	}
+	return way;
+}
+
+static short bot_walk_objective(
+	struct bot *bot,
+	struct unit_datum *unit,
+	real_point3d const *position,
+	boolean in_range,
+	real distance,
+	real_vector2d *move,
+	boolean *moving,
+	boolean *along_path,
+	short step)
+{
+	real_point3d goal, enemy;
+	real arrive = 0.3f, d;
+	long surface;
+	boolean point = bot_role_point(bot, position, &goal);
+	boolean engage = FALSE;
+	short team = bot_team(bot);
+
+	if (bot->keep_timer > 0)
+		bot->keep_timer -= step;
+	/* (a goal that moved -- a hill that moved, a flag that fell -- is a
+	new goal: no pause) */
+	if (point && bot->role_pause > 0 && bot->role_surface != NONE && distance3d(&goal, &bot->role_point) > 2.f)
+		bot->role_pause = 0;
+	if (bot->role_pause > 0)
+	{
+		/* (a goal given up a while ago: it fights as in Slayer) */
+		bot->role_pause -= step;
+		return _bot_goal_fight;
+	}
+	switch (bot->role)
+	{
+	case _bot_role_escort:
+		if (!unit_alive(bot->role_unit))
+			return _bot_goal_fight;
+		object_get_origin(bot->role_unit, &goal);
+		point = FALSE;
+		arrive = bot->role_rank ? 9.f : 4.f;
+		d = horizontal_distance(position, &goal);
+		/* (near it only on its floor: from below or above it, on along the
+		path) */
+		if (fabsf(goal.z - position->z) < 2.f)
+		{
+			if (d <= arrive + 3.f && in_range)
+				return _bot_goal_fight;
+			if (d <= arrive)
+				return _bot_goal_hold;
+		}
+		/* (along a path to the one it goes with, as to a target) */
+		bot->path_age += step;
+		if (!bot->path_valid || bot->path_age > PATH_LIFETIME || horizontal_distance(&bot->path_goal, &goal) > 4.f)
+			plan_path(bot, bot->role_unit, NULL, NONE);
+		if (follow_path(bot, &unit->object.position, move))
+			*along_path = TRUE;
+		else if (d > 0.01f)
+		{
+			move->i = (goal.x - position->x) / d;
+			move->j = (goal.y - position->y) / d;
+		}
+		*moving = TRUE;
+		return _bot_goal_move;
+	}
+	if (!point)
+		return _bot_goal_fight;
+	if (engage)
+		return _bot_goal_fight;
+	bot_goal_ground(bot, &goal);
+	goal = bot->role_ground;
+	d = horizontal_distance(position, &goal);
+	if (d <= arrive && goal.z - position->z < (arrive >= 3.f ? 2.f : 0.4f) &&
+		position->z - goal.z < (arrive >= 3.f ? 2.f : 1.f))
+	{
+		return (bot->role == _bot_role_carry && objectives.engine == game_engine_ctf) || bot->role == _bot_role_return ||
+			bot->role == _bot_role_attack || bot->role == _bot_role_race || bot->role == _bot_role_hill ?
+			_bot_goal_move : _bot_goal_hold;
+	}
+	/* (a way up found backward from its point: to that bend first, then
+	its search from there) */
+	surface = bot->role_surface;
+	if (bot->approach_state == 2)
+	{
+		if (horizontal_distance(position, &bot->approach) < 1.5f && fabsf(bot->approach.z - position->z) < 1.f)
+		{
+			bot->approach_state = 0;
+			bot->role_best = 1e9f;
+			bot->role_still = 0;
+			bot->path_valid = FALSE;
+		}
+		else
+		{
+			goal = bot->approach;
+			surface = bot->approach_surface;
+			d = horizontal_distance(position, &goal);
+		}
+	}
+	/* (in 3 s of its thoughts neither a unit nearer nor 2 units moved (not
+	on a free way: that leads off the path) --
+	a way round may lead away at first: given up for 10 s; a carrier finds
+	a new way instead) */
+	if (d < bot->role_best - 1.f ||
+		((bot->side_timer <= 0 || bot->side_turn == 0) && horizontal_distance(position, &bot->role_from) > 2.f))
+	{
+		bot->role_best = MIN(d, bot->role_best);
+		bot->role_from = *position;
+		bot->role_still = 0;
+	}
+	else if ((bot->role_still += step) >= OBJECTIVE_PROGRESS_TICKS)
+	{
+		bot->role_still = 0;
+		bot->path_valid = FALSE;
+		/* (a bend found backward and not reached: tried; the point itself
+		at once, its own search for the bend dropped) */
+		if (bot->approach_state == 2)
+		{
+			bot->approach_state = 3;
+			goal = bot->role_ground;
+			surface = bot->role_surface;
+			d = horizontal_distance(position, &goal);
+			bot->role_from = *position;
+			if (bots.search_owner == (short)(bot - bots.bots) + 1)
+			{
+				bots.search_owner = 0;
+				bots.path_cooldown = TICKS_BETWEEN_PATHS;
+			}
+		}
+		bot->role_best = d;
+		/* (a carrier or a racer: a real search this time, not the straight
+		test that led it here, and no pause) */
+		bot->direct_wait = DIRECT_PATH_RETRY_TICKS;
+		if (bot->role != _bot_role_carry && bot->role != _bot_role_race)
+		{
+			bot->role_pause = OBJECTIVE_PAUSE_TICKS;
+			return _bot_goal_fight;
+		}
+	}
+	bot->path_age += step;
+	if (surface >= 0 &&
+		(!bot->path_valid || bot->path_age > PATH_LIFETIME || horizontal_distance(&bot->path_goal, &goal) > 2.f))
+	{
+		plan_path(bot, NONE, &goal, surface);
+	}
+	/* (a point above it within 2.5 units, a ledge or a rock: a jump up,
+	once a second at most -- a person's way onto it; right below it too) */
+	if (d < 2.5f && goal.z - position->z > 0.4f && goal.z - position->z < 2.f && bot->role != _bot_role_carry &&
+		bot->keep_timer <= 0)
+	{
+		bot->jump_timer = 1;
+		bot->keep_timer = TICKS_PER_SECOND;
+	}
+	/* (stopped -- 1 s neither a unit nearer nor 2 units on; on its path, and
+	less than a unit moved too: a jump, as over a sill, and 2 s -- on its
+	path, the free way nearest its own of eight (round a rock); walking
+	straight, or with no free way, along the wall to one side, leaning in
+	(out of a room or past a crate the level's path data does not hold), the
+	other side after 10 s of that) */
+	{
+		real ti = d > 0.01f ? (goal.x - position->x) / d : 0.f, tj = d > 0.01f ? (goal.y - position->y) / d : 0.f;
+		boolean pathed = surface >= 0 && (d > 1.f || fabsf(goal.z - position->z) > 0.4f) && bot->path_valid &&
+			bot->path.step_index < bot->path.step_count;
+
+		if (d > 0.01f && (bot->unstick_timer > 0 || (bot->side_timer <= 0 && bot->role_still >= TICKS_PER_SECOND &&
+			(!pathed || horizontal_distance(position, &bot->role_from) < 1.f))))
+		{
+			bot->unstick_timer = 0;
+			bot->jump_timer = 1;
+			bot->side_timer = 2 * TICKS_PER_SECOND;
+			bot->side_turn = pathed ? bot_free_way(bot, position, ti, tj, 0.5f, 3.f) : 0;
+			/* (wall walks only: five to one side, 10 s, then five to the
+			other) */
+			if (bot->side_turn == 0 && (bot->side_ticks += 2 * TICKS_PER_SECOND) > 20 * TICKS_PER_SECOND)
+				bot->side_ticks = 2 * TICKS_PER_SECOND;
+		}
+		/* (right under its point: no way across to walk along a wall) */
+		if (d <= 0.01f)
+			bot->side_timer = 0;
+		if (bot->side_timer > 0)
+		{
+			bot->side_timer -= step;
+			/* (a free way that ends: what it moved is no progress) */
+			if (bot->side_timer <= 0 && bot->side_turn > 0)
+				bot->role_from = *position;
+			if (bot->side_turn > 0)
+			{
+				move->i = bot_ways[bot->side_turn - 1][0];
+				move->j = bot_ways[bot->side_turn - 1][1];
+			}
+			else
+			{
+				real turn = (bot->side_ticks <= 10 * TICKS_PER_SECOND) == (((bot - bots.bots) & 1) != 0) ? 1.f : -1.f;
+				real mi = -tj * turn + 0.4f * ti, mj = ti * turn + 0.4f * tj;
+				real m = square_root(mi * mi + mj * mj);
+
+				move->i = mi / m;
+				move->j = mj / m;
+			}
+		}
+		else if (surface >= 0 && (d > 1.f || fabsf(goal.z - position->z) > 0.4f) &&
+			follow_path(bot, &unit->object.position, move))
+		{
+			*along_path = TRUE;
+		}
+		else if (d > 0.01f)
+		{
+			/* (no path to the point itself -- the last step, a point with no
+			surface under it, or one Halo's paths do not reach: straight) */
+			move->i = ti;
+			move->j = tj;
+		}
+	}
+	*moving = d > 0.05f || *along_path || bot->side_timer > 0;
+	return _bot_goal_move;
+}
+
+/* whether the bot is about to walk over an objective it is to pick up
+(within 2 units of it): no trigger held then */
+static boolean bot_near_pickup(
+	struct bot *bot,
+	real_point3d const *position)
+{
+	real_point3d goal;
+
+	if (bot->role != _bot_role_attack && bot->role != _bot_role_return && bot->role != _bot_role_ball)
+		return FALSE;
+	return bot_role_point(bot, position, &goal) && horizontal_distance(position, &goal) < 2.f &&
+		fabsf(goal.z - position->z) < 2.f;
+}
+
+
+
+
+/* the objectives' state, each tick before the bots think: the game type
+and its objectives once a game is under way; the flags' or the ball's
+hands; the roles shared out once a second, and at once when a flag or the
+ball changes hands */
+static void objectives_update(
+	long now)
+{
+	boolean changed = FALSE;
+	short k, count, i;
+
+	if (!game_engine || !game_in_progress() || !game_engine_running())
+		return;
+	if (!objectives.ready)
+	{
+		struct game_variant *variant = game_engine_get_variant();
+
+		objectives.ready = TRUE;
+		objectives.engine = game_engine_none;
+		objectives.flag[0] = objectives.flag[1] = NONE;
+		objectives.carrier[0] = objectives.carrier[1] = NONE;
+		switch (variant->game_engine_index)
+		{
+		}
+	}
+	if (objectives.engine == game_engine_none)
+		return;
+	count = objectives.engine == game_engine_ctf ? 2 : objectives.engine == game_engine_oddball ? 1 : 0;
+	for (k = 0; k < count; k++)
+	{
+		long flag = objectives.flag[k], carrier;
+		boolean away;
+
+		/* (a flag or the ball found again when it is gone, a few times a
+		second) */
+		if (flag == NONE || !object_try_and_get(flag) || !TEST_FLAG(_object_mask_weapon, object_get(flag)->object.type) ||
+			!weapon_is_flag(flag))
+		{
+			struct object_iterator iterator;
+			struct object_datum *object;
+
+			objectives.flag[k] = flag = NONE;
+			objectives.carrier[k] = NONE;
+			objectives.away[k] = FALSE;
+			if (now % 15)
+				continue;
+			object_iterator_new(&iterator, _object_mask_weapon, 0);
+			while ((object = object_iterator_next(&iterator)) != NULL && flag == NONE)
+			{
+				if (weapon_is_flag(iterator.index) && (count == 1 || object->object.owner_team_index == k))
+					flag = iterator.index;
+			}
+			if ((objectives.flag[k] = flag) == NONE)
+				continue;
+			changed = TRUE;
+		}
+		carrier = objective_carrier(flag);
+		away = TEST_FLAG(weapon_get(flag)->weapon.flags, 6) && objectives.engine == game_engine_ctf;
+		if (carrier != objectives.carrier[k] || away != objectives.away[k])
+		{
+			objectives.carrier[k] = carrier;
+			objectives.away[k] = away;
+			objectives.changed[k] = now;
+			changed = TRUE;
+		}
+	}
+	if (!changed && now < objectives.next_share)
+		return;
+	objectives.next_share = now + OBJECTIVE_SHARE_TICKS;
+	switch (objectives.engine)
+	{
+	}
+}
+
+#else
+/* (the campaign and online cartridges) */
+static long bot_hidden_enemy(
+	struct bot const *bot)
+{
+	(void)bot;
+	return NONE;
+}
+
+#define bot_holds_objective(weapon_index) FALSE
+#define bot_objective_target(bot, position) NONE
+#define bot_weapon_range(bot) WEAPON_SEARCH_RANGE
+#define bot_role_walks(bot, position) FALSE
+#define bot_walk_objective(bot, unit, position, in_range, distance, move, moving, along_path, step) _bot_goal_fight
+#define bot_near_pickup(bot, position) FALSE
+#define objectives_update(now) ((void)0)
+#endif
 /* a better weapon lying near enough and in sight, or NONE: with two
 carried a pickup is a swap that drops the weapon in hand (players.c,
 player_handle_weapon_swap), so it must beat that one; with fewer, any
@@ -1133,7 +1935,8 @@ weapon the game would give it (an add, or a fresher copy of its own) */
 static long find_better_weapon(
 	struct bot *bot,
 	struct unit_datum *unit,
-	real_point3d const *eye)
+	real_point3d const *eye,
+	real range)
 {
 	struct object_iterator iterator;
 	struct object_datum *object;
@@ -1168,7 +1971,7 @@ static long find_better_weapon(
 		if (armed && !unit_approve_weapon_swap(bot->unit_index, weapon_index))
 			continue;
 		distance = horizontal_distance(&unit->object.position, &object->object.position);
-		if (distance > WEAPON_SEARCH_RANGE || fabsf(object->object.position.z - unit->object.position.z) > 2.5f)
+		if (distance > range || fabsf(object->object.position.z - unit->object.position.z) > 2.5f)
 			continue;
 		value = (real)(score - worst) - distance * 0.25f;
 		if (value > best_value)
@@ -1533,6 +2336,23 @@ static void bot_pause_vehicle_kind(
 		bot->rider_pause = VEHICLE_RETRY_TICKS;
 }
 
+/* the seats of a vehicle that are not a passenger's (the driver's, a
+gunner's): a carrier, which rides only as a passenger, takes none */
+static unsigned long bot_unlike_seats(
+	long vehicle_index)
+{
+	struct unit_definition *definition = unit_definition_get(object_get(vehicle_index)->definition_index);
+	unsigned long seats = 0;
+	short seat_index;
+
+	for (seat_index = 0; seat_index < definition->unit.seats.count && seat_index < 32; seat_index++)
+	{
+		if (bot_seat_role(vehicle_index, seat_index) != _bot_seat_passenger)
+			seats |= 1UL << seat_index;
+	}
+	return seats;
+}
+
 /* a vehicle to get into, looked for now and then on foot: a teammate's
 almost still one first (team games), else the nearest with no driver
 (fewer than MAXIMUM_BOT_DRIVERS bots driving) -- in a fight, only a
@@ -1549,6 +2369,15 @@ static void find_vehicle(
 	bots driving, is not looked for) */
 	boolean may_ride = teams && bot->rider_pause <= 0;
 	boolean may_drive = bot->driver_pause <= 0 && bot_drivers(bot) < MAXIMUM_BOT_DRIVERS;
+	/* (its role's way: a carrier rides only as a passenger; a defender, a
+	returner and a bot near its hill walk; a defender and a returner ride
+	with nobody) */
+	boolean passenger_only = bot->role == _bot_role_carry;
+
+	if (bot_role_walks(bot, position))
+		may_drive = FALSE;
+	if (bot->role == _bot_role_defend || bot->role == _bot_role_return)
+		may_ride = FALSE;
 	long best = NONE;
 	short best_seat = NONE, best_role = _bot_seat_none;
 	real best_value = 1e9f;
@@ -1603,7 +2432,8 @@ static void find_vehicle(
 			/* (a rider only in a team game, with its teammate at the wheel
 			and the vehicle almost still, as above) */
 			if (!may_ride || d > VEHICLE_RIDE_RANGE ||
-				(seat_index = bot_ride_seat(bot, vehicle_index, riders.seats, position)) == NONE)
+				(seat_index = bot_ride_seat(bot, vehicle_index,
+					riders.seats | (passenger_only ? bot_unlike_seats(vehicle_index) : 0), position)) == NONE)
 			{
 				continue;
 			}
@@ -1908,6 +2738,8 @@ static void bot_seat_changed(
 		bots.path_cooldown = TICKS_BETWEEN_PATHS;
 	}
 	bot->stuck_timer = bot->unstick_timer = bot->jump_timer = 0;
+	/* (a side walk or a driver's turn does not go on across a seat change) */
+	bot->side_timer = 0;
 	bot->stuck_check = 16;
 	bot->last_position = unit->object.position;
 	bot->sight_timer = 0;
@@ -1920,8 +2752,9 @@ enum
 	_bot_drive_on = 0,
 	_bot_drive_flipped,
 	_bot_drive_stuck,
-	_bot_drive_out_of_reach
+	_bot_drive_out_of_reach,
 };
+
 
 /* a driver's stick and facing (the vehicle turns to its driver's facing:
 units.c, vehicles.c). Its goal is its target: a Warthog with no gunner
@@ -2170,9 +3003,21 @@ static void bot_begin_life(
 	{
 		long player_index = bot->player_index;
 		short ghost_profile = bot->ghost_profile;
+		/* (its role, but a carrier's, and what it knew of its own flag) */
+		short role = bot->role == _bot_role_carry ? _bot_role_none : bot->role, role_rank = bot->role_rank;
+		long role_unit = bot->role_unit, flag_known_time = bot->flag_known_time, flag_known_unit = bot->flag_known_unit;
+		real_point3d flag_known = bot->flag_known;
 
 		csmemset(bot, 0, sizeof(*bot));
 		bot->ghost_profile = ghost_profile;
+		bot->role = role;
+		bot->role_rank = role_rank;
+		bot->role_unit = role_unit;
+		bot->role_surface = NONE;
+		bot->flag_known = flag_known;
+		bot->flag_known_time = flag_known_time;
+		bot->flag_known_unit = flag_known_unit;
+		objectives.next_share = 0;
 		bot->player_index = player_index;
 		bot->unit_index = player->unit_index;
 		bot->target_unit = NONE;
@@ -2249,6 +3094,8 @@ static void think(
 	short kind = _bot_vehicle_none;
 	boolean vehicle_gun = FALSE, to_vehicle = FALSE, boarding = FALSE, fighting;
 	real_vector3d steering = { 0.f, 0.f, 0.f };
+	/* what its role makes of this thought (the objectives section) */
+	short objective = _bot_goal_fight;
 
 	bot_begin_life(bot, player, unit);
 	/* (where it truly is: a rider's own position is its seat's, in its
@@ -2318,7 +3165,11 @@ static void think(
 	second) */
 	if ((bot->choose_timer -= step) <= 0 || !unit_alive(bot->target_unit))
 	{
-		long target = nearest_enemy(bot, &position);
+		/* (its role's first, else the nearest) */
+		long target = bot->role != _bot_role_none ? bot_objective_target(bot, &position) : NONE;
+
+		if (target == NONE)
+			target = nearest_enemy(bot, &position);
 
 		bot->choose_timer = 20;
 		if (target != bot->target_unit)
@@ -2332,6 +3183,15 @@ static void think(
 			bot->path_valid = FALSE;
 			bot->last_seen.x = bot->last_seen.y = bot->last_seen.z = 0.f;
 		}
+	}
+	/* (CTF: its own flag's carrier, no longer known: another target, its
+	way found afresh) */
+	if (bot->target_unit != NONE && bot->target_unit == bot_hidden_enemy(bot))
+	{
+		bot->target_unit = nearest_enemy(bot, &position);
+		bot->sight_timer = 0;
+		bot->path_valid = FALSE;
+		bot->last_seen.x = bot->last_seen.y = bot->last_seen.z = 0.f;
 	}
 	if (bot->target_unit != NONE)
 	{
@@ -2378,7 +3238,9 @@ static void think(
 	else
 		bot->target_visible = FALSE;
 
-	/* a better weapon lying near, while there is no fight in sight */
+	/* a better weapon lying near, while there is no fight in sight (near
+	its way while its role sends it somewhere; none with a flag or the ball
+	in hand) */
 	if (bot->direct_wait > 0)
 		bot->direct_wait -= step;
 	if (bot->given_up_timer > 0 && (bot->given_up_timer -= step) <= 0)
@@ -2386,14 +3248,15 @@ static void think(
 		bot->given_up_timer = 0;
 		bot->given_up_weapon = NONE;
 	}
-	if ((bot->target_visible && distance < 12.f) || vehicle_index != NONE)
+	if ((bot->target_visible && distance < 12.f) || vehicle_index != NONE || bot_weapon_range(bot) <= 0.f ||
+		bot_holds_objective(current_weapon))
 		bot->goal_weapon = NONE;
 	else if ((bot->weapon_timer -= step) <= 0)
 	{
 		bot->weapon_timer = WEAPON_SEARCH_TICKS;
 		if (bot->goal_weapon == NONE)
 		{
-			bot->goal_weapon = find_better_weapon(bot, unit, &eye);
+			bot->goal_weapon = find_better_weapon(bot, unit, &eye, bot_weapon_range(bot));
 			bot->goal_ticks = 0;
 		}
 	}
@@ -2446,6 +3309,14 @@ static void think(
 		}
 	}
 
+	/* (a role that walks drops a driver's seat it was going for; a carrier
+	keeps only a passenger's; a defender or a returner none) */
+	if (bot->goal_vehicle != NONE && ((bot->goal_role == _bot_seat_driver && bot_role_walks(bot, &position)) ||
+		(bot->role == _bot_role_carry && bot->goal_role != _bot_seat_passenger) ||
+		bot->role == _bot_role_defend || bot->role == _bot_role_return))
+	{
+		bot->goal_vehicle = NONE;
+	}
 	/* a vehicle near, on foot with no weapon to go for (the vehicles
 	section) -- in a fight in sight only a teammate's to ride, which it
 	fights from as it goes -- or one it got out of flipped, turned back over */
@@ -2484,7 +3355,10 @@ static void think(
 
 	/* where to go: along a path while the enemy is out of sight or out of
 	range; in range, keep the weapon's range and move sideways (on foot) */
-	if (bot->goal_weapon == NONE && bot->target_unit != NONE && !to_vehicle && vehicle_index == NONE)
+	if (bot->role != _bot_role_none && bot->goal_weapon == NONE && !to_vehicle && vehicle_index == NONE)
+		objective = bot_walk_objective(bot, unit, &position, in_range, distance, &move, &moving, &along_path, step);
+	if (objective == _bot_goal_fight && bot->goal_weapon == NONE && bot->target_unit != NONE && !to_vehicle &&
+		vehicle_index == NONE)
 	{
 		if (!in_range)
 		{
@@ -2492,7 +3366,7 @@ static void think(
 			if (!bot->path_valid || bot->path_age > PATH_LIFETIME ||
 				horizontal_distance(&bot->path_goal, &target_position) > 7.f)
 			{
-				plan_path(bot, bot->target_unit);
+				plan_path(bot, bot->target_unit, NULL, NONE);
 			}
 			if (follow_path(bot, &unit->object.position, &move))
 				along_path = TRUE;
@@ -2574,6 +3448,13 @@ static void think(
 			bot->aim = steering;
 		if (why != _bot_drive_on)
 			bot_leave_vehicle(bot, vehicle_index, why == _bot_drive_flipped, &flags);
+		/* (a role that walks -- a carrier, a defender, a returner -- leaves a
+		driver's seat) */
+		if (why == _bot_drive_on && (bot->role == _bot_role_carry || bot->role == _bot_role_defend ||
+			bot->role == _bot_role_return))
+		{
+			bot_leave_vehicle(bot, vehicle_index, FALSE, &flags);
+		}
 	}
 	else if (vehicle_index != NONE)
 	{
@@ -2618,6 +3499,13 @@ static void think(
 			bot->strafe_direction = (short)(bot_random() & 1 ? 1 : -1);
 		}
 		strafe = 0.8f * bot->strafe_direction;
+	}
+	/* (a role that holds its place: a dodge sideways only, and no walking
+	recovery that would carry it off) */
+	if (objective == _bot_goal_hold)
+	{
+		forward = 0.f;
+		bot->unstick_timer = 0;
 	}
 
 	/* stuck (moving and getting nowhere): around for a while, a jump, and
@@ -2824,6 +3712,30 @@ static void think(
 	/* the action button to get in: no other press, stick or trigger that
 	thought (the weapon and grenade wanted still go) -- the game seats it
 	before it reads the stick and the trigger (players.c) */
+	/* a flag or the ball in hand: no trigger, grenade, swap or reload (Halo
+	drops what is carried at a trigger: players.c), a melee only; near an
+	objective to pick up, no trigger held (players.c picks up no flag or ball
+	then) */
+	if ((vehicle_index == NONE || bot->seat_role == _bot_seat_passenger) &&
+		bot_holds_objective(unit_inventory_get_weapon(player->unit_index, unit->unit.current_weapon_index)))
+	{
+		flags &= ~(FLAG(_unit_control_weapon_primary_trigger_bit) | FLAG(_unit_control_weapon_secondary_trigger_bit) |
+			FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_swap_weapons_bit) |
+			FLAG(_unit_control_weapon_reload_bit));
+		trigger = 0.f;
+		bot->trigger_down = FALSE;
+		bot->shot_ticks = 0;
+		bot->charging = FALSE;
+	}
+	else if (bot->role != _bot_role_none && vehicle_index == NONE && bot_near_pickup(bot, &position))
+	{
+		flags &= ~(FLAG(_unit_control_weapon_primary_trigger_bit) | FLAG(_unit_control_weapon_secondary_trigger_bit) |
+			FLAG(_unit_control_throw_grenade_bit));
+		trigger = 0.f;
+		bot->trigger_down = FALSE;
+		bot->shot_ticks = 0;
+		bot->charging = FALSE;
+	}
 	if (boarding)
 	{
 		forward = strafe = trigger = 0.f;
@@ -2894,6 +3806,7 @@ void n64_bots_actions(
 		return;
 	(void)bot_profile_start();
 	resolve_weapons();
+	objectives_update(now);
 	bots.paths_this_tick = 0;
 	bots.direct_tests_this_tick = 0;
 	if (bots.path_cooldown > 0)
@@ -2960,6 +3873,38 @@ void n64_bots_actions(
 		}
 		if (!seat_changed)
 			bot_trigger_tick(bot, action, now);
+		/* (a flag or the ball in hand, on foot or as a passenger: no trigger,
+		grenade, swap or reload on any tick, a held action or a pistol's
+		press between thoughts too) */
+		{
+			struct unit_datum *carrier = unit_get(player->unit_index);
+
+			if ((carrier->object.parent_object_index == NONE || bot->seat_role == _bot_seat_passenger) &&
+				bot_holds_objective(unit_inventory_get_weapon(player->unit_index, carrier->unit.current_weapon_index)))
+			{
+				action->control_flags &= ~(FLAG(_unit_control_weapon_primary_trigger_bit) |
+					FLAG(_unit_control_weapon_secondary_trigger_bit) | FLAG(_unit_control_throw_grenade_bit) |
+					FLAG(_unit_control_swap_weapons_bit) | FLAG(_unit_control_weapon_reload_bit));
+				action->primary_trigger = 0.f;
+				bot->shot_ticks = 0;
+				bot->charging = FALSE;
+			}
+			else if ((bot->role == _bot_role_attack || bot->role == _bot_role_return || bot->role == _bot_role_ball) &&
+				carrier->object.parent_object_index == NONE)
+			{
+				real_point3d at;
+
+				/* (near an objective it is to pick up: no trigger on any tick) */
+				if (bot_near_pickup(bot, object_get_origin(player->unit_index, &at)))
+				{
+					action->control_flags &= ~(FLAG(_unit_control_weapon_primary_trigger_bit) |
+						FLAG(_unit_control_weapon_secondary_trigger_bit) | FLAG(_unit_control_throw_grenade_bit));
+					action->primary_trigger = 0.f;
+					bot->shot_ticks = 0;
+					bot->charging = FALSE;
+				}
+			}
+		}
 		bot->firing = (action->control_flags & (FLAG(_unit_control_weapon_primary_trigger_bit) |
 			FLAG(_unit_control_throw_grenade_bit) | FLAG(_unit_control_use_equipment_bit))) != 0 ||
 			bot->shot_ticks > 0 || bot->charging;
