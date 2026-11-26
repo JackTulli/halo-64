@@ -84,8 +84,15 @@ symbols in this file:
 enum
 {
 	MAXIMUM_FLAG_WIDTH = 40,
+#ifdef HALO_N64
+	/* (the N64's cloths are coarser: tools/n64/convert.py makes Capture
+	the Flag's 16 x 13 a 6 x 5; a finer one is not made, flag_new) */
+	MAXIMUM_FLAG_VERTICES = 100,
+	MAXIMUM_FLAG_CELLS = 81,
+#else
 	MAXIMUM_FLAG_VERTICES = 225,
 	MAXIMUM_FLAG_CELLS = 196,
+#endif
 	MAXIMUM_FLAG_HEIGHT = 40,
 	MAXIMUM_FLAG_ATTACHMENT_POINTS = 5,
 	NUMBER_OF_FLAG_NEIGHBORS = 3,
@@ -221,13 +228,15 @@ void flags_initialize(
 	void)
 {
 #ifdef HALO_N64
-	/* (no widgets are made on the N64, widgets.c) */
-	flag_data = game_state_data_new("flag", 1, 0x16BC);
+	/* (none in the game state on the N64: the only flags it makes are the
+	multiplayer flag's (widgets.c), whose storage is made with the first
+	(flag_new) and given back with the map: 5.3 KB, where that flag is made) */
+	flag_data = NULL;
 #else
 	flag_data = game_state_data_new("flag", 2, 0x16BC);
-#endif
 	if (!flag_data)
 		error(_error_immediate, "couldn't allocate flag globals");
+#endif
 
 	return;
 }
@@ -235,6 +244,10 @@ void flags_initialize(
 void flags_initialize_for_new_map(
 	void)
 {
+#ifdef HALO_N64
+	if (!flag_data)
+		return;
+#endif
 	data_make_valid(flag_data);
 
 	return;
@@ -243,6 +256,14 @@ void flags_initialize_for_new_map(
 void flags_dispose_from_old_map(
 	void)
 {
+#ifdef HALO_N64
+	if (flag_data)
+	{
+		data_dispose(flag_data);
+		flag_data = NULL;
+	}
+	return;
+#endif
 	data_make_invalid(flag_data);
 
 	return;
@@ -270,6 +291,10 @@ void flags_update(
 {
 	long flag_index;
 
+#ifdef HALO_N64
+	if (!flag_data)
+		return;
+#endif
 	for (flag_index = data_next_index(flag_data, NONE);
 		flag_index != NONE;
 		flag_index = data_next_index(flag_data, flag_index))
@@ -325,6 +350,38 @@ long flag_new(
 	global_scenario_get();
 
 	flag_index = NONE;
+#ifdef HALO_N64
+	if (definition_index != NONE)
+	{
+		struct flag_definition *definition = flag_definition_get(definition_index);
+		extern int n64_dynamic_reserve(int vertices);
+
+		/* port: a cloth the N64 does not make (finer than its storage holds:
+		tools/n64/convert.py makes the stock one coarser; taller than 34 rows,
+		as two of its columns, each rounded up to even rows, fill one 70-vertex
+		load of port/n64/src/n64_dynamic.c; or without a shader) is no flag at
+		all, and widgets.c then makes no widget: the noop flag below left its
+		definition and object unset, which flags_update and flag_render read */
+		if (definition->width < 2 || definition->height < 2 || definition->width >= MAXIMUM_FLAG_WIDTH ||
+			definition->height > MAXIMUM_FLAG_HEIGHT || definition->height > 34 ||
+			definition->height * definition->width >= MAXIMUM_FLAG_VERTICES ||
+			definition->shader_blue.index == NONE)
+			return NONE;
+		if (!flag_data)
+		{
+			/* (the flags' storage, made with the first: flags_initialize;
+			and room for two cloths' vertices a frame, port/n64/src/
+			n64_dynamic.c) */
+			flag_data = data_new("flag", 2, sizeof(struct flag_datum_prefix));
+			if (!flag_data)
+				return NONE;
+			data_make_valid(flag_data);
+			/* (with no room for them the cloths are simulated and not drawn:
+			only after a failed allocation) */
+			n64_dynamic_reserve(2*definition->width*(definition->height + 1));
+		}
+	}
+#endif
 	if (definition_index != NONE)
 	{
 		struct flag_definition *definition = flag_definition_get(definition_index);
@@ -429,6 +486,17 @@ void flag_update_attachment(
 		row_start = y;
 
 		for (; y <= y_end; y++)
+#ifdef HALO_N64
+		if (y_end == row_start)
+		{
+			/* port: a span of no rows (the last attachment's): its row is the
+			attachment point itself (flag_update). Below, 0 over 0 made a NaN,
+			from a next attachment there is not: the N64's FPU stops on each use
+			of it (emulated, ten an update) */
+			attachment_force_points[y] = attachment_points[i];
+		}
+		else
+#endif
 		{
 			real t = ((real)y - row_start) / ((real)y_end - row_start);
 			real_point3d *from = &attachment_points[i];
@@ -511,6 +579,14 @@ void flag_update(
 		point2d const parent_deltas[NUMBER_OF_FLAG_NEIGHBORS] = {{-1, 0}, {0, 1}, {0, -1}};
 		short column;
 		short i;
+#ifdef HALO_N64
+		/* port: the point physics and the wind's scale are the same for every
+		point: looked up once an update, not twice a point */
+		struct point_physics_definition *physics = point_physics_definition_get(definition->physics.index);
+		real update_wind_scale = !underwater ?
+			physics->air_friction * definition->wind_noise * 0.0004f :
+			physics->water_friction * definition->wind_noise * 0.00016f;
+#endif
 
 		for (i = 0; i < NUMBER_OF_FLAG_NEIGHBORS; i++)
 		{
@@ -538,6 +614,11 @@ void flag_update(
 				real wind_scale;
 				short attachment_index_for_row;
 
+#ifdef HALO_N64
+				wind_scale = update_wind_scale;
+				if (underwater)
+					SET_FLAG(physics_flags, _point_physics_ignore_position_under_water_bit, TRUE);
+#else
 				if (!underwater)
 				{
 					wind_scale = point_physics_definition_get(definition->physics.index)->air_friction *
@@ -549,6 +630,7 @@ void flag_update(
 						definition->wind_noise * 0.00016f;
 					SET_FLAG(physics_flags, _point_physics_ignore_position_under_water_bit, TRUE);
 				}
+#endif
 
 #ifdef HALO_LINUX
 				/* The native builds update flags every frame, several frames a
@@ -577,7 +659,11 @@ void flag_update(
 				new_location = attachment_location;
 				point_physics_update(
 					physics_flags,
+#ifdef HALO_N64
+					physics,
+#else
 					point_physics_definition_get(definition->physics.index),
+#endif
 					&new_location,
 					weather_palette_index,
 					&new_position,
@@ -719,6 +805,37 @@ void flag_render_proper(
 		shader_index = definition->shader_red.index;
 	if (shader_index == NONE)
 		shader_index = definition->shader_blue.index;
+
+#ifdef HALO_N64
+	{
+		/* port: the N64 builds no dynamic buffers (the calls below draw
+		nothing there: port/n64/game/n64_stubs_generated.c). The cloth goes to
+		the N64's renderer as its grid of points (port/n64/src/
+		n64_dynamic.c): a column a width step, the cells as tesselated here,
+		the bitmap across them as these vertices have it, the shader by the
+		owner's team as above (where the map has no look for it: the team's
+		colour) */
+		extern void n64_dynamic_grid(unsigned long key, long shader_index, float const *points, int stride,
+			int columns, int rows, float const *u, float const *v, short const *cells, float seconds, unsigned long rgba);
+		real u[MAXIMUM_FLAG_WIDTH];
+		real v[MAXIMUM_FLAG_HEIGHT];
+		short x;
+		short y;
+
+		if (definition->width < 2 || definition->height < 2 || definition->width > MAXIMUM_FLAG_WIDTH ||
+			definition->height > MAXIMUM_FLAG_HEIGHT)
+			return;
+		for (x = 0; x < definition->width; x++)
+			u[x] = (real)x / (definition->width - 1);
+		for (y = 0; y < definition->height; y++)
+			v[y] = (real)y / (definition->height - 1);
+		n64_dynamic_grid(2 + (unsigned long)flag->object_index, shader_index,
+			&flag->vertices[0].position.x, sizeof(struct flag_vertex_datum),
+			definition->width, definition->height, u, v, &flag->cells[0].tesselation, 0.0f,
+			shader_index == definition->shader_red.index ? 0xC82020FF : 0x2050D8FF);
+		return;
+	}
+#endif
 
 	rasterizer_globals.current_lock_operation = _rasterizer_lock_flag;
 	maximum_triangles = (2 * definition->height - 2) * (definition->width - 1);

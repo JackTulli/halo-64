@@ -1,16 +1,18 @@
 """The looks of the geometry Halo builds each frame (port/n64/src/n64_dynamic.c).
 
-Halo draws King of the Hill's band round the hill (game_engine_king.c, the
-globals' hill shader) as geometry it makes every frame in its rasterizer's
-dynamic buffers, which the N64 does not have. The shader's bitmaps are left
-out of the image like every shader's (convert.py bitmap_stubs); its look is
-written here, small, for each map:
+Halo draws two things of a multiplayer game as geometry it makes every frame
+in its rasterizer's dynamic buffers, which the N64 does not have: King of the
+Hill's band round the hill (game_engine_king.c, the globals' hill shader) and
+the cloth of Capture the Flag's flags (objects/widgets/flags.c, the flag tag's
+red and blue shaders). Their shaders' bitmaps are left out of the image like
+every shader's (convert.py bitmap_stubs); their looks are written here, small,
+for each map:
 
     fx/<map>.dyn
         header (16 bytes): 'N64D', u16 version, u16 entry count, 8 bytes 0
         entries (32 bytes each, by shader tag index):
-            u16 the shader's tag index, u8 kind (1 the hill's band), u8
-                format (0 I4, 1 RGBA16), u8 width, u8
+            u16 the shader's tag index, u8 kind (1 the hill's band, 2 a
+                flag's cloth), u8 format (0 I4, 1 RGBA16), u8 width, u8
                 height (texels), u8 the scroll's function, u8 the flicker's
                 function (Halo's periodic functions; 0 one: none)
             u8 colour r g b a (I4: the texels' hue at full brightness, the
@@ -24,7 +26,7 @@ The band's texture is the hill shader's colour (its stages evaluated on the
 CPU, stages.py) from v 0.2 to 1 -- the part of the bitmap the band shows --
 as an I4 intensity of one hue: the shader adds its colour to the frame, which
 the N64 draws as that hue at the texel's intensity (an alpha blend: the RDP's
-additive blend wraps).
+additive blend wraps). A flag's is its shader's bitmap, small, in RGBA16.
 
     python3 -m tools.n64.dynamic <map> --filesystem <file tree>
 """
@@ -38,9 +40,10 @@ from .bitmaps import bitmap_images, decode
 
 MAGIC = b"N64D"
 VERSION = 1
-KIND_HILL = 1
-FORMAT_I4 = 0
+KIND_HILL, KIND_FLAG = 1, 2
+FORMAT_I4, FORMAT_RGBA16 = 0, 1
 HILL_SIZE = (64, 32)
+FLAG_SIZE = (32, 16)
 # the band's v: from 1 at the ground to 0.2 at its top (game_engine_king.c)
 HILL_V_TOP = 0.2
 ENTRY = struct.Struct(">HBBBBBB4B4fI")
@@ -70,6 +73,35 @@ def hill_shader(xmap, defs):
         return None
     struct_name = next(f.struct for o, f in defs.fields("Globals") if f.name == "multiplayer information")
     return _reference(xmap, pointer + _offsets(defs, struct_name)["hill shader"])
+
+
+def flag_shaders(xmap, defs):
+    """the red and blue shaders of the cloths the N64 makes: the flag
+    widgets of the globals' multiplayer flag (objects/widgets/widgets.c makes
+    no other: a scenery cloth's shaders are not read)"""
+    fields = _offsets(defs, "Flag")
+    found = []
+    matg = next((t for t in xmap.tags if t.group_name == "matg"), None)
+    if matg is None:
+        return found
+    count, pointer = _block(xmap, matg.address + _offsets(defs, "Globals")["multiplayer information"])
+    if count < 1:
+        return found
+    struct_name = next(f.struct for o, f in defs.fields("Globals") if f.name == "multiplayer information")
+    flag_object = _reference(xmap, pointer + _offsets(defs, struct_name)["flag"])
+    if flag_object is None or flag_object.address is None:
+        return found
+    count, pointer = _block(xmap, flag_object.address + _offsets(defs, "Object")["widgets"])
+    reference = _offsets(defs, "ObjectWidget")["reference"]
+    widgets = [_reference(xmap, pointer + i * defs.size("ObjectWidget") + reference) for i in range(max(0, count))]
+    for t in widgets:
+        if t is None or t.group_name != "flag" or t.address is None:
+            continue
+        for name in ("red flag shader", "blue flag shader"):
+            shader = _reference(xmap, t.address + fields[name])
+            if shader is not None and shader not in found:
+                found.append(shader)
+    return found
 
 
 # the transparent shaders whose maps are read here: the Xbox's generic ones,
@@ -177,6 +209,28 @@ def hill_entry(xmap, defs, shader):
             (u_period if u_function else 0.0, u_scale if u_function else 0.0, flicker_period, flicker_lower)), texels
 
 
+def flag_entry(xmap, defs, shader):
+    """a flag cloth's entry and texels, or None"""
+    if shader is None or shader.group_name not in SHADER_MAPS:
+        return None
+    bitmap, _ = _first_map(xmap, defs, shader)
+    images = bitmap_images(xmap, bitmap, defs) if bitmap is not None else []
+    if not images:
+        return None
+    width, height = FLAG_SIZE
+    try:
+        img = decode(xmap, images[0], max(width, height)).convert("RGBA")
+    except ValueError:
+        return None
+    # (Pillow shrinks RGBA premultiplied: no dark fringe at the torn edges)
+    small = img.resize((width, height), Image.BOX)
+    texels = bytearray()
+    for r, g, b, a in small.getdata():
+        value = (r >> 3) << 11 | (g >> 3) << 6 | (b >> 3) << 1 | (1 if a >= 128 else 0)
+        texels += struct.pack(">H", value)
+    return (KIND_FLAG, FORMAT_RGBA16, width, height, 0, 0, (255, 255, 255, 255), (0.0, 0.0, 0.0, 1.0)), bytes(texels)
+
+
 def write(xmap, defs, path):
     """fx/<map>.dyn; returns its statistics"""
     entries = {}
@@ -184,6 +238,10 @@ def write(xmap, defs, path):
     made = hill_entry(xmap, defs, shader)
     if made is not None:
         entries[shader.index] = made
+    for shader in flag_shaders(xmap, defs):
+        made = flag_entry(xmap, defs, shader)
+        if made is not None and shader.index not in entries:
+            entries[shader.index] = made
     indices = sorted(entries)
     offset = 16 + ENTRY.size * len(indices)
     table = bytearray()
@@ -197,7 +255,8 @@ def write(xmap, defs, path):
     out = MAGIC + struct.pack(">HH", VERSION, len(indices)) + b"\0" * 8 + table + body
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_bytes(out)
-    return {"hill": sum(1 for e in entries.values() if e[0][0] == KIND_HILL), "bytes": len(out)}
+    return {"hill": sum(1 for e in entries.values() if e[0][0] == KIND_HILL),
+            "flag shaders": sum(1 for e in entries.values() if e[0][0] == KIND_FLAG), "bytes": len(out)}
 
 
 def main():

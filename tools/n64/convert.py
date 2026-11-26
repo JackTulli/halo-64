@@ -99,15 +99,25 @@ FIREFIGHT_ROOTS = [("bipd", "characters\\grunt\\grunt"), ("bipd", "characters\\j
 # and sound environments (the N64 has no reverb); sounds and looping
 # sounds are kept in a form of the N64's own (sounds.py) or left out
 DROPPED_GROUPS = {b"DeLa", b"Soul", b"vcky", b"mply", b"devc", b"ngpr", b"snde",
-                  # particles, particle systems, contrails, antennas, cloth
-                  # flags and glows: the N64 makes none of them (its own
-                  # simple particles come from effects.py's records)
-                  b"part", b"pctl", b"cont", b"ant!", b"flag", b"glw!"}
+                  # particles, particle systems, contrails, antennas and
+                  # glows: the N64 makes none of them (its own simple
+                  # particles come from effects.py's records)
+                  b"part", b"pctl", b"cont", b"ant!", b"glw!"}
+# cloth flags: kept on the multiplayer cartridges, where the N64 makes the
+# cloth of Capture the Flag's flag (objects/widgets/widgets.c, HALO_N64; its
+# look: dynamic.py); left out of a campaign level, as all were before
+FLAG_GROUP = int.from_bytes(b"flag", "big")
 SOUND_GROUPS = {int.from_bytes(g, "big") for g in (b"snd!", b"lsnd")}
 
 
 def fourcc(text):
     return int.from_bytes(text, "big")
+
+
+def coarse_cloth(points, step):
+    """a cloth flag's points across (or down) on the N64: one in `step`, the
+    last kept (N64Policy.override_bytes)"""
+    return (points - 1) // step + 1 if points > step else points
 
 
 DROPPED = {fourcc(g) for g in DROPPED_GROUPS}
@@ -136,6 +146,9 @@ class N64Policy(Policy):
         self.hud = None
         # the gameplay sounds (sounds.py; None: none)
         self.sounds = None
+        # the cloth flags whose grid is made coarser, by their step
+        # (coarse_flags; None: not found yet)
+        self._coarse = None
 
     @property
     def stream_size(self):
@@ -181,6 +194,65 @@ class N64Policy(Policy):
         if self.savings and (tag.index in self.stub_bitmaps or path in SCRIPT_BLOCKS):
             return 0
         return 0 if path in self.RENDER_BLOCKS else count
+
+    # a cloth flag's grid (objects/widgets/flags.c), a third as fine on the
+    # N64: each of its points is a point physics update a frame while the
+    # flag is in view (Capture the Flag's: 16 x 13, its cloth 12 ms a frame in
+    # ares; 2.8 ms at 8 x 7, 1.5 ms at 6 x 5), so every third row and column,
+    # the cells three times as large, the cloth the same size and hung at the
+    # same markers (its attachments' rows a third). Only a flag whose rows and
+    # attachments divide whole, each attachment's rows still even (flags.c
+    # attaches them in even spans); else halved where that divides whole;
+    # else the flag keeps its grid
+    def coarse_flags(self):
+        """the flags whose grid is made coarser and their attachment points
+        (their addresses), each with its step (3 or 2)"""
+        if self._coarse is None:
+            flags, attachments = {}, {}
+            fields = {f.name: o for o, f in self.defs.fields("Flag")}
+            size = self.defs.size("FlagAttachmentPoint")
+            for t in self.map.tags:
+                if t.group_name != "flag" or t.address is None:
+                    continue
+                width, height = struct.unpack("<hh", self.map.read(t.address + fields["width"], 4))
+                count, pointer = struct.unpack("<iI", self.map.read(t.address + fields["attachment points"], 8))
+                points = [pointer + i * size for i in range(max(0, count))]
+                spans = [struct.unpack("<h", self.map.read(p, 2))[0] for p in points]
+                for step in (3, 2):
+                    if width > step and height > step and (height - 1) % step == 0 and \
+                            all(s % (2 * step) == 0 for s in spans):
+                        flags[t.address] = step
+                        attachments.update((p, step) for p in points)
+                        break
+            self._coarse = (flags, attachments)
+        return self._coarse
+
+    def override_bytes(self, tag, struct_name, field_name, address):
+        if struct_name == "Flag" and field_name in ("width", "height", "cell width", "cell height",
+                                                    "trailing edge shape offset"):
+            if address not in self.coarse_flags()[0]:
+                return None
+            fields = {f.name: o for o, f in self.defs.fields("Flag")}
+            width, height = struct.unpack("<hh", self.map.read(address + fields["width"], 4))
+            cell_width, cell_height = struct.unpack("<ff", self.map.read(address + fields["cell width"], 8))
+            step = self.coarse_flags()[0][address]
+            fine_width, fine_height = coarse_cloth(width, step), coarse_cloth(height, step)
+            if field_name == "width":
+                return struct.pack(">h", fine_width)
+            if field_name == "height":
+                return struct.pack(">h", fine_height)
+            if field_name == "cell width":
+                return struct.pack(">f", cell_width * (width - 1) / max(1, fine_width - 1))
+            if field_name == "cell height":
+                return struct.pack(">f", cell_height * (height - 1) / max(1, fine_height - 1))
+            offset = struct.unpack("<h", self.map.read(address + fields["trailing edge shape offset"], 2))[0]
+            return struct.pack(">h", offset // step)
+        if struct_name == "FlagAttachmentPoint" and field_name == "height to next attachment":
+            if address not in self.coarse_flags()[1]:
+                return None
+            rows = struct.unpack("<h", self.map.read(address, 2))[0]
+            return struct.pack(">h", rows // self.coarse_flags()[1][address])
+        return None
 
     def override(self, tag, struct_name, field_name, address):
         # a HUD image's sprite (tools/n64/hud.py): its number + 1
@@ -290,7 +362,7 @@ class CampaignPolicy(N64Policy):
             self.dropped_blocks.add("Scenario.bsp switch trigger volumes[]")
 
     def keep_tag(self, tag):
-        return tag.index in self.kept and super().keep_tag(tag)
+        return tag.index in self.kept and tag.group != FLAG_GROUP and super().keep_tag(tag)
 
     def keep_block(self, tag, path, count):
         if path in self.dropped_blocks:
@@ -713,7 +785,7 @@ def main():
         stats = EffectParticles(xmap, repacker.defs).write(args.filesystem / "fx" / f"{xmap.name}.fx")
         print(f"{xmap.name} particles: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
         # the looks of the geometry Halo builds each frame: King of the
-        # Hill's band (port/n64/src/n64_dynamic.c)
+        # Hill's band, the flags' cloth (port/n64/src/n64_dynamic.c)
         from . import dynamic
         stats = dynamic.write(xmap, repacker.defs, args.filesystem / "fx" / f"{xmap.name}.dyn")
         print(f"{xmap.name} dynamic geometry: " + ", ".join(f"{k} {v}" for k, v in stats.items()))
