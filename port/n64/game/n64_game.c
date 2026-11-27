@@ -52,6 +52,7 @@ extern short player_spawn_count;
 void n64_firefight_begin(int difficulty, int player_count);
 void n64_bots_begin(int count, int skill, int teams);
 void n64_bots_stop(void);
+void n64_bots_module_end(void);
 int n64_bot_number(long player_index);
 void n64_firefight_stop(void);
 int n64_firefight_active(void);
@@ -1357,8 +1358,10 @@ void n64_game_free_map(
 	until the next map's is made, above where this one was, and splits the
 	memory the next image wants in one piece) */
 	n64_hud_release();
-	/* (HUD STYLE 64's module with it, when loaded) */
+	/* (HUD STYLE 64's module with it, when loaded; the bots' too, with
+	their path search's memory) */
 	n64_hud64_module_end();
+	n64_bots_module_end();
 	n64_particles_release();
 #ifdef HALO_N64_CAMPAIGN
 	n64_campaign_stop();

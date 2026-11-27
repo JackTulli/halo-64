@@ -14,8 +14,10 @@ The file: its header, then the module's resident part (the module's header,
 its symbols and their names, its image), then the part needed only while it
 is linked (its imports' names, its relocations); both stored as they are
 (n64dso -c 0). Each import is found by its name in the program's symbols
-(n64dso-msym: the ROM's ".msym", sorted by name), read in for the link and
-given back after it.
+(n64dso-msym: the ROM's ".msym", sorted by name), read in with the imports'
+names and given back before the relocations, which are read from the file a
+block at a time into a buffer on the stack: a load holds only the names and
+the program's symbols besides the module itself.
 */
 
 #include <libdragon.h>
@@ -88,9 +90,9 @@ static __attribute__((noinline)) const struct dso_symbol *find(const struct dso_
 	return NULL;
 }
 
-/* the program's symbols (the ROM's ".msym"), the names' offsets from the
-table's start; NULL without them */
-static struct dso_symbol *program_symbols(uint32_t *count)
+/* where the program's symbols are in the ROM (its ".msym"), their table's
+bytes and count; 0 without them */
+static pi_addr_t program_symbols_find(uint32_t *size, uint32_t *count)
 {
 	/* (a data cache line of its own: the DMA writes it) */
 	static struct
@@ -98,34 +100,45 @@ static struct dso_symbol *program_symbols(uint32_t *count)
 		uint32_t magic, size, count, unused;
 	} header __attribute__((aligned(16)));
 	pi_addr_t rom = rompak_search_ext(".msym", NULL);
-	struct dso_symbol *table;
 
+	*size = 0;
 	if (!rom)
-		return NULL;
+		return 0;
 	data_cache_hit_writeback_invalidate(&header, sizeof(header));
 	dma_read_raw_async(&header, rom, 12);
 	dma_wait();
 	if (header.magic != MSYM_MAGIC || !header.size)
+		return 0;
+	*size = header.size;
+	*count = header.count;
+	return rom;
+}
+
+/* the program's symbols, the names' offsets from the table's start; NULL
+without them */
+static struct dso_symbol *program_symbols(uint32_t *count)
+{
+	uint32_t size;
+	pi_addr_t rom = program_symbols_find(&size, count);
+	struct dso_symbol *table;
+
+	if (!rom)
 		return NULL;
-	table = memalign(16, (header.size + 15) & ~15);
+	table = memalign(16, (size + 15) & ~15);
 	if (!table)
 		return NULL;
-	data_cache_hit_writeback_invalidate(table, header.size);
-	dma_read_raw_async(table, rom + 12, header.size);
+	data_cache_hit_writeback_invalidate(table, size);
+	dma_read_raw_async(table, rom + 12, size);
 	dma_wait();
-	*count = header.count;
 	return table;
 }
 
-/* the module's symbols given their values (an import's from the program,
-the rest in the image), its relocations applied, the caches made to see
-it; its export name's value */
-static int link_module(uint8_t *base, const uint8_t *link, const struct dso_symbol *program, uint32_t program_count,
-	const char *name, void **address)
+/* the module's symbols given their values: an import's from the program's
+(names: the link part's start, its imports' names), the rest in the image */
+static int link_symbols(uint8_t *base, const uint8_t *names, const struct dso_symbol *program, uint32_t program_count)
 {
 	struct dso_module *module = (struct dso_module *)base;
 	struct dso_symbol *symbols = (struct dso_symbol *)(base + module->symbols);
-	const struct dso_relocation *relocations = (const struct dso_relocation *)(link + module->relocations);
 	uint8_t *image = base + module->image;
 	const struct dso_symbol *found;
 
@@ -136,7 +149,7 @@ static int link_module(uint8_t *base, const uint8_t *link, const struct dso_symb
 
 		if (i >= 1 && i <= module->import_count)
 		{
-			const char *import = (const char *)link + symbol->name;
+			const char *import = (const char *)names + symbol->name;
 
 			found = find(program, program_count, (const char *)program, import);
 			if (found)
@@ -150,13 +163,51 @@ static int link_module(uint8_t *base, const uint8_t *link, const struct dso_symb
 		else if (!(symbol->info & DSO_ABSOLUTE))
 			symbol->value += (uint32_t)image;
 	}
+	return 1;
+}
+
+/* relocations read and applied a block at a time */
+#define RELOCATION_BLOCK 64
+
+/* relocation i of a module's, read from its file (at: where they start) */
+static int read_relocation(int file, uint32_t at, uint32_t i, struct dso_relocation *relocation)
+{
+	off_t offset = (off_t)(at + i * sizeof(*relocation));
+
+	return lseek(file, offset, SEEK_SET) == offset && read(file, relocation, sizeof(*relocation)) == (ssize_t)sizeof(*relocation);
+}
+
+/* the module's relocations applied (read from its file, at: where they
+start in it), the caches made to see it; its export name's value */
+static int link_relocations(uint8_t *base, int file, uint32_t at, const char *name, void **address)
+{
+	struct dso_module *module = (struct dso_module *)base;
+	struct dso_symbol *symbols = (struct dso_symbol *)(base + module->symbols);
+	uint8_t *image = base + module->image;
+	struct dso_relocation block[RELOCATION_BLOCK];
+	uint32_t first = 0, count = 0;
+	const struct dso_symbol *found;
+
 	for (uint32_t i = 0; i < module->relocation_count; i++)
 	{
-		/* (a C module's words are aligned) */
-		uint32_t *target = (uint32_t *)(image + relocations[i].offset);
-		uint32_t value = symbols[relocations[i].info & 0xFFFFFF].value;
+		const struct dso_relocation *relocation;
+		uint32_t *target, value;
 
-		switch (relocations[i].info >> 24)
+		if (i >= first + count)
+		{
+			first = i;
+			count = module->relocation_count - i < RELOCATION_BLOCK ? module->relocation_count - i : RELOCATION_BLOCK;
+			if (lseek(file, (off_t)(at + first * sizeof(block[0])), SEEK_SET) != (off_t)(at + first * sizeof(block[0])) ||
+				read(file, block, count * sizeof(block[0])) != (ssize_t)(count * sizeof(block[0])))
+			{
+				return 0;
+			}
+		}
+		relocation = &block[i - first];
+		/* (a C module's words are aligned) */
+		target = (uint32_t *)(image + relocation->offset);
+		value = symbols[relocation->info & 0xFFFFFF].value;
+		switch (relocation->info >> 24)
 		{
 		case RELOC_NONE:
 			break;
@@ -168,14 +219,23 @@ static int link_module(uint8_t *base, const uint8_t *link, const struct dso_symb
 			break;
 		case RELOC_HI16:
 		{
-			/* (the address from its %lo pair, the next LO16) */
-			uint32_t j = i + 1, sum;
+			/* (the address from its %lo pair, the next LO16: in the block,
+			or read on from the file) */
+			struct dso_relocation low;
+			uint32_t j, sum;
 
-			while (j < module->relocation_count && relocations[j].info >> 24 != RELOC_LO16)
-				j++;
+			for (j = i + 1; j < module->relocation_count; j++)
+			{
+				if (j < first + count)
+					low = block[j - first];
+				else if (!read_relocation(file, at, j, &low))
+					return 0;
+				if (low.info >> 24 == RELOC_LO16)
+					break;
+			}
 			if (j == module->relocation_count)
 				return 0;
-			sum = (*target << 16) + (int16_t)(*(uint32_t *)(image + relocations[j].offset) & 0xFFFF) + value;
+			sum = (*target << 16) + (int16_t)(*(uint32_t *)(image + low.offset) & 0xFFFF) + value;
 			*target = (*target & 0xFFFF0000) | ((sum + 0x8000) >> 16);
 			break;
 		}
@@ -228,9 +288,10 @@ void *n64_module_load_into(const char *path, const char *name, unsigned long mar
 	unsigned long size, unsigned long *resident)
 {
 	struct dso_header header;
-	uint8_t *base = NULL, *link = NULL;
+	struct dso_module head;
+	uint8_t *base = NULL, *names = NULL;
 	struct dso_symbol *program = NULL;
-	uint32_t program_count = 0;
+	uint32_t program_count = 0, program_size = 0;
 	int file = open(path, O_RDONLY), linked = 0;
 
 	*address = NULL;
@@ -241,34 +302,47 @@ void *n64_module_load_into(const char *path, const char *name, unsigned long mar
 		close(file);
 		return NULL;
 	}
+	/* (its own header, at the resident part's start: where its relocations
+	start in the link part, after its imports' names) */
+	if (lseek(file, header.resident_offset, SEEK_SET) != (off_t)header.resident_offset ||
+		read(file, &head, sizeof(head)) != (ssize_t)sizeof(head) || head.relocations > header.link_size)
+	{
+		close(file);
+		return NULL;
+	}
+	(void)program_symbols_find(&program_size, &program_count);
 	/* (room for it that leaves the margin free once it is linked; while it
-	links, the margin holds its relocations and the program's symbols) */
+	links, the margin holds its imports' names and the program's symbols) */
 	if (resident)
 		*resident = header.resident_size;
 	if (home && (header.resident_size > size || ((uintptr_t)home & 31)))
 		home = NULL;
-	unsigned long need = home ? header.link_size + 4096 : header.resident_size,
-		spare = home ? margin : margin > header.link_size + 4096 ? margin : header.link_size + 4096;
+	unsigned long temporaries = head.relocations + ((program_size + 15) & ~15) + 4096,
+		need = home ? temporaries : header.resident_size,
+		spare = home ? margin : margin > temporaries ? margin : temporaries;
 
 	if (spare_only ? n64_heap_free() < need + spare || !n64_heap_has(need) : !n64_render_room_leaving(need, spare))
 	{
-		debugf("module: %s: %lu + %lu KB wanted, %lu KB free\n", path,
-			(unsigned long)header.resident_size / 1024, margin / 1024, n64_heap_free() / 1024);
+		debugf("module: %s: %lu + %lu KB wanted, %lu KB free\n", path, need / 1024, spare / 1024,
+			n64_heap_free() / 1024);
 		close(file);
 		return NULL;
 	}
 	/* (the resident part first, below the rest, which is given back; at
 	the alignment n64dso gives the image in it, the module's segment's) */
-	if ((base = home ? home : memalign(32, header.resident_size)) && (link = malloc(header.link_size)) &&
+	if ((base = home ? home : memalign(32, header.resident_size)) && (names = malloc(head.relocations + 1)) &&
 		lseek(file, header.resident_offset, SEEK_SET) == (off_t)header.resident_offset &&
 		read(file, base, header.resident_size) == (ssize_t)header.resident_size &&
 		lseek(file, header.link_offset, SEEK_SET) == (off_t)header.link_offset &&
-		read(file, link, header.link_size) == (ssize_t)header.link_size &&
+		read(file, names, head.relocations) == (ssize_t)head.relocations &&
 		(program = program_symbols(&program_count)))
-		linked = link_module(base, link, program, program_count, name, address);
-	close(file);
+		linked = link_symbols(base, names, program, program_count);
 	free(program);
-	free(link);
+	free(names);
+	/* (its imports found: the relocations, a block at a time) */
+	if (linked)
+		linked = link_relocations(base, file, header.link_offset + head.relocations, name, address);
+	close(file);
 	if (!linked)
 	{
 		if (base != home)
