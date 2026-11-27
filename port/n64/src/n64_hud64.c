@@ -335,7 +335,12 @@ static struct
 	/* the tracker box's left and right before rounding (tracker_box), the
 	set's pixels: the range label's test against the tracker's circle */
 	float trk_l, trk_r;
+	/* the messages' right end, the canvas's pixels (message_lines): a line
+	wider than its room (one word wider than the room) stops there, short
+	of the score; TEXT_RIGHT_NONE: no end */
+	int text_right;
 } draw;
+#define TEXT_RIGHT_NONE (1 << 30)
 
 HOT static void set_rdp_mode(int mode)
 {
@@ -1130,6 +1135,8 @@ HOT static int draw_tokens(int x, int base, const struct token *tokens, int n, i
 		{
 			int bw, bh;
 
+			if (x + set->layout.button_adv > draw.text_right)
+				break;
 			run_flush();
 			ref_size(&set->ref[HUD64_REF_BUTTON], &bw, &bh);
 			draw_ref(&set->ref[HUD64_REF_BUTTON], x, base - f->cap + floordiv(f->cap - (bh - set->s), 2), HUD64_BUTTON,
@@ -1138,7 +1145,7 @@ HOT static int draw_tokens(int x, int base, const struct token *tokens, int n, i
 			continue;
 		}
 		{
-			int n_drawn = 0;
+			int n_drawn = 0, cut = 0;
 
 			for (int k = 0; k < t->length; k++)
 			{
@@ -1146,12 +1153,19 @@ HOT static int draw_tokens(int x, int base, const struct token *tokens, int n, i
 
 				if (!g)
 					continue;
+				if (x + g->adv > draw.text_right)
+				{
+					cut = 1;
+					break;
+				}
 				glyph(FACE_MSG, t->text[k], x, base - g->oy, colour, alpha);
 				x += g->adv + f->gap;
 				n_drawn++;
 			}
 			if (n_drawn)
 				x -= f->gap;
+			if (cut)
+				break;
 		}
 	}
 	run_flush();
@@ -1785,14 +1799,67 @@ HOT static void range_label(const int box[4], int views, int vx0, int vy0, int v
 	}
 }
 
-/* the score (the design's draw_score): a part of its own; its width */
-static int score(const struct n64_hud64_state *st, int R, int bottom, int words)
+/* a score's text: a count as it is (below 0 too), a time in seconds, from
+1000 s on as minutes:seconds ("16:40"); its length. Written digit by
+digit, without snprintf. At least 24 bytes */
+static int score_text(char *text, long value, int time)
+{
+	char digits[24];
+	unsigned long v = value < 0 ? 0UL - (unsigned long)value : (unsigned long)value;
+	int k = 0, n = 0;
+
+	if (time && value >= 1000)
+	{
+		digits[k++] = (char)('0' + v % 60 % 10);
+		digits[k++] = (char)('0' + v % 60 / 10);
+		digits[k++] = ':';
+		v /= 60;
+	}
+	do
+		digits[k++] = (char)('0' + v % 10);
+	while ((v /= 10) != 0);
+	if (value < 0)
+		text[n++] = '-';
+	while (k)
+		text[n++] = digits[--k];
+	text[n] = 0;
+	return n;
+}
+
+/* the score's number column: the design's two digits ("88"), wider where
+the game's score to win is (its text with 8s for its digits: the widest
+the score shows on the way there; not where no score ends the game, as
+online), and wider still for a row's text past that (below 0, or past the
+score to win) -- a number never reaches its label or the messages. The
+meters keep the design's place, under the column's last two digits */
+static int score_column(const struct hud64_face *f, const struct n64_hud64_state *st)
+{
+	char text[24];
+	int w = word_width(f, "88", 2);
+
+	if (!st->show_score)
+		return w;
+	for (int k = st->score_open ? 1 : 0; k < 3; k++)
+	{
+		int n = score_text(text, k == 0 ? st->limit : k == 1 ? st->score : st->other, st->score_time), c;
+
+		for (int i = 0; k == 0 && i < n; i++)
+			text[i] = text[i] >= '0' && text[i] <= '9' ? '8' : text[i];
+		c = word_width(f, text, n);
+		w = c > w ? c : w;
+	}
+	return w;
+}
+
+/* the score (the design's draw_score): a part of its own, its numbers in
+a column nw wide (score_column); its width */
+static int score(const struct n64_hud64_state *st, int R, int bottom, int words, int nw)
 {
 	static const char *const labels[3] = {"YOU", "1ST", "2ND"};
 	const struct hud64_set *set = draw.m.set;
 	const struct hud64_layout *ly = &set->layout;
 	const struct hud64_face *f = face(FACE_MSG, 0);
-	int lw = 0, nw = word_width(f, "88", 2), w, x0;
+	int lw = 0, w, x0;
 
 	if (words)
 	{
@@ -1807,10 +1874,10 @@ static int score(const struct n64_hud64_state *st, int R, int bottom, int words)
 	x0 = R - ly->score_dx - w;
 	for (int k = 0; k < 2; k++)
 	{
-		int value = k ? st->other : st->score;
+		long value = k ? st->other : st->score;
 		int base = bottom - ly->score_base_dy - (1 - k) * (ly->score_row_h + ly->score_row_gap);
-		int tx = x0 + w - nw, by = base + ly->score_bar_dy;
-		char text[8];
+		int tx = x0 + w - word_width(f, "88", 2), by = base + ly->score_bar_dy;
+		char text[24];
 		struct token t = {text, 0, TOKEN_WORD, HUD64_NUMBER};
 
 		if (words)
@@ -1819,12 +1886,15 @@ static int score(const struct n64_hud64_state *st, int R, int bottom, int words)
 
 			draw_tokens(x0, base, &label, 1, 255);
 		}
-		snprintf(text, sizeof(text), "%d", value < 0 ? 0 : value > 999 ? 999 : value);
-		t.length = (uint8_t)strlen(text);
-		draw_tokens(tx + nw - tokens_width(f, &t, 1), base, &t, 1, 255);
+		t.length = (uint8_t)score_text(text, value, st->score_time);
+		draw_tokens(x0 + w - tokens_width(f, &t, 1), base, &t, 1, 255);
 		draw_ref(&set->ref[HUD64_REF_BAR_SLOT], tx, by, HUD64_BLUE, 0, 0, 255, 0, 0);
-		draw_meter(HUD64_METER_BAR, tx, by, st->limit > 0 ? (float)value / st->limit : 0.f, k ? HUD64_LEADER : HUD64_BLUE,
-			HUD64_ALPHA_BAR, k ? HUD64_LEADER : HUD64_BLUE);
+		/* (the meter's ratio kept to -1..2: empty below 0, full from 1) */
+		float ratio = st->limit > 0 ? (float)value / st->limit : 0.f;
+
+		ratio = ratio < -1.f ? -1.f : ratio > 2.f ? 2.f : ratio;
+		draw_meter(HUD64_METER_BAR, tx, by, ratio, k ? HUD64_LEADER : HUD64_BLUE, HUD64_ALPHA_BAR,
+			k ? HUD64_LEADER : HUD64_BLUE);
 	}
 	return w;
 }
@@ -1978,8 +2048,9 @@ static int layout_messages(const struct message *msgs, int n, int avail, struct 
 	return count;
 }
 
-/* lines stacked up from B, the newest last (message_lines) */
-static void message_lines(const struct line *lines, int n, int x, int B)
+/* lines stacked up from B, the newest last (message_lines), none past
+right (draw_tokens) */
+static void message_lines(const struct line *lines, int n, int x, int B, int right)
 {
 	const struct hud64_layout *ly = &draw.m.set->layout;
 	int lift = 0;
@@ -1994,9 +2065,11 @@ static void message_lines(const struct line *lines, int n, int x, int B)
 				lift = ly->lift;
 		}
 	}
+	draw.text_right = right;
 	for (int k = 0; k < n; k++)
 		draw_tokens(x, B - ly->msg_base_dy - lift - (n - 1 - k) * ly->pitch, lines[k].tokens, lines[k].count,
 			lines[k].alpha);
+	draw.text_right = TEXT_RIGHT_NONE;
 }
 
 /* the view's message lines, at most the arrangement's: the prompt's first
@@ -2049,6 +2122,7 @@ void n64_hud64_draw(const struct n64_hud64_state *st, int x0, int y0, int x1, in
 	draw.prim_valid = draw.env_valid = 0;
 	draw.tmem = NULL;
 	draw.deferred_count = 0;
+	draw.text_right = TEXT_RIGHT_NONE;
 	draw.clip[0] = x0, draw.clip[1] = y0, draw.clip[2] = x1, draw.clip[3] = y1;
 	set = draw.m.set;
 	ly = &set->layout;
@@ -2075,7 +2149,7 @@ void n64_hud64_draw(const struct n64_hud64_state *st, int x0, int y0, int x1, in
 		between Halo's tracker and the score; the design's range label for
 		Halo's small one (the design's face reads better at 320x240), above
 		the tracker */
-		int sc_w, tx;
+		int sc_w, tx, column = score_column(f, st);
 		static const char *const labels[3] = {"YOU", "1ST", "2ND"};
 
 		if (st->show_ammo || st->show_grenades)
@@ -2086,7 +2160,7 @@ void n64_hud64_draw(const struct n64_hud64_state *st, int x0, int y0, int x1, in
 		if (st->show_sensor && ar->sensor_label && !n64_hud64_label_halo)
 			range_label(box, views, x0, y0, x1, y1);
 		/* (the messages keep their place without the score) */
-		sc_w = word_width(f, "88", 2);
+		sc_w = column;
 		if (ar->score_words)
 		{
 			int k = 0;
@@ -2099,10 +2173,12 @@ void n64_hud64_draw(const struct n64_hud64_state *st, int x0, int y0, int x1, in
 			sc_w += k + f->space;
 		}
 		if (st->show_score)
-			score(st, R, B, ar->score_words);
+			score(st, R, B, ar->score_words, column);
 		tx = box[2] + ly->full_msg_dx;
 		n = view_lines(st, msgs, lines, R - sc_w - ly->full_msg_gap - tx, ar, ar->message_lines);
-		message_lines(lines, n, tx, B);
+		/* (a word wider than the room stops short of the score; with no
+		score shown, nowhere, as in v0.7.0) */
+		message_lines(lines, n, tx, B, st->show_score ? R - sc_w - ly->full_msg_gap : TEXT_RIGHT_NONE);
 	}
 	else
 	{
@@ -2121,11 +2197,11 @@ void n64_hud64_draw(const struct n64_hud64_state *st, int x0, int y0, int x1, in
 			ammo_split(st, L, Tp, R);
 		if (st->show_shield)
 			shield(st, R, Tp, 1);
-		sc_w = word_width(f, "88", 2);
+		sc_w = score_column(f, st);
 		if (st->show_score)
-			score(st, R, bottom, ar->score_words);
+			score(st, R, bottom, ar->score_words, sc_w);
 		n = view_lines(st, msgs, lines, R - ly->score_dx - sc_w - ly->full_msg_gap - tx, ar, keep);
-		message_lines(lines, n, tx, bottom);
+		message_lines(lines, n, tx, bottom, st->show_score ? R - ly->score_dx - sc_w - ly->full_msg_gap : TEXT_RIGHT_NONE);
 	}
 	flush_deferred();
 	rdpq_sync_pipe();
