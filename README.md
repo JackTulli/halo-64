@@ -607,8 +607,10 @@ Builder carries, are built without them: `python3 tools/n64_build.py
 - Drawing: `debug_chase` (view 1 follows its player), `debug_overview`,
   `debug_untextured`, `debug_no_level`, `debug_no_objects`,
   `debug_no_first_person`, `debug_no_hud` (a plain crosshair instead),
-  `debug_hud_inset=<pixels>`, `debug_gpu_time` (each render phase waits for
-  the RSP/RDP: their times), `debug_cull_front`, `debug_level_parts=<1|2>`,
+  `debug_nav_halo` (the objectives' nav points as Halo draws them: half size
+  far away, fainter), `debug_hud_inset=<pixels>`,
+  `debug_gpu_time` (each render phase waits for the RSP/RDP: their times),
+  `debug_cull_front`, `debug_level_parts=<1|2>`,
   `debug_explosions`, `debug_fp_nodraw` (the first-person weapon posed, not
   drawn), `debug_rdpq` (libdragon's RDP validator: slow; it names the
   commands that would hang or misdraw on a console), with it

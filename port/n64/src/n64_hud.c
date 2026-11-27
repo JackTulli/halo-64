@@ -137,6 +137,7 @@ enum
 	_mode_meter,     /* a meter's texture (opaque or cut out) */
 	_mode_meter_glow, /* a meter's texture, partly over (it keeps most of the framebuffer) */
 	_mode_blip,      /* motion sensor blips */
+	_mode_dense,     /* _mode_over with up to twice the texels' alpha (nav points) */
 };
 
 static struct
@@ -205,8 +206,10 @@ static struct
 	with HUD_HEAP_RESERVE; the rest with HUD_HEAP_RESERVE_REST. The bytes
 	each sprite loaded into, or wants (a critical sprite this pass left out
 	for want of room: wanted); a swap under way (swap_critical), and
-	hud.views at the last that failed (+1; 0 none) */
+	hud.views at the last that failed (+1; 0 none). Patient: the nav
+	points' arrows being asked for (n64_hud_ensure_sprites_patient) */
 	int critical_pass;
+	int patient;
 	unsigned short pass;
 	unsigned short asked[MAXIMUM_SPRITES];
 	unsigned short held[MAXIMUM_SPRITES]; /* in 16 bytes */
@@ -1258,9 +1261,19 @@ static int packed_sprite(int number, float s0, float t0, float s1, float t1)
 	return -1;
 }
 
+/* (a map's sprite numbers: n64_hud_sprite_at's answers hold until the next
+map) */
+static unsigned map_generation;
+
+unsigned n64_hud_map_generation(void)
+{
+	return map_generation;
+}
+
 void n64_hud_set_map(const char *map_name)
 {
 	n64_hud_release();
+	map_generation++;
 	meter_too_large = 0;
 	if (!meter_block)
 	{
@@ -1412,7 +1425,7 @@ static sprite_t *hud_sprite(int number)
 		hud.asked[number] = (unsigned short)(hud.pass + 1);
 	if (!hud.sprites[number] && hud.refused_at[number] && !hud.swapping &&
 		(unsigned short)(hud.views + 1 - hud.refused_at[number]) <
-		(hud.critical_pass ? HUD_RETRY_VIEWS_CRITICAL : HUD_RETRY_VIEWS))
+		(hud.critical_pass && !hud.patient ? HUD_RETRY_VIEWS_CRITICAL : HUD_RETRY_VIEWS))
 		return NULL;
 	/* (a critical sprite asked for in the critical pass, outside a
 	recording: the arena's, where it fits; where sprites no longer critical
@@ -1582,6 +1595,43 @@ int n64_hud_ensure_sprite_at(int number, float s, float t)
 	int packed = packed_sprite(number, s, t, s, t);
 
 	return packed >= 0 ? hud_sprite(hud.packed[packed].sprite) != NULL : n64_hud_ensure_sprite(number);
+}
+
+/* the sprite n64_hud_ensure_sprite_at (or, without a point, n64_hud_ensure_sprite)
+would load for image number, found once: the answer holds for the map
+(n64_hud_map_generation) */
+int n64_hud_sprite_at(int number, int at, float s, float t)
+{
+	int packed = at ? packed_sprite(number, s, t, s, t) : -1;
+
+	if (packed >= 0)
+		return hud.packed[packed].sprite;
+	if (number >= 0 && number < MAXIMUM_SPRITES && hud.whole[number])
+		return hud.packed[hud.whole[number] - 1].sprite;
+	return number;
+}
+
+/* sprites (n64_hud_sprite_at's) asked for as n64_hud_ensure_sprite_at asks:
+marked asked in the critical pass and loaded where there is room -- a
+loaded one only marked, as hud_sprite does, without the call; one left out
+asked for again only HUD_RETRY_VIEWS views later, not
+HUD_RETRY_VIEWS_CRITICAL (each try opens its file and walks the heap) */
+void n64_hud_ensure_sprites_patient(const short *sprites, int count)
+{
+	for (int i = 0; i < count; i++)
+	{
+		int number = sprites[i];
+
+		if (number >= 0 && number < MAXIMUM_SPRITES && hud.sprites[number] && !hud.missing[number])
+		{
+			if (hud.critical_pass)
+				hud.asked[number] = (unsigned short)(hud.pass + 1);
+			continue;
+		}
+		hud.patient = 1;
+		hud_sprite(number);
+		hud.patient = 0;
+	}
 }
 
 /* the sprite a quad of image number at (s, t) draws from marked a carried
@@ -1965,6 +2015,16 @@ static void set_mode(int mode)
 		rdpq_mode_combiner(RDPQ_COMBINER1((0, 0, 0, PRIM), (TEX0, 0, PRIM, 0)));
 		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
 		break;
+	case _mode_dense:
+		/* (texture alpha a as 1 - (1 - a)^2, then times prim alpha in
+		the second cycle: one quad denser where _mode_over's is faint, the
+		colour as _mode_over's. No sum above 1: a first try at about four
+		times drew the middle of large glyphs empty, as the combiner's
+		sums wrap past 1.5) */
+		rdpq_mode_combiner(RDPQ_COMBINER2((TEX0, 0, PRIM, 0), (1, TEX0, TEX0, TEX0),
+			(0, 0, 0, COMBINED), (COMBINED, 0, PRIM, 0)));
+		rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+		break;
 	}
 	rdpq_mode_end();
 	if (mode == _mode_meter_glow)
@@ -2001,6 +2061,10 @@ static __attribute__((noinline)) void set_state(int mode, int point)
 	hud.point = point;
 	set_mode(mode);
 }
+
+/* the quads drawn while set use _mode_dense instead of _mode_over (the nav
+points, hud_nav_points.c) */
+int n64_hud_dense;
 
 /* a colour Halo adds (colour * texture + framebuffer * (1 - alpha * texture
 alpha)) as one the RDP blends over the framebuffer (its additive blending
@@ -2324,6 +2388,9 @@ void n64_hud_quad(const struct n64_hud_quad *in)
 	int upright, drawn_upright, wide = sprite && hud.sprite_wide[in->sprite];
 	int mode = _mode_over, point = hud.point;
 	float scale_x = 0.f, scale_y = 0.f;
+
+	if (n64_hud_dense)
+		mode = _mode_dense;
 
 	/* (the game addresses the half-size set's texels; the full-width set
 	has twice as many across) */

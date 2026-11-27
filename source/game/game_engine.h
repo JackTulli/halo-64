@@ -440,6 +440,10 @@ short game_engine_player_get_custom_motion_sensor_positions(
 
 void game_engine_render_nav_points(
 	long local_player_index);
+#if defined(HALO_N64) && (defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS))
+void game_engine_n64_load_nav_points_first(
+	long local_player_index);
+#endif
 
 union real_rgb_color *game_engine_player_get_change_color(
 	union real_rgb_color *change_color,

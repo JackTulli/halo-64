@@ -77,6 +77,13 @@ void hud_draw_screen(
 void hud_n64_load_critical_first(
 	short local_player_index);
 #endif
+#if defined(HALO_N64) && (defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS))
+short hud_nav_point_n64_sprites(
+	short nav_index,
+	short *sprites,
+	short count,
+	short room);
+#endif
 
 /* ---------- prototypes/HUD_SOUNDS.C */
 

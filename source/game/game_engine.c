@@ -4936,6 +4936,15 @@ short game_engine_player_get_custom_motion_sensor_positions(
 static long n64_goal_render_types[4][NUMBEROF(global_goal)];
 static unsigned short n64_goal_draws[4];
 #endif
+#if defined(HALO_N64) && (defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS))
+/* (each local player's: the nav points its critical request last found
+(bit n: nav point n, below 32), and whether a goal drawn for it since is not
+among them -- one that appeared: the ball spawned or dropped, the player off
+the hill -- so that its list is found again at its next pass,
+game_engine_n64_load_nav_points_first) */
+static unsigned long n64_asked_navs[4];
+static unsigned char n64_asks_stale[4];
+#endif
 
 void game_engine_render_nav_points(
 	long local_player_index)
@@ -4980,6 +4989,13 @@ void game_engine_render_nav_points(
 									NONE);
 							}
 							render_type = n64_goal_render_types[local_player_index & 3][goal_index];
+#if defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS)
+							if ((long)goal->nav_point_index >= 0 && (long)goal->nav_point_index < 32 &&
+								!(n64_asked_navs[local_player_index & 3] & (1ul << goal->nav_point_index)))
+							{
+								n64_asks_stale[local_player_index & 3] = TRUE;
+							}
+#endif
 #else
 							long render_type = hud_get_nav_point_render_type(
 								local_player_index,
@@ -5011,6 +5027,68 @@ void game_engine_render_nav_points(
 
 	return;
 }
+
+#if defined(HALO_N64) && (defined(HALO_N64_PC_EXPANSION) || defined(HALO_N64_CUSTOM_MAPS))
+/* (the PC maps' cartridges: n64_hud.c HUD_PACKING) */
+/* (N64) the nav points game_engine_render_nav_points draws for the player
+-- its objectives': the hill, the ball, the flags, the race's flags --
+asked for with the HUD's critical sprites (hud_n64_load_critical_first) */
+void game_engine_n64_load_nav_points_first(
+	long local_player_index)
+{
+	extern void n64_hud_ensure_sprites_patient(const short *sprites, int count);
+	extern unsigned n64_hud_map_generation(void);
+	/* (each local player's: the sprites of its goals' arrows, found with
+	the player, the goals and the tags every 32nd pass -- a pass a frame for
+	each view, the players' turns spread over the 32 -- and at the next pass
+	after a goal not among them is drawn for the player
+	(game_engine_render_nav_points), and only asked for in between: the
+	player's and the goals' lookups and the tags', each view and frame, were
+	most of this request's time. A sprite loaded is then only marked asked,
+	as before; one left out is asked for again later than other critical
+	sprites, n64_hud.c) */
+	static struct
+	{
+		short sprites[12];
+		short count;
+		unsigned short passes;
+		unsigned map;
+	} asks[4];
+	long player_index;
+	struct player_datum *player;
+	long goal_index;
+
+	if (!game_engine || global_variant.universal_variant.goal_radar != 1 || (short)local_player_index == NONE)
+		return;
+	if (asks[local_player_index & 3].map != n64_hud_map_generation() + 1 ||
+		n64_asks_stale[local_player_index & 3] ||
+		!(asks[local_player_index & 3].passes++ & 31))
+	{
+		n64_asks_stale[local_player_index & 3] = FALSE;
+		n64_asked_navs[local_player_index & 3] = 0;
+		if (asks[local_player_index & 3].map != n64_hud_map_generation() + 1)
+			asks[local_player_index & 3].passes = (unsigned short)(1 + (local_player_index & 3) * 8);
+		asks[local_player_index & 3].map = n64_hud_map_generation() + 1;
+		asks[local_player_index & 3].count = 0;
+		player_index = local_player_get_player_index((short)local_player_index);
+		player = player_index == NONE ? NULL : player_get(player_index);
+		for (goal_index = 0; player && player->unit_index != NONE && goal_index < (long)NUMBEROF(global_goal); goal_index++)
+		{
+			if (goal_matches_player(goal_index, player, player_index))
+			{
+				if ((long)global_goal[goal_index].nav_point_index >= 0 && (long)global_goal[goal_index].nav_point_index < 32)
+					n64_asked_navs[local_player_index & 3] |= 1ul << global_goal[goal_index].nav_point_index;
+				asks[local_player_index & 3].count = hud_nav_point_n64_sprites(
+					global_goal[goal_index].nav_point_index,
+					asks[local_player_index & 3].sprites,
+					asks[local_player_index & 3].count,
+					(short)NUMBEROF(asks[local_player_index & 3].sprites));
+			}
+		}
+	}
+	n64_hud_ensure_sprites_patient(asks[local_player_index & 3].sprites, asks[local_player_index & 3].count);
+}
+#endif
 
 boolean game_engine_hud_draw_messages(
 	long player_index)
@@ -6579,6 +6657,10 @@ void game_engine_initialize_for_new_map(
 		game_engine_verify_current_map();
 		game_engine_intialize_queued_sounds();
 		csmemset(global_goal, 0, sizeof(global_goal));
+#ifdef HALO_N64
+		/* (the last game's line-of-sight answers are not this game's goals') */
+		csmemset(n64_goal_render_types, 0, sizeof(n64_goal_render_types));
+#endif
 		game_engine_globals.next_team_index = 0;
 		timeout_for_endgame_sound = 0;
 
