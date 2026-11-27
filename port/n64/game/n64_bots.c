@@ -31,6 +31,12 @@ and fires along a clear line
 to the enemy: the level, vehicles, scenery and machines block it; bipeds,
 teammates included, do not (Halo's sight-blocking objects).
 A cloaked enemy it sees only within 2 units, or for 1 s after it fires.
+
+This code and the bots' state are a module, rom:/bots.dso (tools/n64_build.py),
+which the program loads only for a game with bots, after its map, and gives
+back with the map: n64_bots_stub.c (the program's) passes the game's calls
+on to it and keeps the lobby, the AI's helpers that the campaign and
+Firefight use too, and what lasts from game to game.
 */
 
 #include "cseries.h"
@@ -74,11 +80,12 @@ A cloaked enemy it sees only within 2 units, or for 1 s after it fires.
 
 #include "n64_bot_names.h"
 #include "n64_bot_ghosts.h"
+#include "n64_bots_module.h"
 
 /* ---------- constants */
 
 #define MAXIMUM_BOTS 15
-#define MAXIMUM_BOT_GATES 4
+#define MAXIMUM_BOT_GATES N64_BOT_GATES
 /* the most pathfinding surfaces one gate takes out (more: no gate, all
 given back); the search owner while the look tests one
 (bots_find_gates) */
@@ -361,7 +368,9 @@ static struct
 	/* (and where it began: a way that crosses a gate is no way) */
 	real_point3d search_start;
 	long weapon_definitions[NUMBER_OF_BOT_WEAPONS];
-	struct bot bots[MAXIMUM_BOTS];
+	/* (as many as the game's count, allocated as the module begins:
+	n64_game.c gives at most 8) */
+	struct bot *bots;
 	/* the look for gates (bots_find_gates): the iterator over the scenery;
 	whether the look has begun and whether it is over; the candidate it tests
 	(NONE: none), the way through it (0-3), its stage (0: the ways, 1: its width
@@ -381,23 +390,9 @@ static struct
 } bots;
 
 /* the gates found (bots_find_gates), kept from game to game with the map's
-image (n64_map_load loads a map again only for another): the level they are
-in and the scenario's name, whether the look was over, a pathfinding surface
-they took out (NONE: none), how many, and each one's line across the
-passage (its near face) and its foot's height */
-static struct
-{
-	struct structure_bsp const *structure;
-	char scenario[64];
-	boolean complete;
-	long probe;
-	short count;
-	struct
-	{
-		real_point2d a, b;
-		real z;
-	} gates[MAXIMUM_BOT_GATES];
-} bot_gates;
+image (n64_map_load loads a map again only for another): the program's
+(n64_bots_stub.c, n64_bots_module.h), as this module goes with the map */
+#define bot_gates n64_bot_gates
 
 /* the pathfinder's working state (32,908 bytes, only while there are bots) */
 static struct path_state *bots_path_state;
@@ -421,41 +416,10 @@ static struct
 	long next_share;
 } objectives;
 
-/* A lobby plan survives bots' per-map reset. Moving between teams never
-rerolls names. The same seed and count produce the preview and real roster. */
-static uint32_t bot_lobby_seed, bot_ghost_spawn_seed, bot_lobby_serial;
-static boolean bot_lobby_prepared;
 /* A life identifier is independent of cadence/paused thought-state resets. */
 static long bot_ghost_spawn_units[MAXIMUM_BOTS];
 
-void n64_bots_prepare_lobby(void)
-{
-	char value[32];
-	bot_lobby_seed = (uint32_t)n64_ticks() ^ (++bot_lobby_serial * UINT32_C(0x9e3779b9));
-	/* Explicit private fixture; ordinary flags[] never pins the roster. */
-	if (n64_debug_text("debug_bot_seed", value, sizeof(value)))
-		bot_lobby_seed = (uint32_t)strtoul(value, NULL, 0);
-	bot_ghost_spawn_seed = bot_lobby_seed ^ UINT32_C(0xa341316c);
-	bot_lobby_prepared = TRUE;
-}
-
-const char *n64_bot_lobby_name(int index, int bot_count)
-{
-	int profile;
-	const char *name;
-	if (index < 0 || index >= bot_count || bot_count > MAXIMUM_BOTS) return "";
-	if (!bot_lobby_prepared) n64_bots_prepare_lobby();
-	profile = n64_ghost_profile(bot_lobby_seed ^ UINT32_C(0xc8013ea4), index, bot_count);
-	name = n64_ghost_name(profile);
-	return name ? name : n64_bot_profile_name(bot_lobby_seed, index);
-}
-
-int n64_bot_lobby_team(int index, const int *human_teams, int human_count)
-{
-	return n64_ghost_lobby_team(index, human_teams, human_count);
-}
-
-const char *n64_bots_display_name(long player_index)
+static const char *bots_display_name(long player_index)
 {
 	int i;
 	for (i = 0; bots.active && i < bots.created; i++)
@@ -691,58 +655,20 @@ static boolean line_of_sight(
 
 struct structure_bsp *global_structure_bsp_get(void);
 
-/* whether the level's potentially visible set lets the clusters of two
-objects (their ultimate parents') see each other: it only over-reports, so
-a pair it rules out has no line of sight and needs no ray (Halo's own AI
-asks it first too; also n64_firefight.c's) */
-boolean n64_ai_clusters_may_see(
-	long object_a,
-	long object_b)
-{
-	struct structure_bsp *bsp = global_structure_bsp_get();
-	short a = object_get(object_get_ultimate_parent(object_a))->object.location.cluster_index;
-	short b = object_get(object_get_ultimate_parent(object_b))->object.location.cluster_index;
-
-	if (!bsp || bsp->cluster_data.size <= 0 || a == NONE || b == NONE ||
-		a < 0 || b < 0 || a >= bsp->clusters.count || b >= bsp->clusters.count)
-	{
-		return TRUE;
-	}
-	return scenario_test_pvs(a, b);
-}
-
-/* a straight walk from one point to another over the level's surfaces --
-the pathfinder's own pill test, as its smoothing makes it -- as a path of
-one step, with no search; FALSE where the way is blocked (also
-n64_firefight.c's) */
-boolean n64_ai_direct_path(
+/* the program's straight-walk test (n64_ai_direct_path, n64_bots_stub.c),
+timed with the bots' own */
+static boolean bot_direct_path(
 	real_point3d const *start,
 	long start_surface,
 	real_point3d const *goal,
 	long goal_surface,
 	struct path_result *path)
 {
-	struct path_collision_result collision;
 	unsigned long profile_start = bot_profile_start();
-	boolean blocked = structure_test_pill2d(global_structure_bsp_get(), FALSE,
-		(real_point2d const *)start, start_surface, (real_point2d const *)goal, goal_surface,
-		0.3f, 1 /* the end near a wall is all right */, &collision);
+	boolean found = n64_ai_direct_path(start, start_surface, goal, goal_surface, path);
+
 	bot_profile_end(1, profile_start);
-	if (blocked)
-	{
-		return FALSE;
-	}
-	csmemset(path, 0, sizeof(*path));
-	path->valid = TRUE;
-	path->endpoint.point = *goal;
-	path->endpoint.surface_index = goal_surface;
-	path->endpoint.target_radius = 0.f;
-	path->steps_finish_path = TRUE;
-	path->step_count = 1;
-	path->step_index = 0;
-	path->steps[0].surface_index = goal_surface;
-	path->steps[0].point = *goal;
-	return TRUE;
+	return found;
 }
 
 /* the bot weapons table's entry for a weapon object's definition, or NONE */
@@ -772,53 +698,50 @@ static short weapon_score(
 
 /* ---------- the game's side */
 
-void n64_bots_begin(
+/* (the module just loaded: its state is new; the lobby and the path's
+obstacle avoidance are the program's, n64_bots_begin. FALSE: no room for
+the bots' records) */
+static int bots_begin(
 	int count,
 	int skill,
 	int teams)
 {
-	/* Release the previous map's path scratch before the map arena grows. */
-	if (bots_path_state) free(bots_path_state);
-	bots_path_state = NULL;
 	csmemset(&bots, 0, sizeof(bots));
 	bots.teams = teams != 0;
 	bots.count = (short)PIN(count, 0, MAXIMUM_BOTS);
 	bots.skill = (short)PIN(skill, 0, 3);
 	bots.active = bots.count > 0;
 	bots.random = n64_ticks() | 1;
-	if (!bot_lobby_prepared) n64_bots_prepare_lobby();
-	if (bots.active)
-	{
-		/* (the paths' last stage steers around nearby objects from the
-		AI's own records of them, which the N64 has not got) */
-		ai_debug.path_disable_obstacle_avoidance = TRUE;
-	}
+	/* (the bots' own records: none without the room for them) */
+	if (bots.active && (bots.bots = (struct bot *)malloc(bots.count * sizeof(struct bot))) == NULL)
+		bots.active = FALSE;
+	return bots.active;
 }
 
-void n64_bots_stop(
+static void bots_stop(
 	void)
 {
 	bots.active = FALSE;
 	bots.count = 0;
+	bots.created = 0;
 	bots.search_owner = 0;
 	if (bots_path_state)
 	{
 		free(bots_path_state);
 		bots_path_state = NULL;
 	}
-}
-
-int n64_bots_count(
-	void)
-{
-	return bots.active ? bots.count : 0;
+	if (bots.bots)
+	{
+		free(bots.bots);
+		bots.bots = NULL;
+	}
 }
 
 /* how often a bot's pose is made (objects.c, n64_far_ai_biped), in ticks:
 every other with 4 to 6 bots, every third with 7 or 8 (the user's choice:
 each biped costs ~2.7 ms of a tick; with ANIMATIONS HALF RATE counted on
 its half-speed clock there: every fourth or sixth) */
-int n64_bots_pose_interval(
+static int n64_bots_pose_interval(
 	void)
 {
 	short count = bots.active ? bots.created : 0;
@@ -829,7 +752,7 @@ int n64_bots_pose_interval(
 /* a bot's own (objects.c, n64_far_ai_biped): the count's rate near and in
 view, or firing; less often far or out of view, least both (bot_detail).
 With three or four views, every other tick at most */
-int n64_bot_pose_interval(
+static int bot_pose_interval(
 	long unit_index)
 {
 	extern int n64_view_total;
@@ -854,7 +777,7 @@ int n64_bot_pose_interval(
 ANIMATIONS HALF RATE (n64_menu.c; the user's ask) -- its timers, turning
 and chances count by the ticks since its last thought, so it plays the
 same, slower to react */
-int n64_bots_update_interval(
+static int n64_bots_update_interval(
 	void)
 {
 	extern int n64_half_animation_rate;
@@ -865,16 +788,9 @@ int n64_bots_update_interval(
 /* bipeds.c's (biped_update): a bot's movement and its physics every other
 tick, twice as far, with four bots or more (the user's ask: its physics was
 the dearest part of a biped's tick after its pose); else every tick */
-int n64_bot_move_interval(
+static int bot_move_interval(
 	long unit_index)
 {
-#ifdef HALO_N64_CAMPAIGN
-	extern int n64_campaign_move_interval(long unit_index);
-
-	/* (a campaign's actors: n64_campaign.c) */
-	if (!bots.active)
-		return n64_campaign_move_interval(unit_index);
-#endif
 	if (!bots.active || bots.created < 4)
 		return 1;
 	return bot_of_unit(unit_index) ? 2 : 1;
@@ -893,7 +809,7 @@ static short bot_think_interval(
 }
 
 /* the bot a player is (its number, 0 on), or -1 */
-int n64_bot_number(
+static int bot_number(
 	long player_index)
 {
 	short i;
@@ -911,12 +827,12 @@ nearby objects are looked over this tick (what its action button would
 do, the items walked over): a bot's only before a tick it thinks -- it
 presses its buttons then -- the rest every tick. A tick's actions come at
 its start, so the tick before n64_bots_actions' next thought */
-boolean n64_bots_examine_turn(
+static boolean bots_examine_turn(
 	long player_index)
 {
 	int number;
 
-	if (!bots.active || (number = n64_bot_number(player_index)) < 0)
+	if (!bots.active || (number = bot_number(player_index)) < 0)
 		return TRUE;
 	return game_time_get() + 1 >= bots.bots[number].next_think;
 }
@@ -968,7 +884,7 @@ static void bots_look_for_gates(
 
 /* main.c's create_local_players, after the players on the controllers:
 the bots, on the team with fewer players in a team game */
-void n64_bots_create_players(
+static void bots_create_players(
 	void)
 {
 	struct data_iterator iterator;
@@ -989,14 +905,13 @@ void n64_bots_create_players(
 	data_iterator_new(&iterator, player_data);
 	while ((player = data_iterator_next(&iterator)) != NULL && human_count < 4)
 		human_teams[human_count++] = player->network_player_data.team_index & 1;
-	if (!bot_lobby_prepared) n64_bots_prepare_lobby();
 	for (i = 0; i < bots.count; i++)
 	{
 		struct network_player network_player;
 		struct bot *bot = &bots.bots[bots.created];
 		char name[12];
 		short c, team = (short)n64_bot_lobby_team(i, human_teams, human_count);
-		short ghost_profile = (short)n64_ghost_profile(bot_lobby_seed ^ UINT32_C(0xc8013ea4), i, bots.count);
+		short ghost_profile = (short)n64_bot_lobby_profile(i, bots.count);
 		long player_index;
 
 		csmemset(&network_player, 0, sizeof(network_player));
@@ -1104,7 +1019,7 @@ static boolean bot_walk_allowed(
 	real_point3d a, b;
 	long sa = bot_ground(from, &a), sb = bot_ground(to, &b);
 
-	return sa != NONE && sb != NONE && fabsf(a.z - b.z) < 1.f && n64_ai_direct_path(&a, sa, &b, sb, &path);
+	return sa != NONE && sb != NONE && fabsf(a.z - b.z) < 1.f && bot_direct_path(&a, sa, &b, sb, &path);
 }
 
 /* where a body ray (0.5 above the ground) between two points first meets
@@ -1774,7 +1689,7 @@ static void plan_path(
 	if (direct)
 	{
 		bots.direct_tests_this_tick++;
-		if (n64_ai_direct_path(&start, start_surface, &goal, goal_surface, &bot->path))
+		if (bot_direct_path(&start, start_surface, &goal, goal_surface, &bot->path))
 		{
 			bot->path_valid = TRUE;
 			bot->path_age = 0;
@@ -4617,7 +4532,7 @@ static void bot_begin_life(
 		if (number >= 0 && number < MAXIMUM_BOTS && bot_ghost_spawn_units[number] != player->unit_index)
 		{
 			bot_ghost_spawn_units[number] = player->unit_index;
-			boolean cloaked = n64_ghost_camo_roll(ghost_profile, &bot_ghost_spawn_seed);
+			boolean cloaked = n64_ghost_camo_roll(ghost_profile, &n64_bot_ghost_spawn_seed);
 			if (cloaked)
 			{
 				player_handle_powerup_minor(player_index, _player_powerup_active_camouflage,
@@ -4629,7 +4544,7 @@ static void bot_begin_life(
 				char line[160];
 				snprintf(line, sizeof(line), "n64: ghost %s slot %d unit %08lx camo roll %lu granted %d ticks %d",
 					n64_ghost_name(ghost_profile), number, (unsigned long)player->unit_index,
-					(unsigned long)(bot_ghost_spawn_seed % 100), cloaked,
+					(unsigned long)(n64_bot_ghost_spawn_seed % 100), cloaked,
 					player->powerup_durations[_player_powerup_active_camouflage]);
 				n64_log(line);
 			}
@@ -5388,7 +5303,7 @@ static void bot_trigger_tick(
 
 /* update_client_dequeue's (player_queues_new.c, HALO_N64): a tick's
 actions, by player datum's absolute index -- the bots' written over */
-void n64_bots_actions(
+static void bots_actions(
 	struct player_action *actions)
 {
 	/* (the presses a held action does not repeat between thoughts) */
@@ -5509,3 +5424,19 @@ void n64_bots_actions(
 	}
 	bot_profile_poll();
 }
+
+/* ---------- the module's entry points (n64_bots_module.h): the game's
+calls, passed on by n64_bots_stub.c */
+
+const struct n64_bots_entries n64_bots_entries =
+{
+	bots_begin,
+	bots_stop,
+	bots_create_players,
+	bots_actions,
+	bot_pose_interval,
+	bot_move_interval,
+	bot_number,
+	bots_examine_turn,
+	bots_display_name
+};

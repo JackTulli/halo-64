@@ -252,14 +252,17 @@ def main(argv=None):
     # program keeps a stub, port/n64/game/n64_hud64_stub.c), and the
     # projectiles' tracers, trails and glows, rom:/projectiles.dso (the
     # program keeps the setting, the hook and the dots,
-    # port/n64/src/n64_particles.c); no link-time optimisation, no small data
+    # port/n64/src/n64_particles.c), and the bots', rom:/bots.dso (the
+    # program keeps a stub, port/n64/game/n64_bots_stub.c; the campaign and
+    # online cartridges, whose games have no bots, have none); no
+    # link-time optimisation, no small data
     # (-G0: a module reaches the program's data by address). Each module is
     # linked on its own with its one export
     module_sources = {"port/n64/src/n64_hud64.c": "hud64", "port/n64/game/n64_hud64_game.c": "hud64",
                       "port/n64/src/n64_projectiles.c": "projectiles", "port/n64/game/n64_projectiles_game.c": "projectiles",
-                      "port/n64/src/n64_projectiles_full.c": "projectiles_full"}
+                      "port/n64/src/n64_projectiles_full.c": "projectiles_full", "port/n64/game/n64_bots.c": "bots"}
     module_exports = {"hud64": "n64_hud64_entries", "projectiles": "n64_projectiles_entries",
-                      "projectiles_full": "n64_projectiles_full_entries"}
+                      "projectiles_full": "n64_projectiles_full_entries", "bots": "n64_bots_entries"}
 
     def module_flags(cflags):
         flags = [f for f in cflags.split(" ") if f not in ("-flto", "-ffat-lto-objects") and not re.fullmatch(r"-G\d+", f)]
@@ -371,6 +374,9 @@ def main(argv=None):
             add(objects, obj_dir, name, game_cflags)
             game_objects.append(name)
         for source in sorted((PORT_DIR / "game").glob("*.c")):
+            # (the bots' module: not on the campaign and online cartridges, where no game has bots)
+            if source.name == "n64_bots.c" and (campaign or "HALO_N64_ONLINE" in extra_defines):
+                continue
             extra_flags = " -std=gnu99" if source.name in {"n64_golden.c", "n64_modifiers.c", "n64_render_game.c"} else ""
             if source.name in {"n64_golden.c", "n64_modifiers.c"}:
                 extra_flags += " -Werror=implicit-function-declaration -Werror=int-conversion"
