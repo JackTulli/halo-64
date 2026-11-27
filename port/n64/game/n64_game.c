@@ -104,7 +104,7 @@ static void n64_game_start(
 		n64_pro_weapons = FALSE;
 		variant = *game_engine_get_variant_by_name(&temporary_variant,
 			n64_choice.online_teams ? "team_slayer" : "slayer");
-		variant.universal_variant.score_to_win = 9999;
+		variant.universal_variant.score_to_win = N64_SCORE_TO_WIN_NONE;
 		variant.universal_variant.vehicle_set = 1;
 		variant.universal_variant.lives = 0;
 		game_set_game_variant(&variant);
@@ -182,7 +182,7 @@ static void n64_game_start(
 		variant = *game_engine_get_variant_by_name(&temporary_variant, variant_name);
 	}
 	if (n64_choice.firefight)
-		variant.universal_variant.score_to_win = 9999;
+		variant.universal_variant.score_to_win = N64_SCORE_TO_WIN_NONE;
 	else if (n64_choice.score > 0)
 		variant.universal_variant.score_to_win = n64_choice.score;
 	/* Native set zero admits every vehicle in the map palette. Defaults and

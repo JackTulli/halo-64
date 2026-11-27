@@ -680,20 +680,45 @@ static void mark_names(
 	return;
 }
 
+/* a score in the unit the game counts to its score to win: King of the
+Hill and Oddball keep ticks, shown in whole seconds as their own messages
+show them; a free-for-all Race player's score is a ranking key (laps and
+the lap's flags), shown as the laps Halo's own score shows
+(race_get_score_string); the others (kills, flags, Team Race's laps) as
+they are */
+static long shown_score(
+	long score,
+	long player_index,
+	boolean time,
+	boolean laps)
+{
+	if (time)
+		return score / TICKS_PER_SECOND;
+	if (laps)
+		return player_get(player_index)->statistics.multiplayer_statistics.race_statistics.laps;
+	return score;
+}
+
 /* the score: yours and the best other's (team games: the teams'), of the
-game's score to win; not in Firefight (its own status line) */
+game's score to win, below 0 too (Slayer's suicides); not in Firefight
+(its own status line) */
 static void score(
 	void)
 {
 	long player_index = local_player_get_player_index(render.local_player_index);
+	long engine = global_variant.game_engine_index;
 	struct data_iterator iterator;
 	struct player_datum *player;
-	boolean teams;
-	long mine, other = 0;
+	boolean teams, time, laps;
+	long mine, other = 0, other_index = NONE;
 
 	if (!game_engine || !game_engine->get_player_score || n64_firefight_active() || player_index == NONE)
 		return;
 	teams = game_engine_has_teams();
+	/* (Oddball's ball type 2, "terminator", counts kills) */
+	time = engine == game_engine_king ||
+		(engine == game_engine_oddball && global_variant.game_engine_variant.oddball.oddball_ball_type != 2);
+	laps = engine == game_engine_race && !teams;
 	mine = game_engine->get_player_score(player_index, teams ? _get_score_team : _get_score_individual);
 	data_iterator_new(&iterator, player_data);
 	while ((player = data_iterator_next(&iterator)) != NULL)
@@ -704,13 +729,17 @@ static void score(
 			(teams && player->team_index == player_get(player_index)->team_index))
 			continue;
 		score = game_engine->get_player_score(iterator.datum_index, teams ? _get_score_team : _get_score_individual);
-		other = score > other ? score : other;
+		if (other_index == NONE || score > other)
+			other = score, other_index = iterator.datum_index;
 	}
 	view.show_score = TRUE;
-	view.score = (short)PIN(mine, 0, 999);
-	view.other = (short)PIN(other, 0, 999);
-	view.other_leads = other > mine;
-	view.limit = (short)PIN(global_variant.universal_variant.score_to_win, 1, 9999);
+	view.score_time = (unsigned char)time;
+	view.score_open = global_variant.universal_variant.score_to_win == N64_SCORE_TO_WIN_NONE;
+	view.score = shown_score(mine, player_index, time, laps);
+	/* (no other player: 0, as before) */
+	view.other = other_index == NONE ? 0 : shown_score(other, other_index, time, laps);
+	view.other_leads = other_index != NONE && other > mine;
+	view.limit = PIN(global_variant.universal_variant.score_to_win, 1, 1000000) * (time ? 60 : 1);
 	return;
 }
 

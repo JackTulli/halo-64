@@ -698,6 +698,9 @@ struct n64_menu_choice
 	int online_teams, online_team;
 	int to_online;
 };
+/* the score to win of a game that no score ends (an online game, Firefight:
+port/n64/game/n64_game.c) */
+#define N64_SCORE_TO_WIN_NONE 9999
 void n64_menu_memory_begin(void);
 void n64_map_boot_complete(void);
 void n64_render_prepare_map_image(void);
@@ -891,8 +894,11 @@ struct n64_hud64_state
 	float shield_held;
 	unsigned char shield_ghost;
 	unsigned long shield_ghost_colour;
-	short score, other, limit; /* yours, the best other's (team games: the teams'), the game's */
-	unsigned char other_leads;
+	/* yours, the best other's (team games: the teams'), the game's score to
+	win: kills, flags, laps, or seconds (score_time: King of the Hill,
+	Oddball); score_open: no score ends the game (N64_SCORE_TO_WIN_NONE) */
+	long score, other, limit;
+	unsigned char other_leads, score_time, score_open;
 	/* the pickup prompt: the weapon's name in capitals ("" none), SWAP FOR */
 	char prompt[28];
 	unsigned char prompt_swap;
