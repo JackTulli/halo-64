@@ -56,14 +56,20 @@ symbols in this file:
 #include "objects/widgets/widget_types.h"
 #include "saved games/game_state.h"
 #include "tag_files/tag_groups.h"
+#ifdef HALO_N64
+#include "cache/cache_files.h"
+#include "game/game_globals.h"
+#include "scenario/scenario.h"
+#endif
 
 /* ---------- constants */
 
 enum
 {
 #ifdef HALO_N64
-	/* (none are made on the N64: widget_new, below) */
-	MAXIMUM_WIDGETS_PER_MAP = 1
+	/* (on the N64 only Capture the Flag's two flags' cloth: widgets_new,
+	below) */
+	MAXIMUM_WIDGETS_PER_MAP = 2
 #else
 	MAXIMUM_WIDGETS_PER_MAP = 64
 #endif
@@ -259,9 +265,18 @@ void widgets_new(
 
 	object->object.first_widget_index = NONE;
 #ifdef HALO_N64
-	/* (the N64 draws no widgets (antennas, flags, glows): none are made, and none are simulated --
-	their point physics alone cast ~1,500 rays a second in Firefight) */
-	return;
+	/* (the N64 draws no widgets (antennas, flags, glows) but the cloth of Capture the Flag's flag: no other is made,
+	and none is simulated -- their point physics alone cast ~1,500 rays a second in Firefight. The flag is the
+	globals' multiplayer flag (game_engine_ctf.c makes two, at its bases); its cloth's storage is made with it,
+	flags.c) */
+	{
+		struct game_globals *game_globals = scenario_get_game_globals();
+
+		if (!game_globals || game_globals->multiplayer_information.count < 1 ||
+			object->definition_index != TAG_BLOCK_GET_ELEMENT(&game_globals->multiplayer_information, 0,
+				struct game_globals_multiplayer_information)->flag.index)
+			return;
+	}
 #endif
 	widget_reference_index = 0;
 	if (object_definition->object.widgets.count > 0)
@@ -274,6 +289,12 @@ void widgets_new(
 				struct object_definition_widget);
 			short type = tag_group_to_widget_type(widget_reference->type.group_tag);
 
+#ifdef HALO_N64
+			/* (its cloth alone, where the cartridge has the flag tag: flags.c) */
+			if (widget_reference->type.group_tag != 'flag' || widget_reference->type.index == NONE ||
+				tag_get_group_tag(widget_reference->type.index) != 'flag')
+				type = NONE;
+#endif
 			if (type != NONE && widget_reference->type.index != NONE)
 			{
 				struct widget_type_definition *type_definition = code_001257a0(type);

@@ -5280,6 +5280,27 @@ static void draw_particles(int first_person)
 	current_color = 0xFFFFFFFF;
 }
 
+/* the view's geometry that Halo builds each frame (n64_dynamic.c), after its
+objects: they are drawn first, their depth under it; the models' mode, texture
+and colour are the RDP's no longer after it */
+int n64_render_dynamic_view(struct n64_particle_view *view, unsigned long *fog_rgba, unsigned long *frame)
+{
+	if (!renderer.view_count || renderer.first_person)
+		return 0;
+	particle_view(view, 0);
+	*fog_rgba = color_to_packed32(renderer.fog_color);
+	*frame = renderer.frame_index;
+	return 1;
+}
+
+void n64_render_dynamic_begin(void)
+{
+	flush_draws();
+	current_model_mode = -1;
+	renderer.current_texture = -2;
+	current_color = 0xFFFFFFFF;
+}
+
 void n64_render_view_particles(void)
 {
 	flush_draws();

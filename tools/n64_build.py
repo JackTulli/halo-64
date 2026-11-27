@@ -469,7 +469,7 @@ def main(argv=None):
                 outputs.append(posix(fsdir / "levels" / f"{name}.enc"))
             else:
                 outputs += [posix(fsdir / "levels" / f"{name}.tiles"), posix(fsdir / "levels" / f"{name}-low.lvl"),
-                            posix(fsdir / "levels" / f"{name}-low.mdl")]
+                            posix(fsdir / "levels" / f"{name}-low.mdl"), posix(fsdir / "fx" / f"{name}.dyn")]
             sources = ["build/xbox/disc/maps/a30.map"] if not campaign else []
             # (the level's edits: tools/n64/campaign_editor.html)
             edits = Path("campaign_edits") / f"{name}.json"

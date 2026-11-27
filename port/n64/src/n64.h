@@ -541,6 +541,33 @@ struct n64_particle_view
 	float chunky_scale;
 };
 
+/* the geometry Halo builds each frame (n64_dynamic.c): King of the Hill's
+band, the flags' cloth. Their looks (rom:/fx/<map>.dyn) of one kind read as a
+game that draws them starts (the number read), and room for a frame's
+vertices made then (0: none), all given back with the map */
+#define N64_DYNAMIC_HILL 1
+#define N64_DYNAMIC_FLAG 2
+int n64_dynamic_load(const char *map_name, int kind);
+int n64_dynamic_reserve(int vertices);
+void n64_dynamic_release(void);
+/* a grid of world points (columns of rows, each point's x y z floats stride
+bytes after the one before, a column's after the column before) drawn in the
+view with the shader's look: u across its texture's width at each column
+(in widths), v down its height at each row (0 to 1), each cell's two
+triangles or as cells says (flags.c's tesselations; NULL: both), the look's
+animations at seconds; rgba the colour where the shader has no look. key
+names the grid in its frame (its vertices are made once a frame) */
+void n64_dynamic_grid(unsigned long key, long shader_index, const float *points, int stride, int columns, int rows,
+	const float *u, const float *v, const short *cells, float seconds, unsigned long rgba);
+/* the view's camera for that, its fog's colour (RGBA) and the frame's
+number (n64_render.c); 0: no view. n64_render_dynamic_begin then draws the
+view's objects first, before a grid is drawn */
+int n64_render_dynamic_view(struct n64_particle_view *view, unsigned long *fog_rgba, unsigned long *frame);
+void n64_render_dynamic_begin(void);
+/* a box (least and greatest x, y and z) that the current view can show even
+in part (n64_dynamic.c): King's band tests it before it does anything else */
+int n64_dynamic_in_view(const float *low, const float *high);
+
 /* the map's particles: rom:/fx/<map>.fx */
 void n64_particles_load(const char *map_name);
 /* an effect's event's emitters (by the effect's tag index), or NULL; valid

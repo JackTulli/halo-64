@@ -112,6 +112,11 @@ enum
 	MAXIMUM_KING_SCORE_SLOTS = 16,
 #endif
 	MAXIMUM_HILL_POINTS = 12,
+#ifdef HALO_N64
+	/* (the band's quads on the N64, an edge longer than N64_BAND_PIECE units
+	in pieces: king_engine_post_rasterize) */
+	N64_BAND_PIECES = 24,
+#endif
 	MAXIMUM_HILLS = 64,
 	NUMBER_OF_DEFAULT_ANIMATION_VALUES = 4,
 
@@ -285,6 +290,38 @@ void king_engine_pregame_post_rasterize(
 	return;
 }
 
+#ifdef HALO_N64
+/* port: King of the Hill's band as the N64 draws it (one grid, port/n64/src/n64_dynamic.c: king_engine_post_rasterize),
+made again only when the hill changes (and for each map: king_engine_initialize_for_new_map): every view of every frame
+draws the same one, and a view that cannot show its box costs a comparison and the box's test, nothing more */
+static struct
+{
+	real_point3d points[MAXIMUM_HILL_POINTS];
+	long point_count; /* (the hill it was made of; 0: none made) */
+	long shader_index;
+	real_point3d band[N64_BAND_PIECES + 1][2];
+	real u[N64_BAND_PIECES + 1];
+	long columns;
+	real_point3d low, high; /* (the band's box) */
+	long frame_checked; /* (the frame whose first view found the hill the same) */
+} n64_king_band;
+
+static void n64_king_band_draw(
+	long shader_index)
+{
+	extern void n64_dynamic_grid(unsigned long key, long shader_index, float const *points, int stride,
+		int columns, int rows, float const *u, float const *v, short const *cells, float seconds, unsigned long rgba);
+	static real const v[2] = {1.0f, 0.0f};
+	/* (within the hour: the floats keep their fraction) */
+	real seconds = (real)(game_time_get() % (3600*TICKS_PER_SECOND))/TICKS_PER_SECOND +
+		render.time_delta_since_tick_sec;
+
+	/* (where the map has no look for the shader: amber) */
+	n64_dynamic_grid(1, shader_index, &n64_king_band.band[0][0].x, sizeof(n64_king_band.band[0][0]),
+		n64_king_band.columns, 2, n64_king_band.u, v, NULL, seconds, 0xFF8C10A0);
+}
+#endif
+
 void king_engine_post_rasterize(
 	void)
 {
@@ -299,6 +336,23 @@ void king_engine_post_rasterize(
 	real texels_per_unit;
 	real previous_u;
 
+#ifdef HALO_N64
+	/* port: the band of the same hill, as made: drawn where the view can show
+	any of it, and nothing more where it cannot */
+	if (n64_king_band.point_count >= 2 && (n64_king_band.frame_checked == render.frame_index ||
+		(king_globals.hill_point_count == n64_king_band.point_count &&
+		!csmemcmp(n64_king_band.points, king_globals.hill_points, sizeof(real_point3d)*n64_king_band.point_count))))
+	{
+		extern int n64_dynamic_in_view(float const *low, float const *high);
+
+		/* (the hill moves only between frames: once a frame is enough) */
+		n64_king_band.frame_checked = render.frame_index;
+		if (n64_dynamic_in_view(&n64_king_band.low.x, &n64_king_band.high.x))
+			n64_king_band_draw(n64_king_band.shader_index);
+		return;
+	}
+	n64_king_band.point_count = 0;
+#endif
 	global_scenario_get();
 	game_globals = scenario_get_game_globals();
 	multiplayer_information = TAG_BLOCK_GET_ELEMENT(
@@ -309,6 +363,12 @@ void king_engine_post_rasterize(
 	shader_index = multiplayer_information->hill_shader.index;
 	hill_point_count = king_globals.hill_point_count;
 
+#ifdef HALO_N64
+	/* port: no hill (no points, or no length): nothing to draw, and no 1/0
+	below, whose NaN the N64's FPU stops on (each use emulated) */
+	if (hill_point_count < 2 || hill_point_count > MAXIMUM_HILL_POINTS)
+		return;
+#endif
 	for (point_index = 0; point_index < king_globals.hill_point_count; point_index++)
 	{
 		hill_perimeter += distance3d(
@@ -317,10 +377,83 @@ void king_engine_post_rasterize(
 				point_index + 1 == king_globals.hill_point_count ? 0 : point_index + 1]);
 	}
 
+#ifdef HALO_N64
+	if (hill_perimeter < 0.5f)
+		return;
+#endif
 	inverse_segment_count = (real)(1.0/floor(hill_perimeter + 0.5f));
 	texels_per_unit = 1.0f/(inverse_segment_count*hill_perimeter);
 	previous_u = 0.0f;
 	accumulated_distance = 0.0f;
+
+#ifdef HALO_N64
+	{
+		/* port: the N64 builds no dynamic buffers (render_dynamic_quad's
+		calls draw nothing there: port/n64/game/n64_stubs_generated.c). The
+		band goes to the N64's renderer as one grid (port/n64/src/
+		n64_dynamic.c): the same quads, a column at each of the hill's
+		points and at the first again, from the ground to 0.8 up, with the
+		same u along them (the bitmap's repeats, a whole number round the
+		hill); its texture is the shader's look from v 0.2 to 1, the band's
+		top to the ground (tools/n64/dynamic.py). An edge longer than 12
+		units is drawn in pieces: a quad's texture coordinates (64 texels a
+		repeat, tiny3d's and the RDP's 10.5) stay under 1,024. Its
+		animations run on the game's time */
+		real_point3d (*band)[2] = n64_king_band.band;
+		real *u = n64_king_band.u;
+		long columns = 0;
+
+		if (!(texels_per_unit > 0.0f))
+			return;
+		for (point_index = 0; point_index < hill_point_count; point_index++)
+		{
+			real_point3d const *from = &king_globals.hill_points[point_index];
+			real_point3d const *to = &king_globals.hill_points[point_index + 1 == hill_point_count ? 0 : point_index + 1];
+			real length = distance3d(from, to);
+			long pieces = (long)(length/12.0f) + 1;
+			long piece;
+
+			if (columns + pieces > N64_BAND_PIECES)
+				return;
+			for (piece = 0; piece < pieces; piece++)
+			{
+				real t = (real)piece/pieces;
+
+				band[columns][0].x = from->x + (to->x - from->x)*t;
+				band[columns][0].y = from->y + (to->y - from->y)*t;
+				band[columns][0].z = from->z + (to->z - from->z)*t;
+				band[columns][1] = band[columns][0];
+				band[columns][1].z += 0.8f;
+				u[columns] = accumulated_distance*texels_per_unit + length*t*texels_per_unit;
+				columns++;
+			}
+			accumulated_distance += length;
+		}
+		band[columns][0] = king_globals.hill_points[0];
+		band[columns][1] = band[columns][0];
+		band[columns][1].z += 0.8f;
+		u[columns++] = accumulated_distance*texels_per_unit;
+		n64_king_band.columns = columns;
+		n64_king_band.low = n64_king_band.high = band[0][0];
+		for (point_index = 0; point_index < columns; point_index++)
+		{
+			real_point3d const *p = &band[point_index][0];
+
+			n64_king_band.low.x = MIN(n64_king_band.low.x, p->x);
+			n64_king_band.low.y = MIN(n64_king_band.low.y, p->y);
+			n64_king_band.low.z = MIN(n64_king_band.low.z, p->z);
+			n64_king_band.high.x = MAX(n64_king_band.high.x, p->x);
+			n64_king_band.high.y = MAX(n64_king_band.high.y, p->y);
+			n64_king_band.high.z = MAX(n64_king_band.high.z, p[1].z);
+		}
+		n64_king_band.shader_index = shader_index;
+		n64_king_band.frame_checked = render.frame_index;
+		csmemcpy(n64_king_band.points, king_globals.hill_points, sizeof(real_point3d)*hill_point_count);
+		n64_king_band.point_count = hill_point_count;
+		n64_king_band_draw(shader_index);
+		return;
+	}
+#endif
 
 	for (point_index = 0; point_index < hill_point_count; point_index++)
 	{
@@ -482,6 +615,22 @@ boolean king_engine_initialize_for_new_map(
 		king_globals.hill_point_count != 0);
 
 	render_dynamic_quad_initialize();
+#ifdef HALO_N64
+	{
+		/* port: the band's look, and room for its vertices (each of its quads'
+		four corners), for this game (port/n64/src/n64_dynamic.c: made only in
+		King of the Hill, given back with the map) */
+		extern int n64_dynamic_load(char const *map_name, int kind);
+		extern int n64_dynamic_reserve(int vertices);
+		extern char const *n64_loaded_map_name(void);
+
+		/* (1: N64_DYNAMIC_HILL, port/n64/src/n64.h) */
+		n64_dynamic_load(n64_loaded_map_name(), 1);
+		n64_dynamic_reserve(4*N64_BAND_PIECES);
+		/* (the band is made again for this game's hill) */
+		n64_king_band.point_count = 0;
+	}
+#endif
 
 	return TRUE;
 }

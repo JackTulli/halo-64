@@ -438,6 +438,18 @@ static boolean ctf_engine_initialize_for_new_map(
 	ctf_globals.weapon_indices[0] = NONE;
 	ctf_globals.weapon_indices[1] = NONE;
 	timeout_for_endgame_sound = CTF_ENDGAME_SOUND_TIMEOUT;
+#ifdef HALO_N64
+	{
+		/* port: the looks of the flags' cloth, for this game (port/n64/src/
+		n64_dynamic.c: read only in Capture the Flag, given back with the
+		map) */
+		extern int n64_dynamic_load(char const *map_name, int kind);
+		extern char const *n64_loaded_map_name(void);
+
+		/* (2: N64_DYNAMIC_FLAG, port/n64/src/n64.h) */
+		n64_dynamic_load(n64_loaded_map_name(), 2);
+	}
+#endif
 
 	scenario = global_scenario_get();
 	for (team_index = 0; team_index < NUMBER_OF_CTF_TEAMS; team_index++)

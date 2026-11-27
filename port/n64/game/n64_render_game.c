@@ -40,6 +40,8 @@ renderer's (port/n64/src/n64_render.c).
 #include "structures/structure_bsp_definitions.h"
 #include "scenario/sky_definitions.h"
 #include "objects/widgets/light_volumes.h"
+#include "objects/widgets/widgets.h"
+#include "shaders/shaders.h"
 
 #include "../src/n64.h"
 #include "../src/n64_projectiles_module.h"
@@ -321,7 +323,8 @@ static struct frame_object
 	long object_index;
 	long ultimate_parent;
 	short cluster;
-	short pad;
+	/* (it has widgets: a flag's cloth, widgets.c) */
+	short widgets;
 	struct n64_object n64;
 } frame_objects[MAXIMUM_FRAME_OBJECTS];
 static short frame_object_count;
@@ -465,6 +468,7 @@ static void gather_frame_objects(
 		entry->ultimate_parent = object->object.parent_object_index == NONE ?
 			iterator.index : object_get_ultimate_parent(iterator.index);
 		entry->cluster = object->object.location.cluster_index;
+		entry->widgets = object->object.first_widget_index != NONE;
 		n64->model_tag_index = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(definition->object.model.index);
 		n64->node_count = (short)model_definition_get(definition->object.model.index)->nodes.count;
 		n64->node_matrices = (const float *)object_get_node_matrices(iterator.index);
@@ -540,6 +544,12 @@ static void gather_frame_objects(
 		frame_object_count++;
 	}
 }
+
+/* the view's objects with widgets (render_objects_for_view), whose widgets
+are drawn after its objects (render_widgets_for_view) */
+#define MAXIMUM_VIEW_WIDGET_OBJECTS 4
+static long view_widget_objects[MAXIMUM_VIEW_WIDGET_OBJECTS];
+static short view_widget_object_count;
 
 /* the frame each object was last in a view, by its absolute index (a
 collision of two objects in a slot only keeps one's updates at full rate):
@@ -657,6 +667,7 @@ static void render_objects_for_view(
 		gather_frame_objects();
 	for (i = 0; i < MAXIMUM_FRAME_OBJECTS / 32; i++)
 		frame_object_dots[i] = 0;
+	view_widget_object_count = 0;
 	for (i = 0; i < frame_object_count; i++)
 	{
 		struct frame_object const *entry = &frame_objects[i];
@@ -681,8 +692,30 @@ static void render_objects_for_view(
 			shown by a dot in its colour, n64_particles.c) */
 			if (entry->n64.lowest && n64_render_lowest_refused())
 				frame_object_dots[i >> 5] |= 1UL << (i & 31);
+			if (entry->widgets && view_widget_object_count < MAXIMUM_VIEW_WIDGET_OBJECTS)
+				view_widget_objects[view_widget_object_count++] = entry->object_index;
 		}
 	}
+}
+
+/* the view's objects' widgets (on the N64 only Capture the Flag's flags'
+cloth is made: widgets.c), after its objects, as render_objects.c draws them
+with their object; they light nothing (flags.c's cloth is unlit, its shader
+transparent) */
+static void render_widgets_for_view(
+	void)
+{
+	static struct render_lighting const lighting = {0};
+	static real_rgb_color const colors[4] = {
+		{1.f, 1.f, 1.f}, {1.f, 1.f, 1.f}, {1.f, 1.f, 1.f}, {1.f, 1.f, 1.f}};
+	static real const values[4] = {0.f, 0.f, 0.f, 0.f};
+	struct render_animation animation;
+	short i;
+
+	animation.colors = colors;
+	animation.values = values;
+	for (i = 0; i < view_widget_object_count; i++)
+		widgets_render(view_widget_objects[i], &lighting, &animation);
 }
 
 /* the view's dots, for n64_particles.c (n64.h): every projectile of this
@@ -981,6 +1014,12 @@ void render_frame(
 		own unit) */
 		n64_online_draw_objects();
 #endif
+		/* the geometry Halo builds each frame, after the view's objects and
+		before its particles, as render.c draws it: the game engine's
+		(King of the Hill's band, game_engine_king.c) and the objects'
+		widgets (the flags' cloth); n64_dynamic.c */
+		game_engine_post_rasterize_objects();
+		render_widgets_for_view();
 		if (!(window_index == 0 && n64_debug_flag("debug_chase")) && !n64_debug_flag("debug_no_first_person") &&
 			!online_view)
 		{
