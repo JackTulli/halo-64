@@ -575,7 +575,7 @@ def write_campaign_assets(xmap, repacker, filesystem):
     from .models import ModelConverter
     builder = LevelBuilder(xmap, repacker.defs, xmap.name, filesystem, split_depth=0)
     builder.greyscale = builder.terrain_detail = True
-    builder.chicago_water = True
+    builder.campaign_blue = True
     # (no colour tiles, terrain_tiles.py: ~85 KB of a campaign level's heap,
     # which its models' cache and Halo's objects need -- the ground's colour
     # with its detail maps' tint on its vertices instead)
