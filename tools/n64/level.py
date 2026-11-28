@@ -114,9 +114,13 @@ MATERIAL_TILED = 4096
 WATER_SHADE = 0.7
 # a water shader without a tint of its own
 WATER_DEFAULT_COLOUR = (0.12, 0.16, 0.45)
-# chicago shaders drawn as water where LevelBuilder.chicago_water is set
+# chicago shaders drawn as water (LevelBuilder.material)
 WATER_NAMES = ("water", "river", "stream")
-# and there, water whose own colour is grey (a30's: Halo's blue is the sky
+# a chicago map's "alpha replicate" flag: its alpha is its colour too -- a
+# mask (chicago_water_tint)
+CHICAGO_MAP_ALPHA_REPLICATE = 2
+# in the campaign's level (LevelBuilder.campaign_blue), water whose own
+# colour is grey (a30's: Halo's blue is the sky
 # in its reflection, which the N64 has not -- the user: "the water looks
 # grey not blue") is a river's blue, or a waterfall's paler one
 CAMPAIGN_WATER_COLOUR = (0.16, 0.30, 0.44)
@@ -641,11 +645,19 @@ class LevelBuilder:
         self.decimated = [0, 0]
         # alpha-blended chicago shaders named as water (WATER_NAMES) drawn as
         # water (MATERIAL_WATER), their colour their colour maps' mean: a30's
-        # rivers and waterfalls (a mask as their first map, the colour in
-        # their second) came out as slabs, as Battle Creek's creek did before
+        # rivers and waterfalls (the waterfalls a mask as their first map, the
+        # colour in their second) came out as slabs, as Battle Creek's creek did before
         # its water was flat (the user: "fix all the water on the level like
         # we did on beaver creek"); the campaign's level only
-        self.chicago_water = False
+        # until the multiplayer levels' waterfalls: Damnation's, and
+        # Timberland's waterfall and stream (PC Expansion), have no lightmap,
+        # and their material's lighting summary is black -- their first map
+        # times black, they drew as black slabs. Now every level but a Custom
+        # Edition map's (custom: it keeps its own handling of transparent
+        # shaders, unlit_first_map). The campaign's level keeps its tint, the maps
+        # after the first x WATER_SHADE whatever the first map is, and draws a
+        # grey water blue (chicago_water_tint, campaign_water)
+        self.campaign_blue = False
         # a Custom Edition map's level (convert.py --custom): an alpha-tested
         # environment shader with no bump map drawn opaque (material), as
         # Halo draws it: its alpha test reads the bump map's alpha, and with
@@ -997,7 +1009,7 @@ class LevelBuilder:
                     self.dropped.add(index)
                     self.material_by_shader[shader_datum] = index
                     return index
-                if self.chicago_water and group == "schi" and any(
+                if not self.custom and group == "schi" and any(
                         word in tag.name.split("\\")[-1].lower() for word in WATER_NAMES):
                     index = self.add_material(-1, MATERIAL_TRANSPARENT | MATERIAL_WATER | MATERIAL_UNTEXTURED)
                     self.water_colour[index] = self.campaign_water(tag, self.chicago_water_tint(tag))
@@ -1117,20 +1129,34 @@ class LevelBuilder:
 
     def campaign_water(self, tag, colour):
         """a water colour as the level has it: a grey one blue in a
-        campaign level (chicago_water; CAMPAIGN_WATER_COLOUR)"""
-        if not self.chicago_water or max(colour) - min(colour) >= WATER_GREY_SPREAD:
+        campaign level (campaign_blue; CAMPAIGN_WATER_COLOUR)"""
+        if not self.campaign_blue or max(colour) - min(colour) >= WATER_GREY_SPREAD:
             return colour
         return CAMPAIGN_WATERFALL_COLOUR if "waterfall" in tag.name.lower() else CAMPAIGN_WATER_COLOUR
 
     def chicago_water_tint(self, tag):
-        """a chicago water shader's colour: its maps' after the first (the
-        mask) averaged, x WATER_SHADE"""
+        """a chicago water shader's colour: its colour maps averaged, as they
+        are -- WATER_SHADE stands for a water shader's reflection map, and a
+        chicago shader has none. Its colour maps are the maps after the first
+        where the first is a mask (alpha replicated: Damnation's and
+        Timberland's waterfalls, grey), else the first alone, the shader's own
+        colour (Timberland's stream: blue-grey; the grey map after it only
+        varies it). In the campaign's level (campaign_blue) the maps after the
+        first, x WATER_SHADE, whatever the first is: its colours as they were
+        (its rivers' first map is their colour too)"""
         f = self.fields("ShaderTransparentChicago")
         mf = self.fields("ShaderTransparentChicagoMap")
         size = self.defs.size("ShaderTransparentChicagoMap")
         count, pointer, _ = struct.unpack("<iII", self.map.read(tag.address + f["maps"], 12))
+        indices, shade = range(1, max(count, 0)), 1.0
+        if self.campaign_blue:
+            shade = WATER_SHADE
+        elif count > 0:
+            first_flags = struct.unpack("<H", self.map.read(pointer + mf["flags"], 2))[0]
+            if not first_flags & CHICAGO_MAP_ALPHA_REPLICATE:
+                indices = range(0, 1)
         means = []
-        for i in range(1, max(count, 0)):
+        for i in indices:
             datum = struct.unpack("<I", self.map.read(pointer + i * size + mf["map"] + 12, 4))[0]
             bitmap = self.map.tag(datum) if datum != 0xFFFFFFFF else None
             images = bitmap_images(self.map, bitmap, self.defs) if bitmap is not None else []
@@ -1143,7 +1169,7 @@ class LevelBuilder:
                 means.append([sum(channel.getdata()) / n / 255.0 for channel in img.split()])
         if not means:
             return WATER_DEFAULT_COLOUR
-        colour = tuple(min(1.0, sum(m[k] for m in means) / len(means) * WATER_SHADE) for k in range(3))
+        colour = tuple(min(1.0, sum(m[k] for m in means) / len(means) * shade) for k in range(3))
         return colour if max(colour) > 0.02 else WATER_DEFAULT_COLOUR
 
     def water_tint(self, tag):
