@@ -2508,6 +2508,52 @@ float n64_hud_text_width(const char *text)
 		(int)strlen(text) * 8;
 }
 
+/* the HUD font's ascent, and its glyphs' extents: the tallest one's top
+above the baseline (top), the lowest one's bottom below it (descent), in
+pixels; 1 if it is there (0: the built-in font, which cannot be squeezed) */
+int n64_hud_text_metrics(int *ascent, int *descent, int *top)
+{
+	*ascent = 8;
+	*descent = 0;
+	*top = 8;
+	if (!hud_font)
+		return 0;
+	*ascent = n64_font_ascent(hud_font);
+	n64_font_extents(hud_font, top, descent);
+	return 1;
+}
+
+/* text squeezed across by scale (the anamorphic picture's included), from
+the top of its box; its width */
+float n64_hud_text_squeezed(int x, int y, unsigned long color, const char *text, float scale)
+{
+	if (!hud_font_loaded)
+		n64_hud_text(0, 0, 0, "");
+	/* (no font: the built-in one, as n64_hud_text has it) */
+	if (!hud_font)
+	{
+		n64_hud_text(x, y, color, text);
+		return n64_hud_text_width(text);
+	}
+	hud.mode = _mode_none;
+	hud.tmem_pixels = NULL;
+	n64_text_draw_scaled(hud_font, (float)x, y + n64_font_ascent(hud_font), color, text, n64_render_hud_squeeze() * scale);
+	return n64_text_width(hud_font, text) * n64_render_hud_squeeze() * scale;
+}
+
+/* a rectangle of one colour, 0xAARRGGBB blended, over the HUD */
+void n64_hud_fill(float x0, float y0, float x1, float y1, unsigned long argb)
+{
+	hud.mode = _mode_none;
+	hud.tmem_pixels = NULL;
+	rdpq_sync_pipe();
+	rdpq_set_mode_standard();
+	rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+	rdpq_set_prim_color(RGBA32((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, argb >> 24));
+	rdpq_fill_rectangle(x0, y0, x1, y1);
+}
+
 int n64_hud_text_height(void)
 {
 	return hud_font ? n64_font_height(hud_font) : 8;

@@ -42,6 +42,7 @@ renderer's (port/n64/src/n64_render.c).
 #include "objects/widgets/light_volumes.h"
 
 #include "../src/n64.h"
+#include "../src/n64_score_table.h"
 #include "../src/n64_projectiles_module.h"
 
 /* HUD STYLE 64's game side (n64_hud64_game.c) */
@@ -1056,6 +1057,9 @@ void render_frame(
 					n64_render_hud_rect(&x0, &y0, &x1, &y1);
 					n64_hud_text((x0 + x1) / 2 - 62, y1 - 16 - inset, 0xFFC0E0FF, status);
 				}
+				/* the scores' table at a game's end, over all of the view's HUD
+				(n64_score_table.h) */
+				n64_game_engine_score_table();
 			}
 			n64_hud_end();
 		}

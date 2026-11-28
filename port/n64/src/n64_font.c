@@ -115,6 +115,28 @@ int n64_font_cap_height(const struct n64_font *font)
 	return h->present && h->origin_y > 0 ? h->origin_y : font->ascent;
 }
 
+/* the glyphs' extents: the tallest one's top above the baseline, the
+lowest one's bottom below it (a row of text needs both) */
+void n64_font_extents(const struct n64_font *font, int *top, int *bottom)
+{
+	*top = font ? font->ascent : 8;
+	*bottom = font ? font->descent : 0;
+	if (!font)
+		return;
+	*top = *bottom = 0;
+	for (int i = 0; i < CHARACTER_COUNT; i++)
+	{
+		const struct glyph *g = &font->glyphs[i];
+
+		if (!g->present || !g->height)
+			continue;
+		if (g->origin_y > *top)
+			*top = g->origin_y;
+		if (g->height - g->origin_y > *bottom)
+			*bottom = g->height - g->origin_y;
+	}
+}
+
 int n64_text_width(const struct n64_font *font, const char *text)
 {
 	int width = 0;

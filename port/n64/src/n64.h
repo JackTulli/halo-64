@@ -634,6 +634,7 @@ int n64_font_height(const struct n64_font *font);
 int n64_font_ascent(const struct n64_font *font);
 int n64_font_cap_height(const struct n64_font *font);
 int n64_text_width(const struct n64_font *font, const char *text);
+void n64_font_extents(const struct n64_font *font, int *top, int *bottom);
 /* text with its baseline at y; color 0xAARRGGBB */
 void n64_text_draw(const struct n64_font *font, int x, int y, unsigned long color, const char *text);
 /* text squeezed across (x_scale, the anamorphic picture's 3/4), filtered */
@@ -803,6 +804,9 @@ void n64_hud_quad(const struct n64_hud_quad *quad);
 void n64_hud_text(int x, int y, unsigned long color, const char *text);
 float n64_hud_text_width(const char *text);
 int n64_hud_text_height(void);
+int n64_hud_text_metrics(int *ascent, int *descent, int *top);
+float n64_hud_text_squeezed(int x, int y, unsigned long color, const char *text, float scale);
+void n64_hud_fill(float x0, float y0, float x1, float y1, unsigned long argb);
 int n64_hud_ensure_sprite(int number);
 int n64_hud_ensure_sprite_at(int number, float s, float t);
 void n64_hud_mark_decoration_at(int number, float s, float t);
