@@ -1730,6 +1730,257 @@ static long select_players_to_display(
 	return MIN(maximum_count, player_count);
 }
 
+#ifdef HALO_N64
+#include <stdlib.h>
+#include "../../port/n64/src/n64.h"
+#include "../../port/n64/src/n64_score_table.h"
+
+/* (the N64: the scores' table at a game's end, Halo's rows laid out by the
+port after the view's HUD, n64_score_table.h. The views note their alpha
+here (game_engine_rasterize_in_game_score); the table is built when the
+first view draws it, and again only when a score changes; it is on the
+heap only while it shows (freed by game_engine_dispose); without room
+there, on the stack, built each time) */
+extern int n64_firefight_active(void);
+
+static struct
+{
+	struct n64_table *table;
+	int kind; /* 0 none, 1 while the game ends, 2 after it */
+	long alpha_frame[MAXIMUM_LOCAL_PLAYERS];
+	real alpha[MAXIMUM_LOCAL_PLAYERS];
+} n64_table_globals;
+
+static void n64_table_text(
+	char *out,
+	int size,
+	wchar_t const *text)
+{
+	int i;
+
+	for (i = 0; i + 1 < size && text && text[i]; i++)
+		out[i] = text[i] == '\t' ? ' ' : text[i] < 128 ? (char)text[i] : '?';
+	out[i] = 0;
+}
+
+static wchar_t const *n64_table_string(
+	long index)
+{
+	long list = tag_loaded('ustr', "ui\\multiplayer_game_text");
+
+	return list != NONE ? unicode_string_list_get_string(list, index) : L"";
+}
+
+/* a score in the unit the game counts to its score to win: King of the
+Hill's and Oddball's ticks (30 a second) in whole seconds, cut down, from
+1000 s on as minutes:seconds ("16:40"); Oddball's "terminator" ball counts
+kills; a Race player's laps; the rest (kills, below 0 too; flags; Team
+Race's team laps) as they are */
+static boolean n64_table_time(
+	void)
+{
+	long engine = global_variant.game_engine_index;
+
+	/* (Oddball's ball type 2, "terminator", counts kills) */
+	return engine == game_engine_king ||
+		(engine == game_engine_oddball && global_variant.game_engine_variant.oddball.oddball_ball_type != 2);
+}
+
+static void n64_table_score(
+	char *out,
+	int size,
+	long value,
+	boolean time)
+{
+	if (time)
+		value /= TICKS_PER_SECOND;
+	if (time && value >= 1000)
+		snprintf(out, size, "%ld:%02ld", value / 60, value % 60);
+	else
+		snprintf(out, size, "%ld", value);
+}
+
+static long n64_table_player_score(
+	long player_index)
+{
+	/* (a Race player's laps, as Halo's own score shows them, Team Race's too:
+	the engine's own is a ranking key, 33 a lap and the lap's flags) */
+	if (global_variant.game_engine_index == game_engine_race)
+		return player_get(player_index)->statistics.multiplayer_statistics.race_statistics.laps;
+	if (!game_engine->get_player_score)
+		return player_get(player_index)->statistics.kills[0];
+	return game_engine->get_player_score(player_index, _get_score_individual);
+}
+
+/* (built again only when this changes) */
+static long n64_table_signature(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+	long signature = 0;
+	int c;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL)
+	{
+		signature = signature * 31 + iterator.datum_index + player->team_index * 13 + (player->quit_out_of_game ? 11 : 0);
+		signature = signature * 31 + n64_table_player_score(iterator.datum_index) * 7 + player->statistics.kills[0] * 5 +
+			player->statistics.assists[0] * 3 + player->statistics.deaths;
+		if (game_engine->get_player_score)
+			signature = signature * 31 + game_engine->get_player_score(iterator.datum_index, _get_score_individual);
+		for (c = 0; c < (int)NUMBEROF(player->name) && player->name[c]; c++)
+			signature = signature * 31 + player->name[c];
+	}
+	return signature;
+}
+
+static void n64_table_build(
+	struct n64_table *table,
+	boolean postgame)
+{
+	static long const headings[N64_TABLE_COLUMNS] = { 0x43, 0x44, -1, 0x45, 0x46, 0x47 };
+	struct postgame_statistic_entry entries[12];
+	boolean teams = global_variant.universal_variant.teams, time = n64_table_time();
+	/* (Halo's engines copy their score heading and texts unbounded, into
+	Halo's own 256-character buffers) */
+	wchar_t text[256];
+	long count, k, c, generation = table->generation;
+
+	csmemset(table, 0, sizeof(*table));
+	table->generation = generation + 1;
+	table->postgame = postgame;
+	/* (the teams' rows and totals need the engine's scores) */
+	table->teams = teams && game_engine->get_player_score;
+	table->signature = n64_table_signature();
+	for (c = 0; c < N64_TABLE_COLUMNS; c++)
+	{
+		if (headings[c] < 0)
+		{
+			csmemset(text, 0, sizeof(text));
+			game_engine->format_score_name(text);
+			n64_table_text(table->headings[c], sizeof(table->headings[c]), text);
+		}
+		else
+			n64_table_text(table->headings[c], sizeof(table->headings[c]), n64_table_string(headings[c]));
+	}
+	/* the teams, the winner first ("Red Team", from "\tRed Team\t%s"), each
+	with its total */
+	if (table->teams)
+	{
+		long first = game_engine_did_team_win(0) ? 0 : 1;
+
+		for (k = 0; k < 2; k++)
+		{
+			long team = k ? 1 - first : first;
+			wchar_t const *format = n64_table_string(0x41 + team);
+			int n = 0;
+
+			while (*format == '\t')
+				format++;
+			while (format[n] && format[n] != '\t' && format[n] != '%' && n < (int)sizeof(table->team_name[k]) - 1)
+			{
+				table->team_name[k][n] = format[n] < 128 ? (char)format[n] : '?';
+				n++;
+			}
+			table->team_index[k] = (signed char)team;
+			n64_table_score(table->team_score[k], sizeof(table->team_score[k]), game_engine_get_team_score(team), time);
+		}
+	}
+	/* Halo's rows: the best 6 (12 after the game), the local players among
+	them; their places as Halo ranks them */
+	count = select_players_to_display(0, NONE, entries, postgame ? 12 : 6);
+	for (k = 0; k < count && k < N64_TABLE_PLAYERS; k++)
+	{
+		long index = entries[k].values[0];
+		struct player_datum *player = player_get(index);
+		struct n64_table_row *row = &table->rows[k];
+
+		row->player_index = index;
+		n64_table_text(row->cell[N64_TABLE_PLACE], sizeof(row->cell[0]),
+			n64_table_string(PIN(entries[k].values[6] & 0x7F, 0, 15) + 36));
+		n64_table_text(row->cell[N64_TABLE_NAME], sizeof(row->cell[0]), player->name);
+		if (!postgame && game_engine_player_is_out_of_lives(index))
+			n64_table_text(row->cell[N64_TABLE_SCORE], sizeof(row->cell[0]), n64_table_string(0x8A));
+		else if (!postgame && player->quit_out_of_game)
+			n64_table_text(row->cell[N64_TABLE_SCORE], sizeof(row->cell[0]), n64_table_string(0x8B));
+		else
+			n64_table_score(row->cell[N64_TABLE_SCORE], sizeof(row->cell[0]), n64_table_player_score(index), time);
+		snprintf(row->cell[N64_TABLE_KILLS], sizeof(row->cell[0]), "%d", (int)player->statistics.kills[0]);
+		snprintf(row->cell[N64_TABLE_ASSISTS], sizeof(row->cell[0]), "%d", (int)player->statistics.assists[0]);
+		snprintf(row->cell[N64_TABLE_DEATHS], sizeof(row->cell[0]), "%d", (int)player->statistics.deaths);
+		row->team = teams ? (signed char)PIN(player->team_index, 0, 1) : -1;
+		row->local = player->local_player_index != NONE;
+		/* (after the game, each column's best as Halo marks it; once) */
+		for (c = 1; postgame && c <= 4; c++)
+			if (!postgame_statistic_get_rating(index, c, 0))
+				row->best |= 1 << (c == 1 ? N64_TABLE_SCORE : c + 1);
+	}
+	table->count = (int)MIN(count, N64_TABLE_PLAYERS);
+}
+
+void n64_game_engine_score_table(
+	void)
+{
+	struct n64_table stack_table;
+	struct n64_table *table;
+	long local = render.local_player_index;
+	boolean postgame;
+	wchar_t title[80];
+	char text[80];
+
+	/* (not in Firefight: a game against the AI, with its own wave, lives and
+	score line and its own results in the menu) */
+	if (!game_engine || n64_firefight_active())
+		return;
+	postgame = local == NONE;
+	if (postgame ? game_engine_globals.postgame_state < 2 :
+		local < 0 || local >= MAXIMUM_LOCAL_PLAYERS || n64_table_globals.alpha_frame[local] != render.frame_index ||
+		n64_table_globals.alpha[local] <= 0.f)
+		return;
+	if (!n64_table_globals.table)
+	{
+		n64_table_globals.table = (struct n64_table *)malloc(sizeof(struct n64_table));
+		if (n64_table_globals.table)
+			n64_table_globals.table->generation = 0;
+	}
+	table = n64_table_globals.table ? n64_table_globals.table : &stack_table;
+	if (table == &stack_table)
+		stack_table.generation = 0;
+	/* (built again when the kind of table or a score changes; on the stack,
+	each time) */
+	if (table == &stack_table || n64_table_globals.kind != (postgame ? 2 : 1) ||
+		table->signature != n64_table_signature())
+	{
+		n64_table_build(table, postgame);
+		n64_table_globals.kind = postgame ? 2 : 1;
+	}
+	if (postgame)
+	{
+		/* (PRESS A as Halo shows its prompt: hidden in state 2, fading in over
+		state 3's first second, when A and START begin to work) */
+		real prompt = game_engine_globals.postgame_state == 3 ?
+			PIN(game_engine_globals.postgame_progress, 0.f, 1.f) : 0.f;
+
+		n64_hud_score_table(table, NULL, NONE, 1.f, prompt);
+		return;
+	}
+	csmemset(title, 0, sizeof(title));
+	game_engine_generate_title_string(title, local_player_get_player_index((short)local));
+	n64_table_text(text, sizeof(text), title);
+	n64_hud_score_table(table, text, local_player_get_player_index((short)local), n64_table_globals.alpha[local], 0.f);
+}
+
+static void n64_table_dispose(
+	void)
+{
+	/* (Halo's free: never a NULL) */
+	if (n64_table_globals.table)
+		free(n64_table_globals.table);
+	csmemset(&n64_table_globals, 0, sizeof(n64_table_globals));
+}
+#endif
+
 static void game_engine_rasterize_in_game_score(
 	long player_index,
 	real alpha)
@@ -1750,6 +2001,14 @@ static void game_engine_rasterize_in_game_score(
 	wchar_t *column_name;
 	wchar_t *score_name;
 
+#ifdef HALO_N64
+	if (render.local_player_index >= 0 && render.local_player_index < MAXIMUM_LOCAL_PLAYERS)
+	{
+		n64_table_globals.alpha_frame[render.local_player_index] = render.frame_index;
+		n64_table_globals.alpha[render.local_player_index] = alpha;
+	}
+	return;
+#endif
 	if (game_engine)
 		has_teams = global_variant.universal_variant.teams;
 
@@ -1938,6 +2197,10 @@ void game_engine_post_rasterize_post_game(
 
 	if (!game_engine)
 		return;
+#ifdef HALO_N64
+	/* (the port draws it, n64_game_engine_score_table) */
+	return;
+#endif
 
 	tab_stops[0] = 50;
 	tab_stops[1] = 125;
@@ -3428,6 +3691,9 @@ boolean game_engine_force_single_screen(
 void game_engine_dispose(
 	void)
 {
+#ifdef HALO_N64
+	n64_table_dispose();
+#endif
 	if (game_engine)
 	{
 		if (game_engine->dispose)
